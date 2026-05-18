@@ -1,0 +1,15 @@
+/target
+/Cargo.lock
+*.swp
+*.swo
+*~
+.DS_Store
+/.idea
+/.vscode
+*.iml
+/tests/fixtures/*.sock
+/tests/fixtures/agent-*
+~/.brokr/run/
+/tmp/
+/tests/
+/target/
