@@ -63,10 +63,7 @@ fn builtin_patterns(binary: &str) -> &'static [&'static str] {
         "sudo" => &[r"\[sudo\] password for [^:]+:\s*$"],
         "su" => &[r"Password:\s*$"],
         // Generic catch-all
-        _ => &[
-            r"[Pp]assword[^:]*:\s*$",
-            r"[Pp]assphrase[^:]*:\s*$",
-        ],
+        _ => &[r"[Pp]assword[^:]*:\s*$", r"[Pp]assphrase[^:]*:\s*$"],
     }
 }
 
@@ -121,12 +118,12 @@ mod tests {
     #[test]
     fn ssh_passphrase_prompt_matches() {
         let pats = patterns_for("ssh");
-        assert!(pats.iter().any(|p| {
-            p.is_match(b"Enter passphrase for key '/home/user/.ssh/id_rsa': ")
-        }));
-        assert!(pats.iter().any(|p| {
-            p.is_match(b"Passphrase for /Users/alice/.ssh/id_ed25519: ")
-        }));
+        assert!(pats
+            .iter()
+            .any(|p| { p.is_match(b"Enter passphrase for key '/home/user/.ssh/id_rsa': ") }));
+        assert!(pats
+            .iter()
+            .any(|p| { p.is_match(b"Passphrase for /Users/alice/.ssh/id_ed25519: ") }));
     }
 
     #[test]

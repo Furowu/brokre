@@ -1,4 +1,5 @@
 /target
+/dist
 /Cargo.lock
 *.swp
 *.swo
@@ -9,7 +10,24 @@
 *.iml
 /tests/fixtures/*.sock
 /tests/fixtures/agent-*
-~/.brokr/run/
 /tmp/
 /tests/
-/target/
+
+# Local machine / dev artifacts (do not commit)
+/hosts
+/r
+/d
+/deploy.env
+.deploy.env
+.mcp.json
+*.local
+.env
+.env.*
+
+# Local brokr runtime data (if copied into repo for testing)
+.brokr/
+**/.brokr/
+
+# macOS file-backed keychain keys (prevent accidental commit)
+.master_kek
+.audit_hmac

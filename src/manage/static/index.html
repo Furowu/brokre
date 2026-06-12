@@ -1,0 +1,685 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title data-i18n="title">brokr manage</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:system-ui,-apple-system,sans-serif;background:#f8f9fa;color:#111827;line-height:1.5;padding:1rem}
+.wrap{max-width:720px;margin:0 auto}
+header{display:flex;justify-content:space-between;align-items:center;margin-bottom:1rem;flex-wrap:wrap;gap:.5rem}
+h1{font-size:1.25rem;font-weight:600}
+.hdr-right{display:flex;align-items:center;gap:.75rem}
+.lang-switch{font-size:.8rem;color:#6b7280;cursor:pointer;user-select:none}
+.lang-switch span{margin:0 .15rem;opacity:.45}
+.lang-switch span.on{opacity:1;font-weight:600;color:#2563eb}
+.muted{color:#6b7280;font-size:.875rem}
+.banner{background:#eff6ff;border:1px solid #bfdbfe;border-radius:6px;padding:.75rem 1rem;margin-bottom:1rem;display:flex;justify-content:space-between;align-items:center;gap:.5rem}
+.banner.hidden{display:none!important}
+.hidden{display:none!important}
+.toolbar{display:flex;justify-content:flex-end;margin-bottom:1rem}
+input,select,button{font:inherit}
+input,select{border:1px solid #d1d5db;border-radius:6px;padding:.4rem .6rem;background:#fff;width:100%}
+button{border:none;border-radius:6px;padding:.4rem .75rem;cursor:pointer;background:#2563eb;color:#fff}
+button.secondary{background:#e5e7eb;color:#111827}
+button.danger{background:#dc2626}
+button:disabled{opacity:.5;cursor:not-allowed}
+.section{margin-bottom:1.25rem;background:#fff;border:1px solid #e5e7eb;border-radius:8px;padding:.75rem 1rem}
+.section.unavailable{border-color:#fcd34d;background:#fffbeb}
+.section-head{display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:.5rem;margin-bottom:.5rem}
+.section-head h2{font-size:1rem;font-weight:600}
+.badge{font-size:.75rem;padding:.15rem .45rem;border-radius:4px;background:#dbeafe;color:#1d4ed8}
+.badge.warn{background:#fef3c7;color:#92400e}
+.binaries{font-size:.75rem;color:#6b7280}
+.card{background:#f9fafb;border:1px solid #e5e7eb;border-radius:6px;padding:.75rem 1rem;margin-bottom:.5rem}
+.card-head{display:flex;justify-content:space-between;flex-wrap:wrap;gap:.25rem;margin-bottom:.5rem}
+.name{font-weight:600}
+.cmd{font-family:ui-monospace,monospace;font-size:.8rem;background:#f3f4f6;padding:.35rem .5rem;border-radius:4px;word-break:break-all;margin:.35rem 0}
+.row{display:flex;gap:.5rem;flex-wrap:wrap;align-items:center;margin-top:.35rem}
+.pw-mask{color:#6b7280;font-size:.875rem}
+.modal{position:fixed;inset:0;background:rgba(0,0,0,.35);display:none;align-items:center;justify-content:center;padding:1rem;z-index:10}
+.modal.show{display:flex}
+.panel{background:#fff;border-radius:8px;padding:1rem;width:100%;max-width:420px;border:1px solid #e5e7eb}
+.panel h3{margin-bottom:.75rem;font-size:1rem}
+.field{margin-bottom:.6rem}
+.field label{display:block;font-size:.8rem;color:#374151;margin-bottom:.2rem}
+textarea{font:inherit;border:1px solid #d1d5db;border-radius:6px;padding:.4rem .6rem;background:#fff;width:100%;font-family:ui-monospace,monospace;font-size:.75rem}
+.hint{font-size:.75rem;color:#6b7280;margin-top:.2rem}
+.actions{display:flex;gap:.5rem;justify-content:flex-end;margin-top:.75rem}
+.empty{color:#6b7280;padding:1rem;text-align:center}
+.err{color:#dc2626;font-size:.875rem;margin-top:.5rem}
+.section-empty{color:#9ca3af;font-size:.875rem;padding:.5rem 0 .25rem}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1 data-i18n="title">brokr manage</h1>
+    <div class="hdr-right">
+      <div class="lang-switch" id="lang-switch" title="Language">
+        <span data-lang="en" class="on">EN</span>|<span data-lang="zh">中文</span>
+      </div>
+      <span class="muted" id="idle"></span>
+    </div>
+  </header>
+  <div class="banner hidden" id="onboard">
+    <span data-i18n="onboard.text">Maintain accounts by installed CLI groups. Passwords are write-only.</span>
+    <button class="secondary" id="skip-onboard" data-i18n="onboard.skip">Skip</button>
+  </div>
+  <div class="toolbar">
+    <input type="search" id="search" data-i18n-placeholder="search.placeholder" placeholder="Search alias / host" style="max-width:220px">
+  </div>
+  <div id="list"></div>
+</div>
+
+<div class="modal" id="modal-form">
+  <div class="panel">
+    <h3 id="modal-title" data-i18n="form.new">New credential</h3>
+    <p class="muted binaries" id="form-cli-hint"></p>
+    <input type="hidden" id="f-profile">
+    <input type="hidden" id="f-group-id">
+    <div class="field hidden" id="field-cli">
+      <label data-i18n="form.cli">CLI binary (on PATH)</label>
+      <input id="f-cli" data-i18n-placeholder="form.cliPh" placeholder="gsql">
+      <p class="hint" data-i18n="form.cliHint">Any CLI on PATH, or add groups in ~/.brokr/manage.toml</p>
+    </div>
+    <div class="field"><label data-i18n="form.alias">alias</label><input id="f-name" placeholder="prod-bastion"></div>
+    <div class="field"><label data-i18n="form.host">host</label><input id="f-host" placeholder="10.0.0.1"></div>
+    <div class="field" id="field-user"><label data-i18n="form.user">user (optional)</label><input id="f-user" placeholder="root"></div>
+    <div class="field" id="field-extra"><label data-i18n="form.extra">extra args (optional, quoted)</label><input id="f-extra" placeholder="-e &quot;SHOW TABLES&quot;"></div>
+    <div class="field hidden" id="field-ssh-auth">
+      <label data-i18n="form.sshAuth">SSH auth method</label>
+      <select id="f-auth-type">
+        <option value="password" data-i18n="form.authPassword">Password</option>
+        <option value="key" data-i18n="form.authKey">Private key</option>
+        <option value="key_and_password" data-i18n="form.authBoth">Key + password</option>
+      </select>
+    </div>
+    <div class="field hidden" id="field-private-key">
+      <label data-i18n="form.privateKey">Private key (PEM)</label>
+      <input type="file" id="f-key-file" accept=".pem,.key,text/plain">
+      <textarea id="f-private-key" rows="5" placeholder="-----BEGIN OPENSSH PRIVATE KEY-----"></textarea>
+      <p class="hint" data-i18n="form.keyHint">Paste PEM or choose a file; write-only in vault.</p>
+    </div>
+    <div class="field hidden" id="field-key-passphrase">
+      <label data-i18n="form.keyPass">Key passphrase (unlock encrypted key)</label>
+      <input id="f-key-passphrase" type="password" autocomplete="new-password">
+      <p class="hint" data-i18n="form.keyPassHint">Not the server login password; leave blank if key is unencrypted.</p>
+    </div>
+    <div class="field" id="field-password"><label id="f-password-label" data-i18n="form.password">password</label><input id="f-password" type="password" autocomplete="new-password"></div>
+    <div class="field"><label data-i18n="form.reveal">reveal passphrase (optional, for brokr reveal)</label><input id="f-reveal" type="password" autocomplete="new-password"></div>
+    <div class="err" id="form-err"></div>
+    <div class="actions">
+      <button class="secondary" data-close data-i18n="btn.cancel">Cancel</button>
+      <button id="form-submit" data-i18n="btn.save">Save</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal" id="modal-rotate">
+  <div class="panel">
+    <h3 data-i18n="rotate.title">Rotate password</h3>
+    <p class="muted" id="rotate-target"></p>
+    <div class="field"><label data-i18n="rotate.new">New password</label><input id="r-password" type="password" autocomplete="new-password"></div>
+    <div class="field"><label data-i18n="rotate.auth">reveal passphrase or YES</label><input id="r-auth" type="password" autocomplete="current-password"></div>
+    <div class="err" id="rotate-err"></div>
+    <div class="actions">
+      <button class="secondary" data-close data-i18n="btn.cancel">Cancel</button>
+      <button id="rotate-submit" data-i18n="btn.update">Update</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal" id="modal-delete">
+  <div class="panel">
+    <h3 data-i18n="delete.title">Delete credential</h3>
+    <p class="muted" id="delete-target"></p>
+    <div class="field"><label data-i18n="delete.auth">reveal passphrase or YES</label><input id="d-auth" type="password" autocomplete="current-password"></div>
+    <div class="err" id="delete-err"></div>
+    <div class="actions">
+      <button class="secondary" data-close data-i18n="btn.cancel">Cancel</button>
+      <button class="danger" id="delete-submit" data-i18n="btn.delete">Delete</button>
+    </div>
+  </div>
+</div>
+
+<script>
+(function(){
+  const I18N = {
+    en: {
+      title: 'brokr manage',
+      'onboard.text': 'Maintain accounts by installed CLI groups. Passwords are write-only.',
+      'onboard.skip': 'Skip',
+      'search.placeholder': 'Search alias / host',
+      'form.new': 'New credential',
+      'form.cli': 'CLI binary (on PATH)',
+      'form.cliPh': 'gsql',
+      'form.cliHint': 'Any CLI on PATH, or add groups in ~/.brokr/manage.toml',
+      'form.alias': 'alias',
+      'form.host': 'host',
+      'form.user': 'user (optional)',
+      'form.extra': 'extra args (optional, quoted)',
+      'form.sshAuth': 'SSH auth method',
+      'form.authPassword': 'Password',
+      'form.authKey': 'Private key',
+      'form.authBoth': 'Key + password',
+      'form.privateKey': 'Private key (PEM)',
+      'form.keyHint': 'Paste PEM or choose a file; write-only in vault.',
+      'form.keyPass': 'Key passphrase (unlock encrypted key)',
+      'form.keyPassHint': 'Not the server login password; leave blank if key is unencrypted.',
+      'form.password': 'password',
+      'form.passwordSsh': 'SSH login password',
+      'form.passwordSsh2': 'SSH login password (server)',
+      'form.reveal': 'reveal passphrase (optional, for brokr reveal)',
+      'rotate.title': 'Rotate password',
+      'rotate.new': 'New password',
+      'rotate.auth': 'reveal passphrase or YES',
+      'delete.title': 'Delete credential',
+      'delete.auth': 'reveal passphrase or YES',
+      'btn.cancel': 'Cancel',
+      'btn.save': 'Save',
+      'btn.update': 'Update',
+      'btn.delete': 'Delete',
+      'idle': 'Idle {m}:{s} until close',
+      'loading': 'Detecting local CLIs…',
+      'loadFail': 'Failed to load (open from terminal URL)',
+      'noCli': 'No CLI detected (ssh, ftp, mysql, …). Install tools first.',
+      'noCliHist': 'No CLI available; showing saved credentials only.',
+      'installed': 'Installed: ',
+      'notInstalled': 'CLI not installed (',
+      'badge.ok': 'Available',
+      'badge.no': 'Not installed',
+      'btn.add': '+ Add account',
+      'section.empty': 'No accounts yet — click Add account',
+      'section.emptyOff': 'No saved accounts',
+      'auth.key': 'key',
+      'auth.pw': 'password',
+      'auth.mask': 'Auth: {m} (not readable)',
+      'btn.copy': 'Copy command',
+      'btn.rotate': 'Rotate password',
+      'never': 'never',
+      'host': 'host',
+      'last': 'last',
+      'profile': 'profile',
+      'form.newGroup': 'New {label} account',
+      'form.cmdHint': 'Command: brokr {cli} <alias> (detected: {bins})',
+      'keyReadErr': 'Cannot read key file',
+      'group.custom': 'Other CLI',
+      'group.ssh': 'SSH', 'group.ftp': 'FTP', 'group.lftp': 'LFTP',
+      'group.mysql': 'MySQL', 'group.postgres': 'PostgreSQL', 'group.redis': 'Redis',
+      'group.clickhouse': 'ClickHouse', 'group.minio': 'MinIO'
+    },
+    zh: {
+      title: 'brokr 管理',
+      'onboard.text': '按本机已安装的 CLI 分组维护账号。密码只能写入，无法查看。',
+      'onboard.skip': '跳过引导',
+      'search.placeholder': '搜索 alias / host',
+      'form.new': '新建凭证',
+      'form.cli': 'CLI 命令名（需在 PATH）',
+      'form.cliPh': 'gsql',
+      'form.cliHint': '任意 PATH 上的 CLI；也可在 ~/.brokr/manage.toml 中定义分组',
+      'form.alias': 'alias',
+      'form.host': 'host',
+      'form.user': 'user（可选）',
+      'form.extra': 'extra args（可选，支持引号）',
+      'form.sshAuth': 'SSH 认证方式',
+      'form.authPassword': '密码登录',
+      'form.authKey': '私钥登录',
+      'form.authBoth': '私钥 + 密码（双因素）',
+      'form.privateKey': '私钥（PEM）',
+      'form.keyHint': '可粘贴 PEM 或选择文件；仅写入 vault，页面无法回读。',
+      'form.keyPass': '私钥 passphrase（加密私钥解锁用）',
+      'form.keyPassHint': '与服务器登录密码不同；无加密私钥可留空。',
+      'form.password': 'password',
+      'form.passwordSsh': 'SSH 登录密码',
+      'form.passwordSsh2': 'SSH 登录密码（服务器口令）',
+      'form.reveal': 'reveal passphrase（可选，用于 brokr reveal）',
+      'rotate.title': '轮换密码',
+      'rotate.new': '新 password',
+      'rotate.auth': 'reveal passphrase 或 YES',
+      'delete.title': '删除凭证',
+      'delete.auth': 'reveal passphrase 或 YES',
+      'btn.cancel': '取消',
+      'btn.save': '保存',
+      'btn.update': '更新',
+      'btn.delete': '删除',
+      'idle': '空闲 {m}:{s} 后关闭',
+      'loading': '正在检测本机 CLI…',
+      'loadFail': '无法加载（请从终端 URL 打开）',
+      'noCli': '未检测到已安装的 CLI（ssh、ftp、mysql 等）。请先安装对应工具。',
+      'noCliHist': '当前无可用 CLI，仅显示历史凭证。',
+      'installed': '已安装: ',
+      'notInstalled': 'CLI 未安装（',
+      'badge.ok': '可用',
+      'badge.no': '未安装',
+      'btn.add': '+ 添加账号',
+      'section.empty': '暂无账号，点击「添加账号」',
+      'section.emptyOff': '无已存账号',
+      'auth.key': '私钥',
+      'auth.pw': '密码',
+      'auth.mask': '认证: {m}（不可查看）',
+      'btn.copy': '复制命令',
+      'btn.rotate': '轮换密码',
+      'never': '从未',
+      'host': 'host',
+      'last': 'last',
+      'profile': 'profile',
+      'form.newGroup': '新建 {label} 账号',
+      'form.cmdHint': '将使用命令: brokr {cli} <alias>（已检测: {bins}）',
+      'keyReadErr': '无法读取私钥文件',
+      'group.custom': '其他 CLI',
+      'group.ssh': 'SSH', 'group.ftp': 'FTP', 'group.lftp': 'LFTP',
+      'group.mysql': 'MySQL', 'group.postgres': 'PostgreSQL', 'group.redis': 'Redis',
+      'group.clickhouse': 'ClickHouse', 'group.minio': 'MinIO'
+    }
+  };
+
+  function detectLang() {
+    const stored = localStorage.getItem('brokr_lang');
+    if (stored === 'en' || stored === 'zh') return stored;
+    const nav = (navigator.language || navigator.userLanguage || 'en').toLowerCase();
+    return nav.startsWith('zh') ? 'zh' : 'en';
+  }
+
+  let lang = detectLang();
+
+  function t(key, vars) {
+    let s = (I18N[lang] && I18N[lang][key]) || I18N.en[key] || key;
+    if (vars) {
+      Object.keys(vars).forEach(k => { s = s.replace('{' + k + '}', vars[k]); });
+    }
+    return s;
+  }
+
+  function applyI18n() {
+    document.documentElement.lang = lang === 'zh' ? 'zh-CN' : 'en';
+    document.title = t('title');
+    document.querySelectorAll('[data-i18n]').forEach(el => {
+      el.textContent = t(el.getAttribute('data-i18n'));
+    });
+    document.querySelectorAll('[data-i18n-placeholder]').forEach(el => {
+      el.placeholder = t(el.getAttribute('data-i18n-placeholder'));
+    });
+    document.querySelectorAll('#lang-switch [data-lang]').forEach(el => {
+      el.classList.toggle('on', el.dataset.lang === lang);
+    });
+    const sel = document.getElementById('f-auth-type');
+    if (sel) {
+      [...sel.options].forEach(opt => {
+        const k = opt.getAttribute('data-i18n');
+        if (k) opt.textContent = t(k);
+      });
+    }
+    updateSshAuthFields();
+    render();
+  }
+
+  document.getElementById('lang-switch').addEventListener('click', (ev) => {
+    const el = ev.target.closest('[data-lang]');
+    if (!el) return;
+    lang = el.dataset.lang;
+    localStorage.setItem('brokr_lang', lang);
+    applyI18n();
+  });
+
+  const params = new URLSearchParams(location.search);
+  const token = params.get('t') || sessionStorage.getItem('brokr_token') || '';
+  if (token) sessionStorage.setItem('brokr_token', token);
+  if (params.has('t') && history.replaceState) {
+    history.replaceState(null, '', location.pathname);
+  }
+
+  function splitArgs(s) {
+    const m = s.match(/(?:[^\s"']+|"[^"]*"|'[^']*')+/g);
+    return m ? m.map(a => a.replace(/^["']|["']$/g, '')) : [];
+  }
+
+  const headers = () => ({
+    'Authorization': 'Bearer ' + token,
+    'Content-Type': 'application/json'
+  });
+
+  async function api(path, opts) {
+    const res = await fetch(path, Object.assign({ headers: headers() }, opts || {}));
+    if (!res.ok) {
+      let msg = res.statusText;
+      try { const j = await res.json(); if (j.error) msg = j.error; } catch(_){}
+      throw new Error(msg);
+    }
+    if (res.status === 204) return null;
+    const ct = res.headers.get('content-type') || '';
+    if (ct.includes('application/json')) return res.json();
+    return res.text();
+  }
+
+  let creds = [];
+  let groups = [];
+  let rotateTarget = null;
+  let deleteTarget = null;
+
+  function esc(s){ return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+
+  function fmtDate(iso){
+    if (!iso) return t('never');
+    try { return new Date(iso).toLocaleDateString(lang === 'zh' ? 'zh-CN' : undefined); } catch(_){ return iso; }
+  }
+
+  function groupLabel(g) {
+    const k = 'group.' + g.id;
+    return t(k) !== k ? t(k) : g.label;
+  }
+
+  function coveredProfiles() {
+    const set = new Set();
+    groups.filter(g => g.id !== 'custom').forEach(g => g.profiles.forEach(p => set.add(p)));
+    return set;
+  }
+
+  function credsForGroup(g) {
+    const q = (document.getElementById('search').value || '').toLowerCase();
+    const match = (c) => {
+      if (!q) return true;
+      const hay = (c.name + ' ' + (c.host_alias||'') + ' ' + c.profile).toLowerCase();
+      return hay.includes(q);
+    };
+    if (g.id === 'custom') {
+      const covered = coveredProfiles();
+      return creds.filter(c => !covered.has(c.profile) && match(c));
+    }
+    const set = new Set(g.profiles);
+    return creds.filter(c => set.has(c.profile) && match(c));
+  }
+
+  function sectionsToRender() {
+    const out = [];
+    for (const g of groups) {
+      const items = credsForGroup(g);
+      if (g.id === 'custom') {
+        if (g.available || items.length > 0) out.push({ g, items });
+      } else if (g.available || items.length > 0) {
+        out.push({ g, items });
+      }
+    }
+    return out;
+  }
+
+  function renderCard(c) {
+    let h = '<div class="card" data-p="' + esc(c.profile) + '" data-n="' + esc(c.name) + '">';
+    h += '<div class="card-head"><span class="name">' + esc(c.name) + '</span>';
+    h += '<span class="muted">' + t('host') + '=' + esc(c.host_alias || '-') + ' · ' + t('last') + '=' + esc(fmtDate(c.last_used_at)) + '</span></div>';
+    if (c.profile !== groups.find(x => x.profiles.includes(c.profile))?.create_profile) {
+      h += '<div class="muted" style="font-size:.75rem">' + t('profile') + ': ' + esc(c.profile) + '</div>';
+    }
+    h += '<div class="cmd">' + esc(c.command) + '</div>';
+    const methods = (c.auth_methods && c.auth_methods.length) ? c.auth_methods : ['password'];
+    const methodLabel = methods.map(m => m === 'key' ? t('auth.key') : t('auth.pw')).join(' + ');
+    h += '<div class="row"><button class="secondary btn-copy" data-cmd="' + esc(c.command) + '">' + esc(t('btn.copy')) + '</button>';
+    h += '<span class="pw-mask">' + esc(t('auth.mask', { m: methodLabel })) + '</span>';
+    if (methods.includes('password')) {
+      h += '<button class="secondary btn-rotate">' + esc(t('btn.rotate')) + '</button>';
+    }
+    h += '<button class="danger btn-delete">' + esc(t('btn.delete')) + '</button></div></div>';
+    return h;
+  }
+
+  function bindCardActions(root) {
+    root.querySelectorAll('.btn-copy').forEach(btn => btn.addEventListener('click', () => {
+      navigator.clipboard.writeText(btn.dataset.cmd).catch(()=>{});
+    }));
+    root.querySelectorAll('.btn-rotate').forEach(btn => btn.addEventListener('click', () => {
+      const card = btn.closest('.card');
+      rotateTarget = { profile: card.dataset.p, name: card.dataset.n };
+      document.getElementById('rotate-target').textContent = rotateTarget.profile + '/' + rotateTarget.name;
+      document.getElementById('r-password').value = '';
+      document.getElementById('r-auth').value = '';
+      document.getElementById('rotate-err').textContent = '';
+      document.getElementById('modal-rotate').classList.add('show');
+    }));
+    root.querySelectorAll('.btn-delete').forEach(btn => btn.addEventListener('click', () => {
+      const card = btn.closest('.card');
+      deleteTarget = { profile: card.dataset.p, name: card.dataset.n };
+      document.getElementById('delete-target').textContent = deleteTarget.profile + '/' + deleteTarget.name;
+      document.getElementById('d-auth').value = '';
+      document.getElementById('delete-err').textContent = '';
+      document.getElementById('modal-delete').classList.add('show');
+    }));
+  }
+
+  function effectiveProfile() {
+    const gid = document.getElementById('f-group-id').value;
+    if (gid === 'custom') {
+      return document.getElementById('f-cli').value.trim();
+    }
+    return document.getElementById('f-profile').value;
+  }
+
+  function updateSshAuthFields() {
+    const profile = effectiveProfile() || document.getElementById('f-profile').value;
+    const isSsh = profile === 'ssh';
+    const auth = document.getElementById('f-auth-type').value;
+    document.getElementById('field-ssh-auth').classList.toggle('hidden', !isSsh);
+    document.getElementById('field-private-key').classList.toggle('hidden', !isSsh || auth === 'password');
+    document.getElementById('field-key-passphrase').classList.toggle('hidden', !isSsh || auth === 'password');
+    document.getElementById('field-password').classList.toggle('hidden', isSsh && auth === 'key');
+    const pwLabel = document.getElementById('f-password-label');
+    if (isSsh && auth === 'key_and_password') {
+      pwLabel.textContent = t('form.passwordSsh2');
+    } else if (isSsh) {
+      pwLabel.textContent = t('form.passwordSsh');
+    } else {
+      pwLabel.textContent = t('form.password');
+    }
+  }
+
+  function openCreateForm(g) {
+    document.getElementById('form-err').textContent = '';
+    document.getElementById('f-group-id').value = g.id;
+    document.getElementById('f-profile').value = g.create_profile;
+    const label = groupLabel(g);
+    document.getElementById('modal-title').textContent = t('form.newGroup', { label: label });
+    const isCustom = g.id === 'custom';
+    document.getElementById('field-cli').classList.toggle('hidden', !isCustom);
+    document.getElementById('f-cli').value = '';
+    const cli = g.create_profile || '…';
+    const bins = g.detected.length ? g.detected.join(', ') : cli;
+    document.getElementById('form-cli-hint').textContent = t('form.cmdHint', { cli: cli, bins: bins });
+    const hideUser = g.id === 'ftp' || g.id === 'lftp' || g.id === 'redis';
+    document.getElementById('field-user').style.display = hideUser ? 'none' : '';
+    document.getElementById('field-extra').style.display = (g.id === 'ftp' || g.id === 'lftp') ? 'none' : '';
+    document.getElementById('f-auth-type').value = 'password';
+    document.getElementById('f-private-key').value = '';
+    document.getElementById('f-key-passphrase').value = '';
+    document.getElementById('f-key-file').value = '';
+    updateSshAuthFields();
+    document.getElementById('modal-form').classList.add('show');
+  }
+
+  document.getElementById('f-auth-type').addEventListener('change', updateSshAuthFields);
+  document.getElementById('f-cli').addEventListener('input', updateSshAuthFields);
+  document.getElementById('f-key-file').addEventListener('change', async (ev) => {
+    const file = ev.target.files && ev.target.files[0];
+    if (!file) return;
+    try {
+      document.getElementById('f-private-key').value = await file.text();
+    } catch(_) {
+      document.getElementById('form-err').textContent = t('keyReadErr');
+    }
+  });
+
+  function render(){
+    const list = document.getElementById('list');
+    const sections = sectionsToRender();
+    if (!groups.length) {
+      list.innerHTML = '<div class="empty">' + esc(t('loading')) + '</div>';
+      return;
+    }
+    const anyAvailable = groups.some(g => g.available && g.id !== 'custom') || groups.some(g => g.id === 'custom');
+    if (!sections.length) {
+      list.innerHTML = '<div class="empty">' + esc(t('noCli')) + '</div>';
+      return;
+    }
+    let html = '';
+    if (!anyAvailable) {
+      html += '<div class="empty" style="margin-bottom:.75rem">' + esc(t('noCliHist')) + '</div>';
+    }
+    for (const { g, items } of sections) {
+      const cls = g.available ? 'section' : 'section unavailable';
+      html += '<div class="' + cls + '" data-group="' + esc(g.id) + '">';
+      html += '<div class="section-head"><div>';
+      html += '<h2>' + esc(groupLabel(g)) + '</h2>';
+      html += '<div class="binaries">';
+      if (g.id === 'custom') {
+        html += esc(t('form.cliHint'));
+      } else if (g.available) {
+        html += esc(t('installed')) + esc(g.detected.join(', '));
+      } else {
+        html += esc(t('notInstalled')) + esc(g.profiles.join(', ')) + ')';
+      }
+      html += '</div></div><div>';
+      if (g.available) {
+        html += '<span class="badge">' + esc(t('badge.ok')) + '</span> ';
+        html += '<button class="secondary btn-add" data-group="' + esc(g.id) + '">' + esc(t('btn.add')) + '</button>';
+      } else {
+        html += '<span class="badge warn">' + esc(t('badge.no')) + '</span>';
+      }
+      html += '</div></div>';
+      if (!items.length) {
+        html += '<div class="section-empty">' + esc(g.available ? t('section.empty') : t('section.emptyOff')) + '</div>';
+      } else {
+        items.forEach(c => { html += renderCard(c); });
+      }
+      html += '</div>';
+    }
+    list.innerHTML = html;
+    bindCardActions(list);
+    list.querySelectorAll('.btn-add').forEach(btn => btn.addEventListener('click', () => {
+      const g = groups.find(x => x.id === btn.dataset.group);
+      if (g) openCreateForm(g);
+    }));
+  }
+
+  async function refresh(){
+    const [credList, profileGroups] = await Promise.all([
+      api('/api/credentials'),
+      api('/api/profiles'),
+    ]);
+    creds = credList;
+    groups = profileGroups;
+    render();
+  }
+
+  async function refreshConfig(){
+    try {
+      const cfg = await api('/api/config');
+      if (cfg.onboard) document.getElementById('onboard').classList.remove('hidden');
+      const left = Math.max(0, (cfg.idle_limit_secs || 900) - (cfg.idle_secs || 0));
+      const m = Math.floor(left / 60);
+      const s = String(left % 60).padStart(2,'0');
+      document.getElementById('idle').textContent = t('idle', { m: m, s: s });
+    } catch(_){}
+  }
+
+  function closeModals(){ document.querySelectorAll('.modal').forEach(m => m.classList.remove('show')); }
+
+  document.querySelectorAll('[data-close]').forEach(b => b.addEventListener('click', closeModals));
+  document.getElementById('search').addEventListener('input', render);
+
+  document.getElementById('skip-onboard').addEventListener('click', async () => {
+    await api('/api/onboard/complete', { method: 'POST', body: '{}' });
+    document.getElementById('onboard').classList.add('hidden');
+  });
+
+  document.getElementById('form-submit').addEventListener('click', async () => {
+    const err = document.getElementById('form-err');
+    err.textContent = '';
+    const extra = (document.getElementById('f-extra').value || '').trim();
+    const profile = effectiveProfile();
+    if (!profile) {
+      err.textContent = lang === 'zh' ? '请填写 CLI 命令名' : 'CLI binary name is required';
+      return;
+    }
+    const isSsh = profile === 'ssh';
+    const authType = document.getElementById('f-auth-type').value;
+    const body = {
+      profile: profile,
+      name: document.getElementById('f-name').value.trim(),
+      host: document.getElementById('f-host').value.trim(),
+      user: document.getElementById('f-user').value.trim() || null,
+      extra_args: extra ? splitArgs(extra) : [],
+      reveal_passphrase: document.getElementById('f-reveal').value || null
+    };
+    if (isSsh) {
+      body.auth_type = authType;
+      const pk = document.getElementById('f-private-key').value.trim();
+      if (pk) body.private_key = pk;
+      const kp = document.getElementById('f-key-passphrase').value;
+      if (kp) body.key_passphrase = kp;
+      const pw = document.getElementById('f-password').value;
+      if (pw) body.password = pw;
+    } else {
+      body.password = document.getElementById('f-password').value;
+    }
+    try {
+      await api('/api/credentials', { method: 'POST', body: JSON.stringify(body) });
+      document.getElementById('f-password').value = '';
+      document.getElementById('f-reveal').value = '';
+      document.getElementById('f-private-key').value = '';
+      document.getElementById('f-key-passphrase').value = '';
+      document.getElementById('f-key-file').value = '';
+      document.getElementById('f-cli').value = '';
+      document.getElementById('f-name').value = '';
+      document.getElementById('f-host').value = '';
+      document.getElementById('f-user').value = '';
+      document.getElementById('f-extra').value = '';
+      closeModals();
+      await api('/api/onboard/complete', { method: 'POST', body: '{}' });
+      document.getElementById('onboard').classList.add('hidden');
+      await refresh();
+    } catch(e) { err.textContent = e.message; }
+  });
+
+  document.getElementById('rotate-submit').addEventListener('click', async () => {
+    const err = document.getElementById('rotate-err');
+    err.textContent = '';
+    if (!rotateTarget) return;
+    const body = {
+      new_password: document.getElementById('r-password').value,
+      reveal_passphrase: document.getElementById('r-auth').value
+    };
+    try {
+      const p = encodeURIComponent(rotateTarget.profile);
+      const n = encodeURIComponent(rotateTarget.name);
+      await api('/api/credentials/' + p + '/' + n + '/password', { method: 'PUT', body: JSON.stringify(body) });
+      document.getElementById('r-password').value = '';
+      document.getElementById('r-auth').value = '';
+      closeModals();
+      await refresh();
+    } catch(e) { err.textContent = e.message; }
+  });
+
+  document.getElementById('delete-submit').addEventListener('click', async () => {
+    const err = document.getElementById('delete-err');
+    err.textContent = '';
+    if (!deleteTarget) return;
+    const body = { reveal_passphrase: document.getElementById('d-auth').value };
+    try {
+      const p = encodeURIComponent(deleteTarget.profile);
+      const n = encodeURIComponent(deleteTarget.name);
+      await api('/api/credentials/' + p + '/' + n, { method: 'DELETE', body: JSON.stringify(body) });
+      document.getElementById('d-auth').value = '';
+      closeModals();
+      await refresh();
+    } catch(e) { err.textContent = e.message; }
+  });
+
+  applyI18n();
+  refresh().catch(() => {
+    document.getElementById('list').innerHTML = '<div class="empty">' + esc(t('loadFail')) + '</div>';
+  });
+  refreshConfig();
+  setInterval(refreshConfig, 10000);
+})();
+</script>
+</body>
+</html>

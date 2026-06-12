@@ -1,0 +1,139 @@
+#!/usr/bin/env bash
+# brokr deploy — local only (copy to ./d; both ./d and ./r are gitignored).
+#
+# Usage:
+#   ./d version 0.2.0       Set semver and sync VERSION / Cargo.toml / npm / homebrew
+#   ./d build               Release build + strip binary
+#   ./d pack                Dist tarball + npm pack (scrub sensitive files)
+#   ./d npm                 Publish @techinone/brokr to npm (MCP market)
+#   ./d github              Tag vX.Y.Z and push to GitHub (triggers release CI)
+#   ./d brew [--wait]       Update homebrew/brokr.rb sha256 + push homebrew tap
+#   ./d brew --from-dist    Use local dist/ tarballs (before GitHub Release)
+#   ./d gitee               Push branch + tag to Gitee mirror
+#   ./d remotes             Ensure origin (GitHub) + gitee remotes
+#   ./d release 0.2.0       Full pipeline (add --skip-brew after GitHub CI)
+#   ./d release 0.2.0 --skip-npm
+#
+# Config (optional): .deploy.env
+#   GITHUB_REMOTE=origin          → https://github.com/Furowu/brokr.git
+#   GITEE_REMOTE=gitee            → https://gitee.com/furowu/brokr.git
+#   HOMEBREW_TAP_REMOTE=git@github.com:Furowu/homebrew-brokr.git
+#   HOMEBREW_TAP_DIR=../homebrew-brokr
+#   GITEE_BRANCH=main
+#   DEPLOY_ALLOW_DIRTY=1
+#
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck source=scripts/deploy-common.sh
+source "$ROOT/scripts/deploy-common.sh"
+
+load_deploy_env
+
+usage() {
+  sed -n '3,20p' "$0" | sed 's/^# \?//'
+  exit "${1:-0}"
+}
+
+cmd_version() {
+  local v="${1:?usage: ./d version X.Y.Z}"
+  sync_version "$v"
+}
+
+cmd_build() {
+  build_release
+}
+
+cmd_pack() {
+  pack_dist
+}
+
+cmd_npm() {
+  publish_npm
+}
+
+cmd_github() {
+  publish_github
+}
+
+cmd_gitee() {
+  publish_gitee
+}
+
+cmd_brew() {
+  update_homebrew_formula "$@"
+  publish_homebrew_tap
+}
+
+cmd_remotes() {
+  ensure_git_remotes
+}
+
+cmd_release() {
+  local v="${1:?usage: ./d release X.Y.Z [--skip-npm] [--skip-github] [--skip-gitee] [--skip-brew] [--brew-wait] [--no-commit]}"
+  shift
+  local skip_npm=0 skip_github=0 skip_gitee=0 skip_brew=0 no_commit=0 brew_wait=0
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --skip-npm) skip_npm=1 ;;
+      --skip-github) skip_github=1 ;;
+      --skip-gitee) skip_gitee=1 ;;
+      --skip-brew) skip_brew=1 ;;
+      --brew-wait) brew_wait=1 ;;
+      --no-commit) no_commit=1 ;;
+      *) die "unknown flag: $1" ;;
+    esac
+    shift
+  done
+
+  sync_version "$v"
+  if [[ "$no_commit" -eq 0 ]]; then
+    commit_version_bump "chore: release v${v}"
+  fi
+  build_release
+  pack_dist
+  if [[ "$skip_npm" -eq 0 ]]; then
+    publish_npm
+  fi
+  if [[ "$skip_github" -eq 0 ]]; then
+    publish_github
+  fi
+  if [[ "$skip_gitee" -eq 0 ]]; then
+    publish_gitee
+  fi
+  if [[ "$skip_brew" -eq 0 ]]; then
+    log "brew: run ./d brew --wait after GitHub Release CI finishes (or ./d release ... --brew-wait)"
+    if [[ "$brew_wait" -eq 1 ]]; then
+      update_homebrew_formula --wait
+      publish_homebrew_tap
+      git -C "$DEPLOY_ROOT" add homebrew/brokr.rb
+      if ! git -C "$DEPLOY_ROOT" diff --cached --quiet; then
+        git -C "$DEPLOY_ROOT" commit -m "chore: homebrew sha256 v${v}"
+        git -C "$DEPLOY_ROOT" push "$GITHUB_REMOTE" HEAD
+      fi
+    fi
+  fi
+  log "release v${v} complete"
+}
+
+main() {
+  local cmd="${1:-help}"
+  shift || true
+  case "$cmd" in
+    version)  cmd_version "$@" ;;
+    build)    cmd_build "$@" ;;
+    pack)     cmd_pack "$@" ;;
+    npm|mcp)  cmd_npm "$@" ;;
+    github|gh) cmd_github "$@" ;;
+    gitee)    cmd_gitee "$@" ;;
+    brew)     cmd_brew "$@" ;;
+    remotes)  cmd_remotes "$@" ;;
+    release)  cmd_release "$@" ;;
+    help|-h|--help) usage 0 ;;
+    *)
+      die "unknown command: $cmd (try ./d help)"
+      ;;
+  esac
+}
+
+main "$@"

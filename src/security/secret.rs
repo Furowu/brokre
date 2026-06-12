@@ -16,6 +16,17 @@ impl SecretBytes {
         &self.inner
     }
 
+    /// Run `f` on the secret bytes, then zeroize and clear the buffer before returning.
+    pub fn expose_then_zeroize<F, R>(mut self, f: F) -> R
+    where
+        F: FnOnce(&[u8]) -> R,
+    {
+        let r = f(&self.inner);
+        self.inner.zeroize();
+        self.inner.clear();
+        r
+    }
+
     pub fn len(&self) -> usize {
         self.inner.len()
     }
@@ -50,6 +61,17 @@ impl SecretString {
 
     pub fn expose(&self) -> &str {
         &self.inner
+    }
+
+    /// Run `f` on the secret string, then zeroize before returning.
+    pub fn expose_then_zeroize<F, R>(mut self, f: F) -> R
+    where
+        F: FnOnce(&str) -> R,
+    {
+        let r = f(&self.inner);
+        self.inner.zeroize();
+        self.inner.clear();
+        r
     }
 
     pub fn len(&self) -> usize {
@@ -88,6 +110,13 @@ mod tests {
         let dbg = format!("{:?}", s);
         assert!(!dbg.contains('\x01'));
         assert!(dbg.contains("len=3"));
+    }
+
+    #[test]
+    fn secret_string_expose_then_zeroize_len() {
+        let s = SecretString::new("hello".into());
+        let n = s.expose_then_zeroize(|t| t.len());
+        assert_eq!(n, 5);
     }
 
     #[test]

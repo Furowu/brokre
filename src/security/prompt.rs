@@ -7,9 +7,12 @@ pub fn prompt_passphrase(label: &str) -> Result<SecretString> {
     if !crate::security::tty::stdin_is_real_tty() {
         return Err(BrokrError::NoTty);
     }
-    let input =
-        rpassword::prompt_password(format!("{}: ", label)).map_err(|e| BrokrError::Cli(e.to_string()))?;
-    let input = input.trim_end_matches('\n').trim_end_matches('\r').to_string();
+    let input = rpassword::prompt_password(format!("{}: ", label))
+        .map_err(|e| BrokrError::Cli(e.to_string()))?;
+    let input = input
+        .trim_end_matches('\n')
+        .trim_end_matches('\r')
+        .to_string();
     Ok(SecretString::new(input))
 }
 
@@ -28,10 +31,7 @@ where
             thread::sleep(delay);
         }
     }
-    Err(BrokrError::Cli(format!(
-        "Failed after {} attempts",
-        max
-    )))
+    Err(BrokrError::Cli(format!("Failed after {} attempts", max)))
 }
 
 pub fn prompt_field(label: &str, secret: bool) -> Result<SecretString> {
@@ -45,10 +45,13 @@ pub fn prompt_field(label: &str, secret: bool) -> Result<SecretString> {
         let mut buf = String::new();
         std::io::stdin()
             .read_line(&mut buf)
-            .map_err(|e| BrokrError::Io(e))?;
+            .map_err(BrokrError::Io)?;
         Ok(buf)
     }
     .map_err(|e| BrokrError::Cli(e.to_string()))?;
-    let input = input.trim_end_matches('\n').trim_end_matches('\r').to_string();
+    let input = input
+        .trim_end_matches('\n')
+        .trim_end_matches('\r')
+        .to_string();
     Ok(SecretString::new(input))
 }

@@ -1,60 +1,180 @@
 # brokr — AI-safe Credential Broker
 
-`brokr` is a local credential broker that lets AI agents spawn connections to databases, SSH servers, and other CLI tools **without ever exposing plaintext secrets** to the AI process, shell history, or `ps` output.
+<!-- README-I18N:START -->
 
-## Why brokr?
+**English** | [简体中文](README.zh-CN.md)
 
-| Problem | Existing tool | brokr solution |
-|---|---|---|
-| Secrets in `ps` / `env` | `sshpass`, env exports | Secure injection via fd, tempfile, or ephemeral ssh-agent |
-| AI can read secrets | 1Password CLI exports to env | Double-factor reveal (TTY + passphrase) |
-| Unknown CLI tools | Hard-coded wrappers | Extensible TOML profile engine |
-| Audit tampering | None | HMAC-chained audit logs |
+<!-- README-I18N:END -->
 
-## Install
+`brokr` is a **local credential broker** for AI agents and humans. It wraps **any CLI on your `PATH`** — not only SSH or MySQL — and injects saved passwords at the prompt **without exposing plaintext** to the AI process, shell history, `ps`, or process environment.
+
+Developed by [Techinone](https://www.tio.tech) (成都同创合一科技有限公司).
+
+## CLI security (core)
+
+brokr is built around one rule: **secrets stay out of the AI's reach and out of observable process state.**
+
+| Layer | What brokr does |
+|-------|-----------------|
+| **No env / `ps` leakage** | Injection is PTY prompt-based — passwords are never passed via `-p`, `SSHPASS`, `MYSQL_PWD`, or exported env vars |
+| **Parent never holds plaintext** (Unix) | Saved passwords decrypt in a short-lived `brokr --internal-injector` child, written once to the PTY, then the child exits |
+| **AI cannot `reveal`** | `brokr reveal` requires a real TTY + master passphrase; unavailable in the web UI and **not exposed via MCP** |
+| **Vault at rest** | Per-field AES-256-GCM; DEK wrapped with OS keyring (Linux) or `~/.brokr/.master_kek` (macOS) + optional Argon2id reveal passphrase |
+| **MCP boundary** | MCP exposes metadata (`brokr_list`) and exec (`brokr_exec`) only — no passwords, session tokens, or `reveal` |
+| **Manage UI** | Binds `127.0.0.1` only; passwords are **write-only**; session token printed in your terminal, never returned to AI |
+| **Audit** | HMAC-chained JSONL; `brokr audit verify` detects tampering |
+| **OS hardening** | Core dumps disabled, ptrace checks (Linux), optional `mlockall` — see [docs/HARDENING.md](docs/HARDENING.md) |
+
+Full threat model: [SECURITY.md](SECURITY.md), [THREAT_MODEL.md](THREAT_MODEL.md).
+
+## Any CLI on `PATH` (generic by design)
+
+brokr is **not** a fixed list of database/SSH wrappers. The core model is:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/brokr/brokr/main/install.sh | bash
+brokr <any-cli-on-PATH> [args...]
 ```
 
-Or via Homebrew (macOS/Linux):
+First connection: run verbatim, capture the password you type at the prompt, offer to save as an alias.  
+Next time: `brokr <cli> <alias> …` auto-injects — AI and scripts only see the alias name.
+
+**Preset prompt patterns** ship for common tools (ssh, mysql, psql, redis-cli, ftp, clickhouse, git, docker, kubectl, sudo, …). **Everything else** uses a generic `password:` / `passphrase:` matcher — no code changes required.
 
 ```bash
-brew tap brokr/brokr
+brokr gsql prod-cluster -c "SELECT 1"    # any proprietary CLI on PATH
+brokr kubectl get pods                   # if your cluster CLI prompts for a password
+brokr my-internal-tool --host db.internal
+```
+
+Customize when needed:
+
+- `~/.brokr/prompts.toml` — per-binary prompt regex overrides
+- `~/.brokr/manage.toml` — custom sections in the manage UI (e.g. GaussDB, internal tools)
+
+Built-in manage UI tabs (when the binary is installed) include SSH, FTP, MySQL, PostgreSQL, Redis, ClickHouse, MinIO — convenience only; the **PTY wrapper works for any CLI**.
+
+## Install (MCP first — recommended for AI)
+
+The npm package [`@techinone/brokr`](https://www.npmjs.com/package/@techinone/brokr) is the MCP launcher for Cursor, Claude Code, and other MCP clients. It spawns the local `brokr mcp` server over stdio.
+
+### 1. Add brokr to your AI editor
+
+**Cursor** — `~/.cursor/mcp.json` or project `.cursor/mcp.json`:
+
+```json
+{
+  "mcpServers": {
+    "brokr": {
+      "command": "npx",
+      "args": ["-y", "@techinone/brokr"]
+    }
+  }
+}
+```
+
+**Claude Code** — project `.mcp.json`:
+
+```json
+{
+  "mcpServers": {
+    "brokr": {
+      "type": "stdio",
+      "command": "npx",
+      "args": ["-y", "@techinone/brokr"]
+    }
+  }
+}
+```
+
+Or via CLI:
+
+```bash
+claude mcp add --scope project brokr -- npx -y @techinone/brokr
+```
+
+Optional — install the launcher globally (avoids repeated `npx` downloads):
+
+```bash
+npm install -g @techinone/brokr
+```
+
+Then use `"command": "brokr-mcp"` in MCP config instead of `npx`.
+
+**No Node** — point MCP directly at the native binary:
+
+```json
+{ "command": "brokr", "args": ["mcp"] }
+```
+
+| MCP tool | Purpose |
+|----------|---------|
+| `brokr_list` | Saved aliases (metadata only — profile, name, host) |
+| `brokr_exec` | Run **any** saved CLI alias (`binary` + `args`) |
+| `brokr_setup` | Open manage UI in browser for the human to add creds |
+
+On first connect with an **empty vault**, brokr opens **manage** in your browser (`http://127.0.0.1:56777/?t=…`). Session tokens stay on localhost — never returned to the AI. Set `BROKR_MCP_NO_AUTO_OPEN=1` to disable auto-open.
+
+More detail: [packages/brokr-mcp/README.md](packages/brokr-mcp/README.md).
+
+### 2. Install the brokr CLI (required backend)
+
+The MCP launcher calls `brokr mcp` on your machine — install the CLI once:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Furowu/brokr/main/install.sh | bash
+```
+
+Or via Homebrew (macOS / Linux):
+
+```bash
+brew tap Furowu/brokr
 brew install brokr
 ```
 
 ## Quick Start
 
-### 1. Initialize a credential
+### Add credentials
+
+After CLI install, the manager opens on first run (`brokr manage --onboard --open`). Or anytime:
 
 ```bash
-brokr init prod-db
-# prompts for host, user, password...
-# performs trial login before encrypting
+brokr manage --open
 ```
 
-### 2. Use it (AI-safe)
+Or save on first interactive connection (any CLI):
 
 ```bash
-brokr exec mysql prod-db -- -e "SHOW TABLES"
-# or shorthand:
+brokr ssh root@10.0.0.1
+brokr my-tool --host internal.corp
+```
+
+### Use (AI-safe)
+
+```bash
 brokr mysql prod-db -e "SHOW TABLES"
+brokr ssh prod-bastion uname -a
+brokr <your-cli> <alias> [args...]
 ```
 
-### 3. List metadata (AI-friendly)
+### List metadata (safe for AI / scripts)
 
 ```bash
 brokr list --json
-# Only outputs profile, name, labels, host — never passwords
 ```
 
-### 4. Reveal (human-only)
+### Reveal / delete (human-only, real TTY)
 
 ```bash
 brokr reveal mysql prod-db --field password
-# Requires real TTY + master passphrase
+brokr rm ssh prod-bastion
 ```
+
+### Manage UI security
+
+- **127.0.0.1** only; session token in terminal
+- Passwords: create / rotate only — no read API
+- Delete / rotate require reveal passphrase (or `YES` for auto-saved records)
+- 15-minute idle timeout
 
 ## Architecture
 
@@ -65,53 +185,53 @@ brokr reveal mysql prod-db --field password
                       │
                       ▼
                ┌─────────────┐
-               │ Secure Inject│──▶ ssh / mysql / psql / redis-cli / mc
+               │  PTY + inj. │──▶ any CLI on PATH (ssh, mysql, gsql, …)
                └─────────────┘
 ```
 
-- **Double encryption**: Each secret is encrypted with a unique DEK. The DEK is wrapped separately for `exec` (OS keychain on Linux, file-backed on macOS) and `reveal` (passphrase-derived Argon2id key).
-- **Secure injection strategies**: Env (subprocess-only), Stdin, TempFile (0600 + unlink), SSH_ASKPASS, ephemeral ssh-agent, or custom profile-driven injection.
-- **Audit**: Every action is logged to an HMAC-chained JSONL file.
+- **Double encryption**: unique DEK per field; wrapped for `exec` and `reveal` separately.
+- **Vault metadata**: `profile`, `name`, `host_alias`, `saved_args` in cleartext beside ciphertext ([THREAT_MODEL.md](THREAT_MODEL.md) T3).
+- **SSH private keys**: `0600` temp file + `-i` for the session ([docs/HARDENING.md](docs/HARDENING.md)).
 
-## Built-in Connectors
+## Preset manage UI groups
 
-- `ssh` — password via SSH_ASKPASS, private key via ephemeral ssh-agent
-- `mysql` — `--defaults-extra-file` via secure tempfile
-- `postgres` — `PGPASSFILE` via secure tempfile
-- `clickhouse` — `--password-file` via secure tempfile
-- `redis` — `REDISCLI_AUTH` env (subprocess only)
-- `minio` — temporary `MC_CONFIG_DIR`
+Convenience tabs when the binary is on `PATH`:
 
-## Custom Profiles
+| Group | Binaries |
+|-------|----------|
+| SSH | `ssh`, `scp`, `sftp` (shared creds) |
+| FTP | `ftp`, `lftp` |
+| MySQL | `mysql`, `mariadb` |
+| PostgreSQL | `psql`, `postgres` |
+| Redis | `redis-cli`, `redis` |
+| ClickHouse | `clickhouse-client`, `clickhouse` |
+| MinIO | `mc`, `minio` |
 
-Create `~/.brokr/profiles/docker-registry.toml`:
+## Roadmap
 
-```toml
-[profile]
-name = "docker-registry"
-display = "Docker Registry"
-binary = "docker"
+**Today:** generic PTY wrapper + `manage.toml` groups + `prompts.toml` overrides.
 
-[fields]
-host     = { prompt = "Registry host", required = true }
-username = { prompt = "Username", required = true }
-password = { prompt = "Password", secret = true, required = true }
+**Planned:** full TOML connector profiles under `~/.brokr/profiles/` with per-tool injection strategies.
 
-[injection]
-strategy = "stdin"
-args     = ["login", "{{host}}", "-u", "{{username}}", "--password-stdin"]
+## Piped stdin and OpenSSH sharing
 
-[verify]
-args             = ["login", "{{host}}", "-u", "{{username}}", "--password-stdin"]
-expect_exit_code = 0
+- **Piped stdin** (`tar | brokr ssh host 'tar xf -'`): pipe data forwards only after injection completes.
+- **OpenSSH family** (`ssh`, `scp`, `sftp`): shared saved credentials when the host matches. Interactive save required first (TTY).
+
+## Development
+
+```bash
+cargo test    # unit tests in src/ only (no tests/ integration suite in this repo)
+cargo clippy --all-targets --all-features -- -D warnings
+cargo build --release   # binary: target/release/brokr
 ```
 
-Then `brokr init --profile docker-registry myreg`.
-
-## Security
-
-See [SECURITY.md](SECURITY.md) and [THREAT_MODEL.md](THREAT_MODEL.md).
+Release version is declared in [`VERSION`](VERSION) (also reflected in `Cargo.toml` and `packages/brokr-mcp/package.json`). Official binaries and npm packages are published by [TechinOne](https://www.tio.tech) via GitHub Releases and CI — not part of this open-source tree.
 
 ## License
 
-MIT
+MIT — see [LICENSE](LICENSE).
+
+---
+
+[Techinone](https://www.tio.tech) · 成都同创合一科技有限公司

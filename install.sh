@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-REPO="brokr/brokr"
+REPO="Furowu/brokr"
 INSTALL_DIR="/usr/local/bin"
 
 OS=$(uname -s | tr '[:upper:]' '[:lower:]')
@@ -59,3 +59,15 @@ if [ "$OS" = "darwin" ]; then
 fi
 
 echo "brokr installed successfully."
+echo
+echo "Opening credential manager (background)..."
+BROKR_HOME="${HOME}/.brokr"
+mkdir -p "${BROKR_HOME}"
+# Prevent a duplicate wizard if the user runs brokr immediately after install.
+touch "${BROKR_HOME}/.onboard_spawned"
+if brokr manage --onboard --open & then
+    sleep 2
+    echo "If the browser did not open, check the URL printed above or run: brokr manage --onboard --open"
+else
+    echo "Run: brokr manage --onboard --open"
+fi

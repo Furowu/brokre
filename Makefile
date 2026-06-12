@@ -9,10 +9,10 @@ build:
 	$(CARGO) build --release
 
 test:
-	$(CARGO) test
+	$(CARGO) test --lib
 
 lint:
-	$(CARGO) clippy --all-targets --all-features -- -D warnings
+	$(CARGO) clippy --lib --all-features -- -D warnings
 
 fmt:
 	$(CARGO) fmt

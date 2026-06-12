@@ -50,7 +50,7 @@ fn get_or_init(account: &str) -> Result<[u8; 32]> {
     //    environments where the Security Agent dialog cannot be displayed.
     if allow_file_fallback() {
         if path.exists() {
-            let contents = std::fs::read_to_string(&path).map_err(|e| BrokrError::Io(e))?;
+            let contents = std::fs::read_to_string(&path).map_err(BrokrError::Io)?;
             return decode_key(&contents);
         }
         // File doesn't exist — generate a fresh key and persist to file.
@@ -59,7 +59,7 @@ fn get_or_init(account: &str) -> Result<[u8; 32]> {
         if let Some(parent) = path.parent() {
             let _ = std::fs::create_dir_all(parent);
         }
-        std::fs::write(&path, &b64).map_err(|e| BrokrError::Io(e))?;
+        std::fs::write(&path, &b64).map_err(BrokrError::Io)?;
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -91,7 +91,7 @@ fn get_or_init(account: &str) -> Result<[u8; 32]> {
         if let Some(parent) = path.parent() {
             let _ = std::fs::create_dir_all(parent);
         }
-        std::fs::write(&path, &b64).map_err(|e| BrokrError::Io(e))?;
+        std::fs::write(&path, &b64).map_err(BrokrError::Io)?;
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -103,7 +103,8 @@ fn get_or_init(account: &str) -> Result<[u8; 32]> {
     Err(BrokrError::Vault(
         "Platform secure storage failure: OS keychain unavailable. \
          On macOS file-based storage is used by default; \
-         on Linux set BROKR_ALLOW_FILE_KEYCHAIN=1 to opt-in.".into(),
+         on Linux set BROKR_ALLOW_FILE_KEYCHAIN=1 to opt-in."
+            .into(),
     ))
 }
 

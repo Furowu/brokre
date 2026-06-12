@@ -3,6 +3,11 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+fn default_reveal_protected() -> bool {
+    // Legacy records without the field require a real reveal passphrase (safe default).
+    true
+}
+
 /// A single saved credential. The PTY-pass-through architecture means we
 /// no longer track per-field metadata or injection strategy — every record
 /// just carries the secret payload and enough context to recall it later.
@@ -26,6 +31,9 @@ pub struct SecretRecord {
     pub updated_at: DateTime<Utc>,
     pub last_used_at: Option<DateTime<Utc>>,
     pub schema_version: u8,
+    /// When true, delete/rotate require the real reveal passphrase (`YES` not accepted).
+    #[serde(default = "default_reveal_protected")]
+    pub reveal_protected: bool,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

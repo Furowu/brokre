@@ -10,6 +10,7 @@ use tracing_subscriber::FmtSubscriber;
 ///
 ///   brokr ssh root@host           # first time: type password; offered to save.
 ///   brokr ssh prod-bastion        # next time: alias auto-injects the password.
+///   brokr ssh prod-bastion uptime # one-shot remote command via saved alias.
 ///   brokr list                    # show saved aliases (metadata only).
 ///   brokr rm ssh prod-bastion     # delete (requires passphrase or YES).
 ///   brokr reveal ssh prod-bastion # show plaintext (TTY + passphrase required).
@@ -51,6 +52,17 @@ enum Commands {
         #[command(subcommand)]
         action: AuditCmd,
     },
+    /// Local web UI for credential management (metadata read, password write-only).
+    Manage {
+        /// First-run onboarding banner.
+        #[arg(long)]
+        onboard: bool,
+        /// Open the default browser to the manage URL.
+        #[arg(long)]
+        open: bool,
+    },
+    /// Model Context Protocol server for AI assistants (Cursor, Claude Code, …).
+    Mcp,
     /// Any other word is treated as `<cli> [args...]` — the transparent
     /// pass-through that's the whole point of brokr.
     #[command(external_subcommand)]
@@ -70,7 +82,24 @@ fn main() {
             .finish(),
     );
 
+    #[cfg(unix)]
+    if std::env::args().nth(1).as_deref() == Some("--internal-injector") {
+        brokr::cli::injector::run_internal_injector_main();
+    }
+
+    #[cfg(unix)]
+    {
+        let mode = if cfg!(debug_assertions) {
+            brokr::security::hardening::HardeningMode::WarnOnly
+        } else {
+            brokr::security::hardening::HardeningMode::Enforce
+        };
+        let _ = brokr::security::hardening::apply_hardening_cached(mode);
+    }
+
     let cli = Cli::parse();
+
+    maybe_spawn_onboard(&cli.command);
 
     let res = match cli.command {
         Some(Commands::List {
@@ -81,10 +110,16 @@ fn main() {
             json,
         }) => cli::list::run(profile, label, host, name_glob, json),
         Some(Commands::Rm { profile, name }) => cli::rm::run(profile, name),
-        Some(Commands::Reveal { profile, name, field }) => cli::reveal::run(profile, name, field),
+        Some(Commands::Reveal {
+            profile,
+            name,
+            field,
+        }) => cli::reveal::run(profile, name, field),
         Some(Commands::Audit { action }) => match action {
             AuditCmd::Verify => cli::audit::run_verify(),
         },
+        Some(Commands::Manage { onboard, open }) => cli::manage::run(onboard, open),
+        Some(Commands::Mcp) => cli::mcp::run(),
         Some(Commands::External(raw)) => {
             // raw[0] is the binary name (e.g. "ssh"), raw[1..] are args.
             let mut it = raw.into_iter();
@@ -111,8 +146,30 @@ fn main() {
     }
 }
 
+fn maybe_spawn_onboard(command: &Option<Commands>) {
+    if matches!(command, Some(Commands::Manage { .. })) {
+        return;
+    }
+    if brokr::manage::onboard::is_onboard_complete() {
+        return;
+    }
+    if brokr::manage::onboard::was_onboard_spawned() {
+        return;
+    }
+    if !brokr::security::tty::stdin_is_real_tty() {
+        return;
+    }
+    if brokr::manage::onboard::mark_onboard_spawned().is_err() {
+        return;
+    }
+    cli::manage::spawn_onboard_background();
+}
+
 fn print_usage() {
-    eprintln!("brokr {} — AI-safe credential broker", env!("CARGO_PKG_VERSION"));
+    eprintln!(
+        "brokr {} — AI-safe credential broker",
+        env!("CARGO_PKG_VERSION")
+    );
     eprintln!();
     eprintln!("Usage:");
     eprintln!("  brokr <cli> [args...]              run any CLI through brokr");
@@ -120,9 +177,13 @@ fn print_usage() {
     eprintln!("  brokr rm <profile> <alias>         delete an alias");
     eprintln!("  brokr reveal <profile> <alias>     show stored plaintext (TTY + passphrase)");
     eprintln!("  brokr audit verify                 verify tamper-evident log");
+    eprintln!("  brokr manage [--onboard] [--open]    local credential manager (web UI)");
+    eprintln!("  brokr mcp                          MCP server for Cursor / Claude Code");
     eprintln!();
     eprintln!("Examples:");
     eprintln!("  brokr ssh root@10.0.0.1            first-time, type password, then save");
     eprintln!("  brokr ssh prod                     reuse saved alias");
+    eprintln!("  brokr ssh prod uname -a            one-shot remote command via alias");
+    eprintln!("  brokr mysql prod-db -e \"SHOW TABLES\"  one-shot SQL via alias");
     eprintln!("  brokr mysql -h db -u root          first-time mysql login");
 }

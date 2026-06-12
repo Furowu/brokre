@@ -18,6 +18,11 @@ pub fn run(profile: String, name: String, field: Option<String>) -> Result<()> {
             exit: None,
             dur_ms: None,
             args_redacted: vec![],
+            hardening: None,
+            injector_pid: None,
+            injector_dur_ms: None,
+            injector_outcome: None,
+            hmac_version: None,
             prev_hmac: None,
             hmac: None,
         };
@@ -67,6 +72,11 @@ pub fn run(profile: String, name: String, field: Option<String>) -> Result<()> {
         exit: None,
         dur_ms: None,
         args_redacted: vec![],
+        hardening: None,
+        injector_pid: None,
+        injector_dur_ms: None,
+        injector_outcome: None,
+        hmac_version: None,
         prev_hmac: None,
         hmac: None,
     };
