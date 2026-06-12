@@ -18,7 +18,7 @@
 # Config (optional): .deploy.env
 #   GITHUB_REMOTE=origin          → https://github.com/Furowu/brokr.git
 #   GITEE_REMOTE=gitee            → https://gitee.com/furowu/brokr.git
-#   HOMEBREW_TAP_REMOTE=git@github.com:Furowu/homebrew-brokr.git
+#   HOMEBREW_TAP_REMOTE=https://github.com/Furowu/homebrew-brokr.git
 #   HOMEBREW_TAP_DIR=../homebrew-brokr
 #   GITEE_BRANCH=main
 #   DEPLOY_ALLOW_DIRTY=1

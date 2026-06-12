@@ -8,7 +8,7 @@ CARGO_TOML="$DEPLOY_ROOT/Cargo.toml"
 MCP_PKG="$DEPLOY_ROOT/packages/brokr-mcp/package.json"
 HOMEBREW_RB="$DEPLOY_ROOT/homebrew/brokr.rb"
 HOMEBREW_TAP_DIR="${HOMEBREW_TAP_DIR:-$DEPLOY_ROOT/../homebrew-brokr}"
-HOMEBREW_TAP_REMOTE="${HOMEBREW_TAP_REMOTE:-git@github.com:Furowu/homebrew-brokr.git}"
+HOMEBREW_TAP_REMOTE="${HOMEBREW_TAP_REMOTE:-https://github.com/Furowu/homebrew-brokr.git}"
 HOMEBREW_RELEASE_BASE="${HOMEBREW_RELEASE_BASE:-https://github.com/Furowu/brokr/releases/download}"
 MCP_DIR="$DEPLOY_ROOT/packages/brokr-mcp"
 DIST_DIR="$DEPLOY_ROOT/dist"
@@ -63,7 +63,7 @@ load_deploy_env() {
   GITEE_URL="${GITEE_URL:-https://gitee.com/furowu/brokr.git}"
   GITEE_BRANCH="${GITEE_BRANCH:-main}"
   HOMEBREW_TAP_DIR="${HOMEBREW_TAP_DIR:-$DEPLOY_ROOT/../homebrew-brokr}"
-  HOMEBREW_TAP_REMOTE="${HOMEBREW_TAP_REMOTE:-git@github.com:Furowu/homebrew-brokr.git}"
+  HOMEBREW_TAP_REMOTE="${HOMEBREW_TAP_REMOTE:-https://github.com/Furowu/homebrew-brokr.git}"
   HOMEBREW_RELEASE_BASE="${HOMEBREW_RELEASE_BASE:-https://github.com/Furowu/brokr/releases/download}"
 }
 
@@ -466,7 +466,19 @@ publish_homebrew_tap() {
   tap_dir="$HOMEBREW_TAP_DIR"
   if [[ ! -d "$tap_dir/.git" ]]; then
     log "cloning homebrew tap → $tap_dir"
-    git clone "$HOMEBREW_TAP_REMOTE" "$tap_dir"
+    if ! git clone "$HOMEBREW_TAP_REMOTE" "$tap_dir" 2>"$tap_dir.clone.err"; then
+      if grep -qi 'not found' "$tap_dir.clone.err" 2>/dev/null; then
+        rm -f "$tap_dir.clone.err"
+        die "homebrew tap repo missing: $HOMEBREW_TAP_REMOTE
+Create an empty public repo named homebrew-brokr under Furowu, then rerun ./d brew
+  https://github.com/new?name=homebrew-brokr
+Or skip for now: ./d release X.Y.Z --skip-brew"
+      fi
+      cat "$tap_dir.clone.err" >&2
+      rm -f "$tap_dir.clone.err"
+      die "homebrew tap clone failed ($HOMEBREW_TAP_REMOTE) — check URL/auth in .deploy.env"
+    fi
+    rm -f "$tap_dir.clone.err"
   fi
   git -C "$tap_dir" pull --rebase origin main 2>/dev/null \
     || git -C "$tap_dir" pull --rebase origin master 2>/dev/null \
@@ -476,7 +488,7 @@ publish_homebrew_tap() {
   mkdir -p "$(dirname "$formula_dest")"
   cp "$HOMEBREW_RB" "$formula_dest"
 
-  if git -C "$tap_dir" diff --quiet && git -C "$tap_dir" diff --cached --quiet; then
+  if [[ -z "$(git -C "$tap_dir" status --porcelain)" ]]; then
     log "homebrew tap unchanged (already v$v?)"
     return 0
   fi
