@@ -111,6 +111,7 @@ pub fn acquire_start_lock() -> Result<ManageStartLock> {
     let file = OpenOptions::new()
         .write(true)
         .create(true)
+        .truncate(true)
         .open(&path)
         .map_err(BrokrError::Io)?;
     #[cfg(unix)]

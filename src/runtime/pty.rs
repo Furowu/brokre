@@ -97,15 +97,11 @@ fn field_for_prompt(window: &[u8], available: &[String]) -> Option<String> {
         .map(|b| b.to_ascii_lowercase())
         .collect::<Vec<_>>();
     let text = String::from_utf8_lossy(&lower);
-    if text.contains("passphrase") {
-        if available.iter().any(|f| f == "key_passphrase") {
-            return Some("key_passphrase".into());
-        }
+    if text.contains("passphrase") && available.iter().any(|f| f == "key_passphrase") {
+        return Some("key_passphrase".into());
     }
-    if text.contains("password") {
-        if available.iter().any(|f| f == "password") {
-            return Some("password".into());
-        }
+    if text.contains("password") && available.iter().any(|f| f == "password") {
+        return Some("password".into());
     }
     if available.len() == 1 {
         return Some(available[0].clone());

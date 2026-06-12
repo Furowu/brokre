@@ -9,21 +9,25 @@ use chrono::Utc;
 use std::collections::BTreeMap;
 use uuid::Uuid;
 
+struct RevealWrap {
+    kek: [u8; 32],
+    salt: [u8; 16],
+    protected: bool,
+}
+
 /// Common record construction and vault insertion.
-pub fn insert_record(
+fn insert_record(
     store: &VaultStore,
     profile: &str,
     args: &[String],
     password: SecretString,
     alias: &str,
-    reveal_kek: &[u8; 32],
-    reveal_salt: [u8; 16],
-    reveal_protected: bool,
+    reveal: RevealWrap,
 ) -> Result<()> {
     let master_kek = get_or_init_master_kek()?;
     let mut fields: BTreeMap<String, SecretString> = BTreeMap::new();
     fields.insert("password".into(), password);
-    let crypto = encrypt_record(&fields, &master_kek, reveal_kek, reveal_salt);
+    let crypto = encrypt_record(&fields, &master_kek, &reveal.kek, reveal.salt);
 
     let host_alias = infer_host_alias(profile, args);
     let record = SecretRecord {
@@ -40,7 +44,7 @@ pub fn insert_record(
         updated_at: Utc::now(),
         last_used_at: None,
         schema_version: 1,
-        reveal_protected,
+        reveal_protected: reveal.protected,
     };
     store.insert(record)?;
     eprintln!("brokr: ✓ saved as {}/{}", profile, alias);
@@ -150,9 +154,11 @@ pub fn auto_save(
         args,
         password,
         alias,
-        &reveal_kek,
-        reveal_salt,
-        false,
+        RevealWrap {
+            kek: reveal_kek,
+            salt: reveal_salt,
+            protected: false,
+        },
     )
 }
 
@@ -184,9 +190,11 @@ pub fn save_with_reveal_prompt(
         args,
         password,
         alias,
-        &reveal_kek,
-        reveal_salt,
-        reveal_protected,
+        RevealWrap {
+            kek: reveal_kek,
+            salt: reveal_salt,
+            protected: reveal_protected,
+        },
     )
 }
 
@@ -511,11 +519,7 @@ pub fn connection_token_index(profile: &str, args: &[String], host: &str) -> Opt
                 }
             }
         "mysql" | "mariadb" | "psql" | "postgres" | "redis" | "redis-cli"
-        | "clickhouse" | "clickhouse-client" => {
-            if a == host {
-                return Some(i);
-            }
-        }
+        | "clickhouse" | "clickhouse-client" if a == host => return Some(i),
             _ => {}
         }
     }
