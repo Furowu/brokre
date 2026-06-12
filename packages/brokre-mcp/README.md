@@ -21,7 +21,9 @@ Any tool with **stdio MCP** support can use brokre — configure `npx -y brokre@
 
 ## Cursor
 
-Add to `~/.cursor/mcp.json` or `.cursor/mcp.json`:
+**One-click install:** [Install brokre in Cursor](cursor://anysphere.cursor-deeplink/mcp/install?name=brokre&config=eyJicm9rcmUiOnsiY29tbWFuZCI6Im5weCIsImFyZ3MiOlsiLXkiLCJicm9rcmVAbGF0ZXN0Il19fQ==)
+
+Or add to `~/.cursor/mcp.json` or `.cursor/mcp.json`:
 
 ```json
 {

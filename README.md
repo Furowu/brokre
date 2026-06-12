@@ -59,7 +59,11 @@ The npm package [`brokre`](https://www.npmjs.com/package/brokre) is the MCP laun
 
 ### 1. Add brokre to your AI editor
 
-**Cursor** — `~/.cursor/mcp.json` or project `.cursor/mcp.json`:
+**Cursor** — one-click install (opens Cursor and adds the MCP server):
+
+[Install brokre in Cursor](cursor://anysphere.cursor-deeplink/mcp/install?name=brokre&config=eyJicm9rcmUiOnsiY29tbWFuZCI6Im5weCIsImFyZ3MiOlsiLXkiLCJicm9rcmVAbGF0ZXN0Il19fQ==)
+
+Or add manually to `~/.cursor/mcp.json` or project `.cursor/mcp.json`:
 
 ```json
 {
@@ -71,6 +75,8 @@ The npm package [`brokre`](https://www.npmjs.com/package/brokre) is the MCP laun
   }
 }
 ```
+
+Regenerate the install link after config changes: `node scripts/generate-cursor-install-link.js`
 
 **Claude Code** — project `.mcp.json`:
 
@@ -111,6 +117,8 @@ On first connect with an **empty vault**, brokre opens **manage** in your browse
 **No separate CLI install required**: `npx -y brokre@latest` downloads or upgrades `~/.brokre/bin/brokre` from GitHub Releases when needed (Node 18+), including when an older `brokre` is on `PATH`. Disable auto-download: `BROKRE_SKIP_AUTO_INSTALL=1`; pin a binary: `BROKRE_BIN=/path/to/brokre`.
 
 More detail: [packages/brokre-mcp/README.md](packages/brokre-mcp/README.md).
+
+[MCP Registry](https://registry.modelcontextprotocol.io) metadata: `io.github.Furowu/brokre` — published automatically with `./d npm` / `./d release` (or `./d registry` after npm; set `BROKRE_SKIP_MCP_REGISTRY=1` to skip).
 
 ### 2. Install the brokre CLI (optional — MCP can auto-download)
 

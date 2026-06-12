@@ -2,7 +2,7 @@
   "mcpServers": {
     "brokre": {
       "command": "npx",
-      "args": ["-y", "brokre"]
+      "args": ["-y", "brokre@latest"]
     }
   }
 }

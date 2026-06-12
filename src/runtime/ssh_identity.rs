@@ -108,6 +108,12 @@ fn openssh_option_consumes_next(arg: &str) -> bool {
     false
 }
 
+/// Connection target token (`user@host` / `host`) from saved OpenSSH argv.
+pub fn openssh_connection_target(argv: &[String]) -> Option<String> {
+    let idx = connection_target_index(argv);
+    argv.get(idx).cloned()
+}
+
 /// Index of the connection target (`user@host` / `host`) in a saved OpenSSH argv.
 fn connection_target_index(argv: &[String]) -> usize {
     let mut i = 0;

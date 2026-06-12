@@ -6,6 +6,8 @@ DEPLOY_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 VERSION_FILE="$DEPLOY_ROOT/VERSION"
 CARGO_TOML="$DEPLOY_ROOT/Cargo.toml"
 MCP_PKG="$DEPLOY_ROOT/packages/brokre-mcp/package.json"
+MCP_REGISTRY_SERVER_JSON="$DEPLOY_ROOT/server.json"
+MCP_PUBLISHER_CACHE="$DEPLOY_ROOT/.cache/mcp-publisher"
 HOMEBREW_RB="$DEPLOY_ROOT/homebrew/brokre.rb"
 HOMEBREW_TAP_DIR="${HOMEBREW_TAP_DIR:-$DEPLOY_ROOT/../homebrew-brokre}"
 HOMEBREW_TAP_REMOTE="${HOMEBREW_TAP_REMOTE:-https://github.com/Furowu/homebrew-brokre.git}"
@@ -123,6 +125,17 @@ sync_version() {
       j.version = v;
       fs.writeFileSync(p, JSON.stringify(j, null, 2) + '\n');
     " "$MCP_PKG" "$v"
+    if [[ -f "$MCP_REGISTRY_SERVER_JSON" ]]; then
+      node -e "
+        const fs = require('fs');
+        const p = process.argv[1];
+        const v = process.argv[2];
+        const j = JSON.parse(fs.readFileSync(p, 'utf8'));
+        j.version = v;
+        if (Array.isArray(j.packages) && j.packages[0]) j.packages[0].version = v;
+        fs.writeFileSync(p, JSON.stringify(j, null, 2) + '\n');
+      " "$MCP_REGISTRY_SERVER_JSON" "$v"
+    fi
   else
     die "node required to sync packages/brokre-mcp/package.json"
   fi
@@ -132,7 +145,7 @@ sync_version() {
     sed_inplace "s|github.com/[^/]*/brokre/releases/download/v[0-9.]*|github.com/Furowu/brokre/releases/download/v${v}|g" "$HOMEBREW_RB"
   fi
 
-  log "version synced → $v (VERSION, Cargo.toml, brokre-mcp, homebrew)"
+  log "version synced → $v (VERSION, Cargo.toml, brokre-mcp, server.json, homebrew)"
 }
 
 assert_clean_git() {
@@ -272,6 +285,39 @@ verify_release_assets() {
   log "all ${#RELEASE_TARGETS[@]} GitHub release assets verified for v${v}"
 }
 
+ensure_mcp_publisher() {
+  if command -v mcp-publisher >/dev/null 2>&1; then
+    printf '%s\n' mcp-publisher
+    return 0
+  fi
+  if [[ -x "$MCP_PUBLISHER_CACHE" ]]; then
+    printf '%s\n' "$MCP_PUBLISHER_CACHE"
+    return 0
+  fi
+  local os arch url
+  mkdir -p "$(dirname "$MCP_PUBLISHER_CACHE")"
+  os=$(uname -s | tr '[:upper:]' '[:lower:]')
+  arch=$(uname -m)
+  [[ "$arch" == "x86_64" ]] && arch=amd64
+  [[ "$arch" == "aarch64" ]] && arch=arm64
+  url="https://github.com/modelcontextprotocol/registry/releases/latest/download/mcp-publisher_${os}_${arch}.tar.gz"
+  log "downloading mcp-publisher from $url"
+  curl -fsSL "$url" | tar xz -C "$(dirname "$MCP_PUBLISHER_CACHE")" mcp-publisher
+  chmod +x "$MCP_PUBLISHER_CACHE"
+  printf '%s\n' "$MCP_PUBLISHER_CACHE"
+}
+
+publish_mcp_registry() {
+  local v publisher
+  [[ -f "$MCP_REGISTRY_SERVER_JSON" ]] || die "missing $MCP_REGISTRY_SERVER_JSON"
+  v=$(read_version)
+  publisher=$(ensure_mcp_publisher)
+  log "publishing io.github.Furowu/brokre@$v to MCP Registry..."
+  (cd "$DEPLOY_ROOT" && "$publisher" publish) \
+    || die "mcp-publisher publish failed — run: $publisher login github"
+  log "MCP Registry publish done (verify: curl \"https://registry.modelcontextprotocol.io/v0.1/servers?search=io.github.Furowu/brokre\")"
+}
+
 publish_npm() {
   local v
   v=$(read_version)
@@ -281,6 +327,11 @@ publish_npm() {
   log "publishing brokre@$v to npm..."
   (cd "$MCP_DIR" && npm publish --access public)
   log "npm publish done"
+  if [[ "${BROKRE_SKIP_MCP_REGISTRY:-}" != "1" ]]; then
+    publish_mcp_registry
+  else
+    log "skip MCP Registry (BROKRE_SKIP_MCP_REGISTRY=1)"
+  fi
 }
 
 publish_github() {
@@ -508,7 +559,7 @@ commit_version_bump() {
   local v msg
   v=$(read_version)
   msg="${1:-chore: release v${v}}"
-  git -C "$DEPLOY_ROOT" add VERSION Cargo.toml packages/brokre-mcp/package.json homebrew/brokre.rb
+  git -C "$DEPLOY_ROOT" add VERSION Cargo.toml packages/brokre-mcp/package.json server.json homebrew/brokre.rb
   if git -C "$DEPLOY_ROOT" diff --cached --quiet; then
     log "version already at v$v (nothing to commit)"
     return 0

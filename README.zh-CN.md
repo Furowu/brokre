@@ -59,7 +59,11 @@ npm 包 [`brokre`](https://www.npmjs.com/package/brokre) 是面向 Cursor、Clau
 
 ### 1. 将 brokre 接入 AI 编辑器
 
-**Cursor** — `~/.cursor/mcp.json` 或项目 `.cursor/mcp.json`：
+**Cursor** — 一键安装（在 Cursor 中打开并添加 MCP 服务器）：
+
+[在 Cursor 中安装 brokre](cursor://anysphere.cursor-deeplink/mcp/install?name=brokre&config=eyJicm9rcmUiOnsiY29tbWFuZCI6Im5weCIsImFyZ3MiOlsiLXkiLCJicm9rcmVAbGF0ZXN0Il19fQ==)
+
+或手动写入 `~/.cursor/mcp.json` 或项目 `.cursor/mcp.json`：
 
 ```json
 {
@@ -71,6 +75,8 @@ npm 包 [`brokre`](https://www.npmjs.com/package/brokre) 是面向 Cursor、Clau
   }
 }
 ```
+
+配置变更后重新生成安装链接：`node scripts/generate-cursor-install-link.js`
 
 **Claude Code** — 项目 `.mcp.json`：
 
@@ -111,6 +117,8 @@ claude mcp add --scope project brokre -- npx -y brokre@latest
 **无需单独安装 CLI**：`npx -y brokre@latest` 会在需要时从 GitHub Release 下载或升级 `~/.brokre/bin/brokre`（需 Node 18+），即使 `PATH` 上已有旧版也会自动更新。禁用自动下载：`BROKRE_SKIP_AUTO_INSTALL=1`；固定二进制：`BROKRE_BIN=/path/to/brokre`。
 
 更多说明：[packages/brokre-mcp/README.md](packages/brokre-mcp/README.md)。
+
+[MCP Registry](https://registry.modelcontextprotocol.io) 元数据 ID：`io.github.Furowu/brokre` — 执行 `./d npm` / `./d release` 时自动发布（或 npm 后单独 `./d registry`；设 `BROKRE_SKIP_MCP_REGISTRY=1` 可跳过）。
 
 ### 2. 安装 brokre CLI（可选 — MCP 可自动下载）
 

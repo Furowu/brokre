@@ -13,6 +13,9 @@
 /tmp/
 /tests/
 
+# mcp-publisher cache (./d registry)
+/.cache/
+
 # Local machine / dev artifacts (do not commit)
 /hosts
 /r

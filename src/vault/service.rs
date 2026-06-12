@@ -496,6 +496,60 @@ pub fn suggest_name(profile: &str, args: &[String]) -> String {
     "unnamed".into()
 }
 
+/// Host or alias token from an scp/sftp remote endpoint (`host:path` / `user@host:path`).
+pub fn scp_remote_host_token(arg: &str) -> Option<String> {
+    if arg.starts_with('-') {
+        return None;
+    }
+    if let Some((_user, rest)) = arg.split_once('@') {
+        let host = rest.split(':').next().unwrap_or(rest);
+        let (h, _) = parse_host_port(host);
+        return Some(h);
+    }
+    if arg.starts_with('[') {
+        if let Some(end) = arg.find("]:") {
+            return Some(format!("[{}]", &arg[1..end]));
+        }
+    }
+    if let Some((prefix, path)) = arg.split_once(':') {
+        if !prefix.is_empty() && !path.is_empty() {
+            let (h, _) = parse_host_port(prefix);
+            return Some(h);
+        }
+    }
+    None
+}
+
+/// Remote path suffix from an scp/sftp endpoint arg, if present.
+pub fn scp_remote_path_suffix(arg: &str) -> Option<&str> {
+    if arg.starts_with('-') {
+        return None;
+    }
+    if let Some(idx) = arg.find("]:") {
+        let path = &arg[idx + 2..];
+        if !path.is_empty() {
+            return Some(path);
+        }
+    }
+    if let Some((_prefix, path)) = arg.split_once(':') {
+        if !path.is_empty() {
+            return Some(path);
+        }
+    }
+    None
+}
+
+/// Replace alias or host in a remote scp/sftp arg with the saved connection target.
+pub fn rewrite_scp_remote_spec(saved_args: &[String], remote_arg: &str) -> String {
+    let Some(target) = crate::runtime::ssh_identity::openssh_connection_target(saved_args) else {
+        return remote_arg.to_string();
+    };
+    match scp_remote_path_suffix(remote_arg) {
+        Some(path) => format!("{}:{}", target, path),
+        None => target,
+    }
+}
+
 /// Index of the arg that identifies the connection target for `host`.
 pub fn connection_token_index(profile: &str, args: &[String], host: &str) -> Option<usize> {
     let bin = profile.rsplit('/').next().unwrap_or(profile);
@@ -512,6 +566,10 @@ pub fn connection_token_index(profile: &str, args: &[String], host: &str) -> Opt
                         rest
                     };
                     if h == host {
+                        return Some(i);
+                    }
+                } else if matches!(bin, "scp" | "sftp") {
+                    if scp_remote_host_token(a).as_deref() == Some(host) {
                         return Some(i);
                     }
                 } else if a == host {
@@ -544,6 +602,14 @@ pub fn infer_host(profile: &str, args: &[String]) -> Option<String> {
                     let (host, _) = parse_host_port(host);
                     return Some(host);
                 }
+            }
+            if matches!(bin, "scp" | "sftp") {
+                for a in args {
+                    if let Some(host) = scp_remote_host_token(a) {
+                        return Some(host);
+                    }
+                }
+                return None;
             }
             for a in args {
                 if a.starts_with('-') {
@@ -687,6 +753,24 @@ mod tests {
         assert_eq!(
             infer_host("scp", &args).as_deref(),
             Some("198.51.100.3")
+        );
+    }
+
+    #[test]
+    fn infer_host_prefers_scp_remote_spec_over_local_path() {
+        let args = vec!["./local".into(), "dev-host:/remote".into()];
+        assert_eq!(
+            infer_host("scp", &args).as_deref(),
+            Some("dev-host")
+        );
+    }
+
+    #[test]
+    fn rewrite_scp_remote_spec_replaces_alias_with_saved_target() {
+        let saved = vec!["root@10.0.0.1".into()];
+        assert_eq!(
+            rewrite_scp_remote_spec(&saved, "dev-host:/remote/path"),
+            "root@10.0.0.1:/remote/path"
         );
     }
 

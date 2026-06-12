@@ -24,7 +24,8 @@ use crate::vault::keychain::get_or_init_audit_hmac_key;
 use crate::vault::keychain::get_or_init_master_kek;
 use crate::vault::model::SecretRecord;
 use crate::vault::service::{
-    auto_save, connection_token_index, infer_host, save_with_reveal_prompt, suggest_name,
+    auto_save, connection_token_index, infer_host, rewrite_scp_remote_spec, save_with_reveal_prompt,
+    scp_remote_host_token, suggest_name,
 };
 use crate::vault::store::VaultStore;
 use chrono::Utc;
@@ -62,13 +63,22 @@ impl ResolvedArgv {
     }
 
     fn compose_argv(&self, rec: &SecretRecord, profile: &str) -> Vec<String> {
+        let bin = profile.rsplit('/').next().unwrap_or(profile);
+        if matches!(bin, "scp" | "sftp") {
+            let mut v = self.leading.clone();
+            if let Some(ref removed) = self.removed {
+                v.push(rewrite_scp_remote_spec(&rec.saved_args, removed));
+            }
+            v.extend(self.trailing.iter().cloned());
+            return v;
+        }
         if rec.profile == profile {
             let mut v = self.leading.clone();
             v.extend(rec.saved_args.iter().cloned());
             v.extend(self.trailing.iter().cloned());
             v
         } else {
-            // Cross-profile (e.g. scp borrowing ssh): replay full user argv.
+            // Cross-profile (e.g. scp borrowing ssh): replay user argv without the token.
             self.audit_args()
         }
     }
@@ -93,6 +103,24 @@ fn lookup_profiles(current: &str) -> Vec<&str> {
 fn is_openssh_profile(profile: &str) -> bool {
     let base = profile.rsplit('/').next().unwrap_or(profile);
     OPENSSH_PROFILES.contains(&base)
+}
+
+fn is_openssh_file_transfer(profile: &str) -> bool {
+    matches!(
+        profile.rsplit('/').next().unwrap_or(profile),
+        "scp" | "sftp"
+    )
+}
+
+/// Vault alias tokens to try for a single scp/sftp positional arg.
+fn scp_alias_lookup_tokens(arg: &str) -> Vec<String> {
+    let mut out = vec![arg.to_string()];
+    if let Some(host) = scp_remote_host_token(arg) {
+        if host != arg {
+            out.push(host);
+        }
+    }
+    out
 }
 
 /// Entry point used by `main.rs` for any external subcommand.
@@ -137,6 +165,22 @@ fn resolve_record(
         for lp in lookup_profiles(profile) {
             if let Some(rec) = store.get(lp, token)? {
                 return Ok(Some((rec, ResolvedArgv::split_at(args, idx))));
+            }
+        }
+    }
+
+    // 1b. scp/sftp: alias may appear in any remote spec (`alias:path`), not only argv[0].
+    if is_openssh_file_transfer(profile) {
+        for (idx, a) in args.iter().enumerate() {
+            if a.starts_with('-') {
+                continue;
+            }
+            for token in scp_alias_lookup_tokens(a) {
+                for lp in lookup_profiles(profile) {
+                    if let Some(rec) = store.get(lp, &token)? {
+                        return Ok(Some((rec, ResolvedArgv::split_at(args, idx))));
+                    }
+                }
             }
         }
     }
@@ -505,6 +549,53 @@ mod tests {
                 .expect("scp should borrow ssh record by host");
             assert_eq!(resolved.0.profile, "ssh");
             assert_eq!(resolved.0.host_alias.as_deref(), Some("10.0.0.1"));
+        });
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn scp_resolves_ssh_alias_in_remote_spec() {
+        with_temp_home(|| {
+            let store = VaultStore::open().unwrap();
+            let mut rec = sample_ssh_record("dev-host", "10.0.0.1");
+            rec.saved_args = vec!["root@10.0.0.1".into()];
+            store.insert(rec).unwrap();
+
+            let args = vec!["./local.bin".into(), "dev-host:/remote/path".into()];
+            let (rec, resolved) = resolve_record(&store, "scp", &args)
+                .unwrap()
+                .expect("scp should borrow ssh alias from remote spec");
+            assert_eq!(rec.name, "dev-host");
+            assert_eq!(
+                resolved.compose_argv(&rec, "scp"),
+                vec![
+                    "./local.bin".to_string(),
+                    "root@10.0.0.1:/remote/path".to_string()
+                ]
+            );
+        });
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn scp_host_match_rewrites_remote_endpoint() {
+        with_temp_home(|| {
+            let store = VaultStore::open().unwrap();
+            let mut rec = sample_ssh_record("lan", "10.0.0.1");
+            rec.saved_args = vec!["root@10.0.0.1".into()];
+            store.insert(rec).unwrap();
+
+            let args = vec!["/etc/hosts".into(), "user@10.0.0.1:/tmp/x".into()];
+            let (rec, resolved) = resolve_record(&store, "scp", &args)
+                .unwrap()
+                .expect("scp should borrow ssh record by host");
+            assert_eq!(
+                resolved.compose_argv(&rec, "scp"),
+                vec![
+                    "/etc/hosts".to_string(),
+                    "root@10.0.0.1:/tmp/x".to_string()
+                ]
+            );
         });
     }
 
