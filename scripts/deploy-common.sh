@@ -49,7 +49,7 @@ SENSITIVE_NAMES=(
   .brokre
 )
 
-log() { printf '[d] %s\n' "$*"; }
+log() { printf '[d] %s\n' "$*" >&2; }
 die() { printf '[d] ERROR: %s\n' "$*" >&2; exit 1; }
 
 load_deploy_env() {
@@ -302,8 +302,10 @@ ensure_mcp_publisher() {
   [[ "$arch" == "aarch64" ]] && arch=arm64
   url="https://github.com/modelcontextprotocol/registry/releases/latest/download/mcp-publisher_${os}_${arch}.tar.gz"
   log "downloading mcp-publisher from $url"
-  curl -fsSL "$url" | tar xz -C "$(dirname "$MCP_PUBLISHER_CACHE")" mcp-publisher
+  curl -fsSL "$url" | tar xz -C "$(dirname "$MCP_PUBLISHER_CACHE")" mcp-publisher \
+    || die "failed to download mcp-publisher from $url"
   chmod +x "$MCP_PUBLISHER_CACHE"
+  [[ -x "$MCP_PUBLISHER_CACHE" ]] || die "mcp-publisher missing after extract: $MCP_PUBLISHER_CACHE"
   printf '%s\n' "$MCP_PUBLISHER_CACHE"
 }
 

@@ -36,3 +36,5 @@
 .audit_hmac
 # Cursor IDE local config (never commit)
 .cursor/
+.claude/
+.kimi/
