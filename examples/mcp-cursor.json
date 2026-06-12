@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "brokre": {
+      "command": "npx",
+      "args": ["-y", "brokre"]
+    }
+  }
+}

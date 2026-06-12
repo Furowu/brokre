@@ -31,4 +31,5 @@
 # macOS file-backed keychain keys (prevent accidental commit)
 .master_kek
 .audit_hmac
-.cursor/rules/open-source-privacy.mdc
+# Cursor IDE local config (never commit)
+.cursor/
