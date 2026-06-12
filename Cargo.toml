@@ -1,12 +1,12 @@
 [package]
-name = "brokr"
-version = "0.1.5"
+name = "brokre"
+version = "0.1.6"
 edition = "2021"
 rust-version = "1.89"
-authors = ["brokr contributors"]
+authors = ["brokre contributors"]
 description = "AI-safe credential broker CLI"
 license = "MIT"
-repository = "https://github.com/Furowu/brokr"
+repository = "https://github.com/Furowu/brokre"
 keywords = ["cli", "security", "credentials", "ssh", "ai"]
 categories = ["command-line-utilities", "authentication"]
 
