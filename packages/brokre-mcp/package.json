@@ -1,6 +1,6 @@
 {
   "name": "brokre",
-  "version": "0.1.7",
+  "version": "0.1.8",
   "description": "MCP server for brokre — AI-safe credential broker (ssh, mysql, psql, …)",
   "license": "MIT",
   "author": "brokre contributors",
