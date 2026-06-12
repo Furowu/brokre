@@ -439,6 +439,29 @@ async function downloadToFile(url, dest) {
   await fs.promises.rename(tmp, dest);
 }
 
+/** Replace a cached CLI without in-place overwrite (avoids macOS SIGKILL on corrupt signature). */
+async function installBinaryAtomically(src, dest) {
+  await fs.promises.mkdir(path.dirname(dest), { recursive: true });
+  const tmp = `${dest}.new.${process.pid}`;
+  await fs.promises.copyFile(src, tmp);
+  if (process.platform !== 'win32') {
+    await fs.promises.chmod(tmp, 0o755);
+    await fs.promises.rename(tmp, dest);
+    return;
+  }
+  try {
+    await fs.promises.rename(tmp, dest);
+  } catch (err) {
+    if (err.code === 'EPERM' || err.code === 'EEXIST') {
+      await fs.promises.unlink(dest).catch(() => {});
+      await fs.promises.rename(tmp, dest);
+    } else {
+      throw err;
+    }
+  }
+  await fs.promises.chmod(dest, 0o755).catch(() => {});
+}
+
 function extractTarGz(tarPath, destDir) {
   fs.mkdirSync(destDir, { recursive: true });
   if (process.platform === 'win32') {
@@ -508,11 +531,7 @@ async function ensureBrokreBinary() {
       throw new Error(`brokre binary missing in release tarball (${target})`);
     }
 
-    await fs.promises.mkdir(path.dirname(cache), { recursive: true });
-    await fs.promises.copyFile(extracted, cache);
-    if (process.platform !== 'win32') {
-      await fs.promises.chmod(cache, 0o755);
-    }
+    await installBinaryAtomically(extracted, cache);
     await fs.promises.writeFile(versionFilePath(), `${brokreVersion}\n`);
     postInstallSetup(cache);
     return cache;
