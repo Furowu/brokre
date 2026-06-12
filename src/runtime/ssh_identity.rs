@@ -47,15 +47,73 @@ pub fn validate_private_key_pem(pem: &str) -> bool {
         && t.contains("END ")
 }
 
+/// OpenSSH short options that consume the next argv token (ssh/scp/sftp union).
+fn openssh_short_takes_value(ch: char) -> bool {
+    matches!(
+        ch,
+        'b' | 'c' | 'D' | 'E' | 'e' | 'F' | 'I' | 'i' | 'J' | 'L' | 'l' | 'm' | 'O' | 'o' | 'p'
+            | 'P' | 'R' | 'S' | 'W' | 'w' | 'B' | 's'
+    )
+}
+
+fn openssh_attached_short_value(arg: &str) -> bool {
+    if arg.len() < 3 || !arg.starts_with('-') || arg.starts_with("--") {
+        return false;
+    }
+    let ch = arg.as_bytes()[1] as char;
+    openssh_short_takes_value(ch)
+}
+
+fn openssh_option_consumes_next(arg: &str) -> bool {
+    if arg == "--" {
+        return false;
+    }
+    if arg.starts_with("--") {
+        return !arg.contains('=');
+    }
+    if arg.starts_with("-o") && arg.len() > 2 {
+        return false;
+    }
+    if openssh_attached_short_value(arg) {
+        return false;
+    }
+    if arg.len() > 2 && !arg.starts_with("--") {
+        // Combined short flags such as `-vvv`.
+        return false;
+    }
+    if arg.len() == 2 && arg.starts_with('-') {
+        let ch = arg.as_bytes()[1] as char;
+        return openssh_short_takes_value(ch);
+    }
+    false
+}
+
+/// Index of the connection target (`user@host` / `host`) in a saved OpenSSH argv.
+fn connection_target_index(argv: &[String]) -> usize {
+    let mut i = 0;
+    while i < argv.len() {
+        let a = &argv[i];
+        if a == "--" {
+            return (i + 1).min(argv.len());
+        }
+        if !a.starts_with('-') {
+            return i;
+        }
+        if openssh_option_consumes_next(a) {
+            i += 2;
+        } else {
+            i += 1;
+        }
+    }
+    argv.len()
+}
+
 /// Insert `-i <keyfile>` after leading flags, before the connection target.
 pub fn insert_identity_arg(argv: &mut Vec<String>, key_path: &std::path::Path) {
     if argv.iter().any(|a| a == "-i" || a.starts_with("-i")) {
         return;
     }
-    let pos = argv
-        .iter()
-        .position(|a| !a.starts_with('-'))
-        .unwrap_or(argv.len());
+    let pos = connection_target_index(argv);
     let p = key_path.display().to_string();
     argv.insert(pos, p);
     argv.insert(pos, "-i".into());
@@ -211,6 +269,41 @@ mod tests {
         assert_eq!(
             argv,
             vec!["-v", "-i", "/tmp/k", "user@host"]
+                .into_iter()
+                .map(String::from)
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn insert_identity_after_port_flag() {
+        let mut argv = vec![
+            "-p".into(),
+            "9000".into(),
+            "root@10.0.0.1".into(),
+        ];
+        insert_identity_arg(&mut argv, std::path::Path::new("/tmp/k"));
+        assert_eq!(
+            argv,
+            vec!["-p", "9000", "-i", "/tmp/k", "root@10.0.0.1"]
+                .into_iter()
+                .map(String::from)
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn insert_identity_before_remote_command() {
+        let mut argv = vec![
+            "-p".into(),
+            "9000".into(),
+            "root@10.0.0.1".into(),
+            "uptime".into(),
+        ];
+        insert_identity_arg(&mut argv, std::path::Path::new("/tmp/k"));
+        assert_eq!(
+            argv,
+            vec!["-p", "9000", "-i", "/tmp/k", "root@10.0.0.1", "uptime"]
                 .into_iter()
                 .map(String::from)
                 .collect::<Vec<_>>()
