@@ -1,6 +1,6 @@
 {
   "name": "@techinone/brokr",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "MCP server for brokr — AI-safe credential broker (ssh, mysql, psql, …)",
   "license": "MIT",
   "author": "brokr contributors",
