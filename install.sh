@@ -72,13 +72,55 @@ curl -fsSL "$URL" -o "$TMPDIR/brokre.tar.gz"
 
 echo "Extracting..."
 tar -xzf "$TMPDIR/brokre.tar.gz" -C "$TMPDIR"
-
-echo "Installing to $INSTALL_DIR..."
 chmod +x "$TMPDIR/brokre"
-mv "$TMPDIR/brokre" "$INSTALL_DIR/brokre"
+
+USER_BIN="${HOME}/.brokre/bin"
+PATH_MARKER="# brokre CLI (install.sh)"
+PATH_LINE='export PATH="$HOME/.brokre/bin:$PATH"'
+
+ensure_brokre_on_path() {
+    local rc block
+    block=$(printf '\n%s\n%s\n' "$PATH_MARKER" "$PATH_LINE")
+    for rc in "${HOME}/.zprofile" "${HOME}/.zshrc" "${HOME}/.bash_profile" "${HOME}/.bashrc" "${HOME}/.profile"; do
+        [[ -f "$rc" ]] || continue
+        grep -q '.brokre/bin' "$rc" 2>/dev/null && return 0
+    done
+    for rc in "${HOME}/.zprofile" "${HOME}/.zshrc" "${HOME}/.bash_profile" "${HOME}/.bashrc" "${HOME}/.profile"; do
+        if [[ -f "$rc" ]] && ! grep -qF "$PATH_MARKER" "$rc" 2>/dev/null; then
+            printf '%s' "$block" >>"$rc"
+            echo "brokre: added ~/.brokre/bin to PATH in $rc"
+            echo "       open a new terminal (or: source $rc) for \`brokre manage\`."
+            return 0
+        fi
+    done
+    # no shell rc yet — create ~/.zshrc on macOS, ~/.bashrc elsewhere
+    if [[ "$OS" == darwin ]]; then
+        rc="${HOME}/.zshrc"
+    else
+        rc="${HOME}/.bashrc"
+    fi
+    printf '%s' "$block" >>"$rc"
+    echo "brokre: added ~/.brokre/bin to PATH in $rc"
+}
+
+install_binary() {
+  if mkdir -p "$INSTALL_DIR" 2>/dev/null && [[ -w "$INSTALL_DIR" ]]; then
+    mv "$TMPDIR/brokre" "$INSTALL_DIR/brokre"
+    echo "Installed to $INSTALL_DIR/brokre"
+    rm -f "$USER_BIN/brokre" "$USER_BIN/brokr" 2>/dev/null || true
+    return 0
+  fi
+  mkdir -p "$USER_BIN"
+  mv "$TMPDIR/brokre" "$USER_BIN/brokre"
+  rm -f "$USER_BIN/brokr" 2>/dev/null || true
+  echo "Installed to $USER_BIN/brokre (no write access to $INSTALL_DIR)"
+  ensure_brokre_on_path
+}
+
+install_binary
 
 echo "Verifying..."
-brokre --version || true
+brokre --version || "$USER_BIN/brokre" --version || true
 
 if [ "$OS" = "darwin" ]; then
     echo
@@ -96,7 +138,10 @@ if [ -z "$INSTALLED_VER" ]; then
     mkdir -p "${BROKRE_HOME}"
     # Prevent a duplicate wizard if the user runs brokre immediately after install.
     touch "${BROKRE_HOME}/.onboard_spawned"
-    if brokre manage --onboard --open & then
+    if command -v brokre >/dev/null 2>&1 && brokre manage --onboard --open & then
+        sleep 2
+        echo "If the browser did not open, check the URL printed above or run: brokre manage --onboard --open"
+    elif [[ -x "$USER_BIN/brokre" ]] && "$USER_BIN/brokre" manage --onboard --open & then
         sleep 2
         echo "If the browser did not open, check the URL printed above or run: brokre manage --onboard --open"
     else

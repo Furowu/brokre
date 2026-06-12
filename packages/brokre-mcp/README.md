@@ -71,6 +71,10 @@ Recommended: `npx -y brokre@latest` so the npm launcher stays current.
 
 On each MCP start, this package compares the **npm package version** with any local `brokre` binary (on `PATH` or in `~/.brokre/bin/`). If the binary is missing or older, it downloads the matching release from GitHub into `~/.brokre/bin/` and uses that — even when an older `brokre` is already on `PATH`.
 
+**CLI on PATH:** On first download, `brokre-mcp` adds `~/.brokre/bin` to your shell profile (`~/.zshrc`, etc.) and tries to symlink `/usr/local/bin/brokre` when writable. Open a **new terminal** (or `source ~/.zshrc`) so `brokre manage` works.
+
+**Empty vault:** Each MCP connect while the vault has no credentials starts `brokre manage` in the background and opens `http://127.0.0.1:56777/?t=…` (or the next free port) in your default browser. Session tokens are never returned to the AI.
+
 Manual CLI install (`install.sh`) does the same version check: re-run the script to upgrade when a newer release is available.
 
 ## First connection
