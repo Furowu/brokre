@@ -88,6 +88,11 @@ fn main() {
     }
 
     #[cfg(unix)]
+    if std::env::var_os("BROKRE_INTERNAL_ASKPASS").is_some() {
+        brokre::cli::injector::run_internal_askpass_main();
+    }
+
+    #[cfg(unix)]
     {
         let mode = if cfg!(debug_assertions) {
             brokre::security::hardening::HardeningMode::WarnOnly

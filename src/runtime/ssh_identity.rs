@@ -3,6 +3,9 @@
 use crate::security::secret::SecretString;
 use crate::utils::errors::{BrokreError, Result};
 use crate::utils::paths::run_dir;
+
+/// Seconds to keep a multiplexed SSH control socket warm between commands.
+const SSH_MUX_PERSIST_SECS: &str = "300";
 use crate::vault::crypto::record::decrypt_for_exec;
 use crate::vault::keychain::get_or_init_master_kek;
 use crate::vault::model::SecretRecord;
@@ -123,6 +126,44 @@ fn connection_target_index(argv: &[String]) -> usize {
         }
     }
     argv.len()
+}
+
+fn has_mux_options(argv: &[String]) -> bool {
+    let mut i = 0;
+    while i < argv.len() {
+        if argv[i] == "-o" && i + 1 < argv.len() {
+            let v = argv[i + 1].as_str();
+            if v.starts_with("ControlPath=")
+                || v.starts_with("ControlMaster=")
+                || v == "ControlMaster"
+            {
+                return true;
+            }
+            i += 2;
+        } else {
+            i += 1;
+        }
+    }
+    false
+}
+
+/// Reuse one authenticated SSH session across rapid `brokre ssh` invocations (e.g. deploy scripts).
+pub fn insert_mux_options(argv: &mut Vec<String>) {
+    if has_mux_options(argv) {
+        return;
+    }
+    let sock = run_dir().join("ssh-%C.sock");
+    let path = sock.to_string_lossy().to_string();
+    let pos = connection_target_index(argv);
+    let pairs = [
+        ("-o", format!("ControlPersist={}", SSH_MUX_PERSIST_SECS)),
+        ("-o", format!("ControlPath={}", path)),
+        ("-o", "ControlMaster=auto".into()),
+    ];
+    for (flag, val) in pairs.iter().rev() {
+        argv.insert(pos, val.clone());
+        argv.insert(pos, (*flag).into());
+    }
 }
 
 /// Insert `-i <keyfile>` after leading flags, before the connection target.

@@ -192,6 +192,7 @@ fn exec_saved(
     let mut argv = resolved.compose_argv(&rec, profile);
     #[cfg(unix)]
     let _key_guard = if is_openssh_profile(profile) {
+        crate::runtime::ssh_identity::insert_mux_options(&mut argv);
         match crate::runtime::ssh_identity::materialize_identity(&rec)? {
             Some(guard) => {
                 crate::runtime::ssh_identity::insert_identity_arg(&mut argv, &guard.path);
@@ -206,12 +207,16 @@ fn exec_saved(
     let patterns = patterns_for(profile);
     let start = Instant::now();
     #[cfg(unix)]
-    let result = crate::runtime::pty::run(
-        profile,
-        &argv,
-        PtyCredential::VaultRecord(rec.id),
-        &patterns,
-    )?;
+    let result = if crate::runtime::pipe_exec::should_use_pipe_mode(profile, crate::security::tty::stdin_is_pipe()) {
+        crate::runtime::pipe_exec::run(profile, &argv, rec.id)?
+    } else {
+        crate::runtime::pty::run(
+            profile,
+            &argv,
+            PtyCredential::VaultRecord(rec.id),
+            &patterns,
+        )?
+    };
     #[cfg(not(unix))]
     let result = {
         let master_kek = get_or_init_master_kek()?;
