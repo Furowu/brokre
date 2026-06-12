@@ -1,4 +1,4 @@
-# brokr — AI-safe Credential Broker
+# brokre — AI-safe Credential Broker
 
 <!-- README-I18N:START -->
 
@@ -6,67 +6,67 @@
 
 <!-- README-I18N:END -->
 
-`brokr` is a **local credential broker** for AI agents and humans. It wraps **any CLI on your `PATH`** — not only SSH or MySQL — and injects saved passwords at the prompt **without exposing plaintext** to the AI process, shell history, `ps`, or process environment.
+`brokre` is a **local credential broker** for AI agents and humans. It wraps **any CLI on your `PATH`** — not only SSH or MySQL — and injects saved passwords at the prompt **without exposing plaintext** to the AI process, shell history, `ps`, or process environment.
 
 Developed by [Techinone](https://www.tio.tech) (成都同创合一科技有限公司).
 
 ## CLI security (core)
 
-brokr is built around one rule: **secrets stay out of the AI's reach and out of observable process state.**
+brokre is built around one rule: **secrets stay out of the AI's reach and out of observable process state.**
 
-| Layer | What brokr does |
+| Layer | What brokre does |
 |-------|-----------------|
 | **No env / `ps` leakage** | Injection is PTY prompt-based — passwords are never passed via `-p`, `SSHPASS`, `MYSQL_PWD`, or exported env vars |
-| **Parent never holds plaintext** (Unix) | Saved passwords decrypt in a short-lived `brokr --internal-injector` child, written once to the PTY, then the child exits |
-| **AI cannot `reveal`** | `brokr reveal` requires a real TTY + master passphrase; unavailable in the web UI and **not exposed via MCP** |
-| **Vault at rest** | Per-field AES-256-GCM; DEK wrapped with OS keyring (Linux) or `~/.brokr/.master_kek` (macOS) + optional Argon2id reveal passphrase |
-| **MCP boundary** | MCP exposes metadata (`brokr_list`) and exec (`brokr_exec`) only — no passwords, session tokens, or `reveal` |
+| **Parent never holds plaintext** (Unix) | Saved passwords decrypt in a short-lived `brokre --internal-injector` child, written once to the PTY, then the child exits |
+| **AI cannot `reveal`** | `brokre reveal` requires a real TTY + master passphrase; unavailable in the web UI and **not exposed via MCP** |
+| **Vault at rest** | Per-field AES-256-GCM; DEK wrapped with OS keyring (Linux) or `~/.brokre/.master_kek` (macOS) + optional Argon2id reveal passphrase |
+| **MCP boundary** | MCP exposes metadata (`brokre_list`) and exec (`brokre_exec`) only — no passwords, session tokens, or `reveal` |
 | **Manage UI** | Binds `127.0.0.1` only; passwords are **write-only**; session token printed in your terminal, never returned to AI |
-| **Audit** | HMAC-chained JSONL; `brokr audit verify` detects tampering |
+| **Audit** | HMAC-chained JSONL; `brokre audit verify` detects tampering |
 | **OS hardening** | Core dumps disabled, ptrace checks (Linux), optional `mlockall` — see [docs/HARDENING.md](docs/HARDENING.md) |
 
 Full threat model: [SECURITY.md](SECURITY.md), [THREAT_MODEL.md](THREAT_MODEL.md).
 
 ## Any CLI on `PATH` (generic by design)
 
-brokr is **not** a fixed list of database/SSH wrappers. The core model is:
+brokre is **not** a fixed list of database/SSH wrappers. The core model is:
 
 ```bash
-brokr <any-cli-on-PATH> [args...]
+brokre <any-cli-on-PATH> [args...]
 ```
 
 First connection: run verbatim, capture the password you type at the prompt, offer to save as an alias.  
-Next time: `brokr <cli> <alias> …` auto-injects — AI and scripts only see the alias name.
+Next time: `brokre <cli> <alias> …` auto-injects — AI and scripts only see the alias name.
 
 **Preset prompt patterns** ship for common tools (ssh, mysql, psql, redis-cli, ftp, clickhouse, git, docker, kubectl, sudo, …). **Everything else** uses a generic `password:` / `passphrase:` matcher — no code changes required.
 
 ```bash
-brokr gsql prod-cluster -c "SELECT 1"    # any proprietary CLI on PATH
-brokr kubectl get pods                   # if your cluster CLI prompts for a password
-brokr my-internal-tool --host db.internal
+brokre gsql prod-cluster -c "SELECT 1"    # any proprietary CLI on PATH
+brokre kubectl get pods                   # if your cluster CLI prompts for a password
+brokre my-internal-tool --host db.internal
 ```
 
 Customize when needed:
 
-- `~/.brokr/prompts.toml` — per-binary prompt regex overrides
-- `~/.brokr/manage.toml` — custom sections in the manage UI (e.g. GaussDB, internal tools)
+- `~/.brokre/prompts.toml` — per-binary prompt regex overrides
+- `~/.brokre/manage.toml` — custom sections in the manage UI (e.g. GaussDB, internal tools)
 
 Built-in manage UI tabs (when the binary is installed) include SSH, FTP, MySQL, PostgreSQL, Redis, ClickHouse, MinIO — convenience only; the **PTY wrapper works for any CLI**.
 
 ## Install (MCP first — recommended for AI)
 
-The npm package [`@techinone/brokr`](https://www.npmjs.com/package/@techinone/brokr) is the MCP launcher for Cursor, Claude Code, and other MCP clients. It spawns the local `brokr mcp` server over stdio.
+The npm package [`brokre`](https://www.npmjs.com/package/brokre) is the MCP launcher for Cursor, Claude Code, and other MCP clients. It spawns the local `brokre mcp` server over stdio.
 
-### 1. Add brokr to your AI editor
+### 1. Add brokre to your AI editor
 
 **Cursor** — `~/.cursor/mcp.json` or project `.cursor/mcp.json`:
 
 ```json
 {
   "mcpServers": {
-    "brokr": {
+    "brokre": {
       "command": "npx",
-      "args": ["-y", "@techinone/brokr@latest"]
+      "args": ["-y", "brokre@latest"]
     }
   }
 }
@@ -77,10 +77,10 @@ The npm package [`@techinone/brokr`](https://www.npmjs.com/package/@techinone/br
 ```json
 {
   "mcpServers": {
-    "brokr": {
+    "brokre": {
       "type": "stdio",
       "command": "npx",
-      "args": ["-y", "@techinone/brokr@latest"]
+      "args": ["-y", "brokre@latest"]
     }
   }
 }
@@ -89,35 +89,35 @@ The npm package [`@techinone/brokr`](https://www.npmjs.com/package/@techinone/br
 Or via CLI:
 
 ```bash
-claude mcp add --scope project brokr -- npx -y @techinone/brokr@latest
+claude mcp add --scope project brokre -- npx -y brokre@latest
 ```
 
-Use `npx -y @techinone/brokr@latest` so both the npm launcher and binary stay current. On each MCP start, if the local `brokr` (`PATH` or `~/.brokr/bin/`) is older than the npm package version, a matching release is downloaded into `~/.brokr/bin/` — even when an older `brokr` is already on `PATH`.
+Use `npx -y brokre@latest` so both the npm launcher and binary stay current. On each MCP start, if the local `brokre` (`PATH` or `~/.brokre/bin/`) is older than the npm package version, a matching release is downloaded into `~/.brokre/bin/` — even when an older `brokre` is already on `PATH`.
 
 **No Node** — point MCP directly at the native binary:
 
 ```json
-{ "command": "brokr", "args": ["mcp"] }
+{ "command": "brokre", "args": ["mcp"] }
 ```
 
 | MCP tool | Purpose |
 |----------|---------|
-| `brokr_list` | Saved aliases (metadata only — profile, name, host) |
-| `brokr_exec` | Run **any** saved CLI alias (`binary` + `args`) |
-| `brokr_setup` | Open manage UI in browser for the human to add creds |
+| `brokre_list` | Saved aliases (metadata only — profile, name, host) |
+| `brokre_exec` | Run **any** saved CLI alias (`binary` + `args`) |
+| `brokre_setup` | Open manage UI in browser for the human to add creds |
 
-On first connect with an **empty vault**, brokr opens **manage** in your browser (`http://127.0.0.1:56777/?t=…`). Session tokens stay on localhost — never returned to the AI. Set `BROKR_MCP_NO_AUTO_OPEN=1` to disable auto-open.
+On first connect with an **empty vault**, brokre opens **manage** in your browser (`http://127.0.0.1:56777/?t=…`). Session tokens stay on localhost — never returned to the AI. Set `BROKRE_MCP_NO_AUTO_OPEN=1` to disable auto-open.
 
-**No separate CLI install required**: `npx -y @techinone/brokr@latest` downloads or upgrades `~/.brokr/bin/brokr` from GitHub Releases when needed (Node 18+), including when an older `brokr` is on `PATH`. Disable auto-download: `BROKR_SKIP_AUTO_INSTALL=1`; pin a binary: `BROKR_BIN=/path/to/brokr`.
+**No separate CLI install required**: `npx -y brokre@latest` downloads or upgrades `~/.brokre/bin/brokre` from GitHub Releases when needed (Node 18+), including when an older `brokre` is on `PATH`. Disable auto-download: `BROKRE_SKIP_AUTO_INSTALL=1`; pin a binary: `BROKRE_BIN=/path/to/brokre`.
 
-More detail: [packages/brokr-mcp/README.md](packages/brokr-mcp/README.md).
+More detail: [packages/brokre-mcp/README.md](packages/brokre-mcp/README.md).
 
-### 2. Install the brokr CLI (optional — MCP can auto-download)
+### 2. Install the brokre CLI (optional — MCP can auto-download)
 
 You can also install the CLI system-wide (recommended for production):
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/Furowu/brokr/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/Furowu/brokre/main/install.sh | bash
 ```
 
 Re-run the same command to upgrade; the script detects the installed version, reinstalls when a newer release is available, and skips when already up to date.
@@ -125,46 +125,46 @@ Re-run the same command to upgrade; the script detects the installed version, re
 Or via Homebrew (macOS / Linux):
 
 ```bash
-brew tap Furowu/brokr
-brew install brokr
+brew tap Furowu/brokre
+brew install brokre
 ```
 
 ## Quick Start
 
 ### Add credentials
 
-After CLI install, the manager opens on first run (`brokr manage --onboard --open`). Or anytime:
+After CLI install, the manager opens on first run (`brokre manage --onboard --open`). Or anytime:
 
 ```bash
-brokr manage --open
+brokre manage --open
 ```
 
 Or save on first interactive connection (any CLI):
 
 ```bash
-brokr ssh root@10.0.0.1
-brokr my-tool --host internal.corp
+brokre ssh root@10.0.0.1
+brokre my-tool --host internal.corp
 ```
 
 ### Use (AI-safe)
 
 ```bash
-brokr mysql prod-db -e "SHOW TABLES"
-brokr ssh prod-bastion uname -a
-brokr <your-cli> <alias> [args...]
+brokre mysql prod-db -e "SHOW TABLES"
+brokre ssh prod-bastion uname -a
+brokre <your-cli> <alias> [args...]
 ```
 
 ### List metadata (safe for AI / scripts)
 
 ```bash
-brokr list --json
+brokre list --json
 ```
 
 ### Reveal / delete (human-only, real TTY)
 
 ```bash
-brokr reveal mysql prod-db --field password
-brokr rm ssh prod-bastion
+brokre reveal mysql prod-db --field password
+brokre rm ssh prod-bastion
 ```
 
 ### Manage UI security
@@ -178,7 +178,7 @@ brokr rm ssh prod-bastion
 
 ```
 ┌─────────┐     ┌──────────┐     ┌─────────────┐     ┌────────────┐
-│ AI/User │────▶│ brokr CLI│────▶│ OS Keychain │────▶│ Vault File │
+│ AI/User │────▶│ brokre CLI│────▶│ OS Keychain │────▶│ Vault File │
 └─────────┘     └──────────┘     └─────────────┘     └────────────┘
                       │
                       ▼
@@ -209,11 +209,11 @@ Convenience tabs when the binary is on `PATH`:
 
 **Today:** generic PTY wrapper + `manage.toml` groups + `prompts.toml` overrides.
 
-**Planned:** full TOML connector profiles under `~/.brokr/profiles/` with per-tool injection strategies.
+**Planned:** full TOML connector profiles under `~/.brokre/profiles/` with per-tool injection strategies.
 
 ## Piped stdin and OpenSSH sharing
 
-- **Piped stdin** (`tar | brokr ssh host 'tar xf -'`): pipe data forwards only after injection completes.
+- **Piped stdin** (`tar | brokre ssh host 'tar xf -'`): pipe data forwards only after injection completes.
 - **OpenSSH family** (`ssh`, `scp`, `sftp`): shared saved credentials when the host matches. Interactive save required first (TTY).
 
 ## Development
@@ -221,10 +221,10 @@ Convenience tabs when the binary is on `PATH`:
 ```bash
 cargo test    # unit tests in src/ only (no tests/ integration suite in this repo)
 cargo clippy --all-targets --all-features -- -D warnings
-cargo build --release   # binary: target/release/brokr
+cargo build --release   # binary: target/release/brokre
 ```
 
-Release version is declared in [`VERSION`](VERSION) (also reflected in `Cargo.toml` and `packages/brokr-mcp/package.json`). Official binaries and npm packages are published by [TechinOne](https://www.tio.tech) via GitHub Releases and CI — not part of this open-source tree.
+Release version is declared in [`VERSION`](VERSION) (also reflected in `Cargo.toml` and `packages/brokre-mcp/package.json`). Official binaries and npm packages are published by [TechinOne](https://www.tio.tech) via GitHub Releases and CI — not part of this open-source tree.
 
 ## License
 

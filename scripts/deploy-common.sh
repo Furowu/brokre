@@ -5,12 +5,12 @@ set -euo pipefail
 DEPLOY_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 VERSION_FILE="$DEPLOY_ROOT/VERSION"
 CARGO_TOML="$DEPLOY_ROOT/Cargo.toml"
-MCP_PKG="$DEPLOY_ROOT/packages/brokr-mcp/package.json"
-HOMEBREW_RB="$DEPLOY_ROOT/homebrew/brokr.rb"
-HOMEBREW_TAP_DIR="${HOMEBREW_TAP_DIR:-$DEPLOY_ROOT/../homebrew-brokr}"
-HOMEBREW_TAP_REMOTE="${HOMEBREW_TAP_REMOTE:-https://github.com/Furowu/homebrew-brokr.git}"
-HOMEBREW_RELEASE_BASE="${HOMEBREW_RELEASE_BASE:-https://github.com/Furowu/brokr/releases/download}"
-MCP_DIR="$DEPLOY_ROOT/packages/brokr-mcp"
+MCP_PKG="$DEPLOY_ROOT/packages/brokre-mcp/package.json"
+HOMEBREW_RB="$DEPLOY_ROOT/homebrew/brokre.rb"
+HOMEBREW_TAP_DIR="${HOMEBREW_TAP_DIR:-$DEPLOY_ROOT/../homebrew-brokre}"
+HOMEBREW_TAP_REMOTE="${HOMEBREW_TAP_REMOTE:-https://github.com/Furowu/homebrew-brokre.git}"
+HOMEBREW_RELEASE_BASE="${HOMEBREW_RELEASE_BASE:-https://github.com/Furowu/brokre/releases/download}"
+MCP_DIR="$DEPLOY_ROOT/packages/brokre-mcp"
 DIST_DIR="$DEPLOY_ROOT/dist"
 
 # Release targets (match .github/workflows/release.yml).
@@ -33,8 +33,8 @@ HOMEBREW_TARGETS=(
 # Default remotes (override in .deploy.env)
 GITHUB_REMOTE="${GITHUB_REMOTE:-origin}"
 GITEE_REMOTE="${GITEE_REMOTE:-gitee}"
-GITHUB_URL="${GITHUB_URL:-https://github.com/Furowu/brokr.git}"
-GITEE_URL="${GITEE_URL:-https://gitee.com/furowu/brokr.git}"
+GITHUB_URL="${GITHUB_URL:-https://github.com/Furowu/brokre.git}"
+GITEE_URL="${GITEE_URL:-https://gitee.com/furowu/brokre.git}"
 GITEE_BRANCH="${GITEE_BRANCH:-main}"
 
 # Patterns that must never appear in publish artifacts.
@@ -44,7 +44,7 @@ SENSITIVE_NAMES=(
   .master_kek
   .audit_hmac
   hosts
-  .brokr
+  .brokre
 )
 
 log() { printf '[d] %s\n' "$*"; }
@@ -59,12 +59,12 @@ load_deploy_env() {
   fi
   GITHUB_REMOTE="${GITHUB_REMOTE:-origin}"
   GITEE_REMOTE="${GITEE_REMOTE:-gitee}"
-  GITHUB_URL="${GITHUB_URL:-https://github.com/Furowu/brokr.git}"
-  GITEE_URL="${GITEE_URL:-https://gitee.com/furowu/brokr.git}"
+  GITHUB_URL="${GITHUB_URL:-https://github.com/Furowu/brokre.git}"
+  GITEE_URL="${GITEE_URL:-https://gitee.com/furowu/brokre.git}"
   GITEE_BRANCH="${GITEE_BRANCH:-main}"
-  HOMEBREW_TAP_DIR="${HOMEBREW_TAP_DIR:-$DEPLOY_ROOT/../homebrew-brokr}"
-  HOMEBREW_TAP_REMOTE="${HOMEBREW_TAP_REMOTE:-https://github.com/Furowu/homebrew-brokr.git}"
-  HOMEBREW_RELEASE_BASE="${HOMEBREW_RELEASE_BASE:-https://github.com/Furowu/brokr/releases/download}"
+  HOMEBREW_TAP_DIR="${HOMEBREW_TAP_DIR:-$DEPLOY_ROOT/../homebrew-brokre}"
+  HOMEBREW_TAP_REMOTE="${HOMEBREW_TAP_REMOTE:-https://github.com/Furowu/homebrew-brokre.git}"
+  HOMEBREW_RELEASE_BASE="${HOMEBREW_RELEASE_BASE:-https://github.com/Furowu/brokre/releases/download}"
 }
 
 ensure_git_remotes() {
@@ -124,15 +124,15 @@ sync_version() {
       fs.writeFileSync(p, JSON.stringify(j, null, 2) + '\n');
     " "$MCP_PKG" "$v"
   else
-    die "node required to sync packages/brokr-mcp/package.json"
+    die "node required to sync packages/brokre-mcp/package.json"
   fi
 
   if [[ -f "$HOMEBREW_RB" ]]; then
     sed_inplace "s/^  version \".*\"/  version \"$v\"/" "$HOMEBREW_RB"
-    sed_inplace "s|github.com/[^/]*/brokr/releases/download/v[0-9.]*|github.com/Furowu/brokr/releases/download/v${v}|g" "$HOMEBREW_RB"
+    sed_inplace "s|github.com/[^/]*/brokre/releases/download/v[0-9.]*|github.com/Furowu/brokre/releases/download/v${v}|g" "$HOMEBREW_RB"
   fi
 
-  log "version synced → $v (VERSION, Cargo.toml, brokr-mcp, homebrew)"
+  log "version synced → $v (VERSION, Cargo.toml, brokre-mcp, homebrew)"
 }
 
 assert_clean_git() {
@@ -183,18 +183,18 @@ verify_mcp_package_clean() {
 target_binary_path() {
   local target="$1"
   if [[ "$target" == *windows* ]]; then
-    printf '%s/target/%s/release/brokr.exe' "$DEPLOY_ROOT" "$target"
+    printf '%s/target/%s/release/brokre.exe' "$DEPLOY_ROOT" "$target"
   else
-    printf '%s/target/%s/release/brokr' "$DEPLOY_ROOT" "$target"
+    printf '%s/target/%s/release/brokre' "$DEPLOY_ROOT" "$target"
   fi
 }
 
 build_release_native() {
   local v bin
   v=$(read_version)
-  log "building brokr v$v (native host only)..."
+  log "building brokre v$v (native host only)..."
   (cd "$DEPLOY_ROOT" && cargo build --release)
-  bin="$DEPLOY_ROOT/target/release/brokr"
+  bin="$DEPLOY_ROOT/target/release/brokre"
   [[ -f "$bin" ]] || die "missing $bin"
   if command -v strip >/dev/null 2>&1; then
     strip "$bin" 2>/dev/null || true
@@ -202,7 +202,7 @@ build_release_native() {
   if [[ "$(uname -s)" == Darwin ]] && command -v codesign >/dev/null 2>&1; then
     codesign -s - -f "$bin" 2>/dev/null || true
   fi
-  "$bin" --version >/dev/null || log "WARN: brokr --version failed"
+  "$bin" --version >/dev/null || log "WARN: brokre --version failed"
   log "binary: $bin"
 }
 
@@ -213,18 +213,18 @@ build_release() {
 pack_one_target() {
   local target="$1"
   local staging="$DIST_DIR/.staging-${target}"
-  local out="$DIST_DIR/brokr-${target}.tar.gz"
+  local out="$DIST_DIR/brokre-${target}.tar.gz"
   rm -rf "$staging"
   mkdir -p "$staging"
   if [[ "$target" == *windows* ]]; then
-    cp "$(target_binary_path "$target")" "$staging/brokr.exe"
+    cp "$(target_binary_path "$target")" "$staging/brokre.exe"
     scan_sensitive_in_dir "$staging" || die "sensitive files in dist staging"
-    tar -czf "$out" -C "$staging" brokr.exe
+    tar -czf "$out" -C "$staging" brokre.exe
   else
-    cp "$(target_binary_path "$target")" "$staging/brokr"
-    chmod 755 "$staging/brokr"
+    cp "$(target_binary_path "$target")" "$staging/brokre"
+    chmod 755 "$staging/brokre"
     scan_sensitive_in_dir "$staging" || die "sensitive files in dist staging"
-    tar -czf "$out" -C "$staging" brokr
+    tar -czf "$out" -C "$staging" brokre
   fi
   rm -rf "$staging"
   log "dist: $out"
@@ -234,7 +234,7 @@ pack_dist_all() {
   local v target packed=0
   v=$(read_version)
   mkdir -p "$DIST_DIR"
-  rm -f "$DIST_DIR"/brokr-*.tar.gz "$DIST_DIR"/checksums.txt
+  rm -f "$DIST_DIR"/brokre-*.tar.gz "$DIST_DIR"/checksums.txt
   for target in "${RELEASE_TARGETS[@]}"; do
     if [[ -f "$(target_binary_path "$target")" ]]; then
       pack_one_target "$target"
@@ -247,9 +247,9 @@ pack_dist_all() {
   (
     cd "$DIST_DIR"
     if command -v sha256sum >/dev/null 2>&1; then
-      sha256sum brokr-*.tar.gz >checksums.txt
+      sha256sum brokre-*.tar.gz >checksums.txt
     else
-      shasum -a 256 brokr-*.tar.gz >checksums.txt
+      shasum -a 256 brokre-*.tar.gz >checksums.txt
     fi
   )
   verify_mcp_package_clean
@@ -265,7 +265,7 @@ verify_release_assets() {
   local v target url
   v=$(read_version)
   for target in "${RELEASE_TARGETS[@]}"; do
-    url="${HOMEBREW_RELEASE_BASE}/v${v}/brokr-${target}.tar.gz"
+    url="${HOMEBREW_RELEASE_BASE}/v${v}/brokre-${target}.tar.gz"
     curl -fsSL -o /dev/null "$url" \
       || die "release asset missing: $url"
   done
@@ -278,7 +278,7 @@ publish_npm() {
   log "checking GitHub release assets before npm publish..."
   verify_release_assets
   verify_mcp_package_clean
-  log "publishing @techinone/brokr@$v to npm..."
+  log "publishing brokre@$v to npm..."
   (cd "$MCP_DIR" && npm publish --access public)
   log "npm publish done"
 }
@@ -340,8 +340,8 @@ artifact_sha256() {
   local v="$1"
   local target="$2"
   local from_dist="${3:-0}"
-  local local_release="$DIST_DIR/brokr-${target}.tar.gz"
-  local local_versioned="$DIST_DIR/brokr-${target}-v${v}.tar.gz"
+  local local_release="$DIST_DIR/brokre-${target}.tar.gz"
+  local local_versioned="$DIST_DIR/brokre-${target}-v${v}.tar.gz"
   local tmp url
 
   if [[ "$from_dist" == "1" ]]; then
@@ -357,7 +357,7 @@ artifact_sha256() {
   fi
 
   tmp=$(mktemp)
-  url="${HOMEBREW_RELEASE_BASE}/v${v}/brokr-${target}.tar.gz"
+  url="${HOMEBREW_RELEASE_BASE}/v${v}/brokre-${target}.tar.gz"
   if curl -fsSL "$url" -o "$tmp"; then
     sha256_file "$tmp"
     rm -f "$tmp"
@@ -366,16 +366,16 @@ artifact_sha256() {
   rm -f "$tmp"
 
   if [[ -f "$local_release" ]]; then
-    log "WARN: GitHub asset missing for $target — using dist/brokr-${target}.tar.gz"
+    log "WARN: GitHub asset missing for $target — using dist/brokre-${target}.tar.gz"
     sha256_file "$local_release"
     return 0
   fi
   if [[ -f "$local_versioned" ]]; then
-    log "WARN: GitHub asset missing for $target — using dist/brokr-${target}-v${v}.tar.gz"
+    log "WARN: GitHub asset missing for $target — using dist/brokre-${target}-v${v}.tar.gz"
     sha256_file "$local_versioned"
     return 0
   fi
-  die "cannot fetch brokr-${target}.tar.gz for v${v} (wait for GitHub Release CI or use ./d brew --from-dist)"
+  die "cannot fetch brokre-${target}.tar.gz for v${v} (wait for GitHub Release CI or use ./d brew --from-dist)"
 }
 
 wait_for_github_release() {
@@ -383,7 +383,7 @@ wait_for_github_release() {
   local attempt url
   log "waiting for GitHub release v${v} assets (up to 15 min)..."
   for attempt in $(seq 1 30); do
-    url="${HOMEBREW_RELEASE_BASE}/v${v}/brokr-x86_64-apple-darwin.tar.gz"
+    url="${HOMEBREW_RELEASE_BASE}/v${v}/brokre-x86_64-apple-darwin.tar.gz"
     if curl -fsSL -o /dev/null -w '' "$url" 2>/dev/null; then
       log "release assets ready (attempt $attempt)"
       return 0
@@ -400,31 +400,31 @@ write_homebrew_formula() {
   local sha_linux_intel="$4"
   local sha_linux_arm="$5"
   cat >"$HOMEBREW_RB" <<EOF
-class Brokr < Formula
+class Brokre < Formula
   desc "AI-safe credential broker CLI"
-  homepage "https://github.com/Furowu/brokr"
+  homepage "https://github.com/Furowu/brokre"
   version "$v"
 
   if OS.mac? && Hardware::CPU.intel?
-    url "${HOMEBREW_RELEASE_BASE}/v${v}/brokr-x86_64-apple-darwin.tar.gz"
+    url "${HOMEBREW_RELEASE_BASE}/v${v}/brokre-x86_64-apple-darwin.tar.gz"
     sha256 "$sha_intel"
   elsif OS.mac? && Hardware::CPU.arm?
-    url "${HOMEBREW_RELEASE_BASE}/v${v}/brokr-aarch64-apple-darwin.tar.gz"
+    url "${HOMEBREW_RELEASE_BASE}/v${v}/brokre-aarch64-apple-darwin.tar.gz"
     sha256 "$sha_arm"
   elsif OS.linux? && Hardware::CPU.intel?
-    url "${HOMEBREW_RELEASE_BASE}/v${v}/brokr-x86_64-unknown-linux-gnu.tar.gz"
+    url "${HOMEBREW_RELEASE_BASE}/v${v}/brokre-x86_64-unknown-linux-gnu.tar.gz"
     sha256 "$sha_linux_intel"
   elsif OS.linux? && Hardware::CPU.arm?
-    url "${HOMEBREW_RELEASE_BASE}/v${v}/brokr-aarch64-unknown-linux-gnu.tar.gz"
+    url "${HOMEBREW_RELEASE_BASE}/v${v}/brokre-aarch64-unknown-linux-gnu.tar.gz"
     sha256 "$sha_linux_arm"
   end
 
   def install
-    bin.install "brokr"
+    bin.install "brokre"
   end
 
   test do
-    system "#{bin}/brokr", "--version"
+    system "#{bin}/brokre", "--version"
   end
 end
 EOF
@@ -470,8 +470,8 @@ publish_homebrew_tap() {
       if grep -qi 'not found' "$tap_dir.clone.err" 2>/dev/null; then
         rm -f "$tap_dir.clone.err"
         die "homebrew tap repo missing: $HOMEBREW_TAP_REMOTE
-Create an empty public repo named homebrew-brokr under Furowu, then rerun ./d brew
-  https://github.com/new?name=homebrew-brokr
+Create an empty public repo named homebrew-brokre under Furowu, then rerun ./d brew
+  https://github.com/new?name=homebrew-brokre
 Or skip for now: ./d release X.Y.Z --skip-brew"
       fi
       cat "$tap_dir.clone.err" >&2
@@ -484,7 +484,7 @@ Or skip for now: ./d release X.Y.Z --skip-brew"
     || git -C "$tap_dir" pull --rebase origin master 2>/dev/null \
     || true
 
-  formula_dest="$tap_dir/Formula/brokr.rb"
+  formula_dest="$tap_dir/Formula/brokre.rb"
   mkdir -p "$(dirname "$formula_dest")"
   cp "$HOMEBREW_RB" "$formula_dest"
 
@@ -492,11 +492,11 @@ Or skip for now: ./d release X.Y.Z --skip-brew"
     log "homebrew tap unchanged (already v$v?)"
     return 0
   fi
-  git -C "$tap_dir" add Formula/brokr.rb
-  git -C "$tap_dir" commit -m "brokr $v"
+  git -C "$tap_dir" add Formula/brokre.rb
+  git -C "$tap_dir" commit -m "brokre $v"
   git -C "$tap_dir" push
-  log "homebrew tap published: $HOMEBREW_TAP_REMOTE (Formula/brokr.rb @ v$v)"
-  log "install: brew tap Furowu/brokr && brew install brokr"
+  log "homebrew tap published: $HOMEBREW_TAP_REMOTE (Formula/brokre.rb @ v$v)"
+  log "install: brew tap Furowu/brokre && brew install brokre"
 }
 
 publish_brew() {
@@ -508,7 +508,7 @@ commit_version_bump() {
   local v msg
   v=$(read_version)
   msg="${1:-chore: release v${v}}"
-  git -C "$DEPLOY_ROOT" add VERSION Cargo.toml packages/brokr-mcp/package.json homebrew/brokr.rb
+  git -C "$DEPLOY_ROOT" add VERSION Cargo.toml packages/brokre-mcp/package.json homebrew/brokre.rb
   if git -C "$DEPLOY_ROOT" diff --cached --quiet; then
     log "version already at v$v (nothing to commit)"
     return 0

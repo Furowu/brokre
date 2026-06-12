@@ -38,10 +38,10 @@ fn reuse_existing(
 ) -> Result<()> {
     let url = existing.url();
     eprintln!(
-        "brokr manage: reusing existing instance (pid {})",
+        "brokre manage: reusing existing instance (pid {})",
         existing.pid
     );
-    eprintln!("brokr manage: {}", url);
+    eprintln!("brokre manage: {}", url);
     if open {
         let open_url = url.clone();
         thread::spawn(move || {
@@ -50,7 +50,7 @@ fn reuse_existing(
         });
     } else {
         eprintln!(
-            "brokr manage: already running — use --open for browser, or stop pid {} first",
+            "brokre manage: already running — use --open for browser, or stop pid {} first",
             existing.pid
         );
     }
@@ -64,7 +64,7 @@ fn wait_for_shutdown() {
         use signal_hook::iterator::Signals;
         if let Ok(mut signals) = Signals::new([SIGINT, SIGTERM]) {
             if signals.forever().next().is_some() {
-                eprintln!("brokr manage: stopped");
+                eprintln!("brokre manage: stopped");
                 unregister_instance();
                 std::process::exit(0);
             }
@@ -78,7 +78,7 @@ fn wait_for_shutdown() {
 
 /// Spawn manage in background for first-run onboarding (non-blocking).
 pub fn spawn_onboard_background() {
-    eprintln!("brokr: starting setup wizard in background…");
+    eprintln!("brokre: starting setup wizard in background…");
     let exe = match std::env::current_exe() {
         Ok(p) => p,
         Err(_) => return,

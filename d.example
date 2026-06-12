@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
-# brokr deploy — local only (copy to ./d; both ./d and ./r are gitignored).
+# brokre deploy — local only (copy to ./d; both ./d and ./r are gitignored).
 #
 # Usage:
 #   ./d version 0.2.0       Set semver and sync VERSION / Cargo.toml / npm / homebrew
 #   ./d build               Native release build for current host (dev)
 #   ./d pack                Pack any local target/ binaries into dist/ (optional)
 #   ./d github              Tag, push; GitHub Actions builds all platforms
-#   ./d npm                 Publish @techinone/brokr (after GitHub assets exist)
-#   ./d brew [--from-dist]  Update homebrew/brokr.rb sha256 + push tap
+#   ./d npm                 Publish brokre (after GitHub assets exist)
+#   ./d brew [--from-dist]  Update homebrew/brokre.rb sha256 + push tap
 #   ./d gitee               Push branch + tag to Gitee mirror
 #   ./d remotes             Ensure origin (GitHub) + gitee remotes
 #   ./d release 0.2.0       Full pipeline (tag → CI build → brew → npm)
@@ -16,10 +16,10 @@
 # Release binaries: .github/workflows/release.yml (all 5 platforms, incl. Windows)
 #
 # Config (optional): .deploy.env
-#   GITHUB_REMOTE=origin          → https://github.com/Furowu/brokr.git
-#   GITEE_REMOTE=gitee            → https://gitee.com/furowu/brokr.git
-#   HOMEBREW_TAP_REMOTE=https://github.com/Furowu/homebrew-brokr.git
-#   HOMEBREW_TAP_DIR=../homebrew-brokr
+#   GITHUB_REMOTE=origin          → https://github.com/Furowu/brokre.git
+#   GITEE_REMOTE=gitee            → https://gitee.com/furowu/brokre.git
+#   HOMEBREW_TAP_REMOTE=https://github.com/Furowu/homebrew-brokre.git
+#   HOMEBREW_TAP_DIR=../homebrew-brokre
 #   GITEE_BRANCH=main
 #   DEPLOY_ALLOW_DIRTY=1
 #
@@ -102,7 +102,7 @@ cmd_release() {
   if [[ "$skip_brew" -eq 0 ]]; then
     update_homebrew_formula --wait
     publish_homebrew_tap
-    git -C "$DEPLOY_ROOT" add homebrew/brokr.rb
+    git -C "$DEPLOY_ROOT" add homebrew/brokre.rb
     if ! git -C "$DEPLOY_ROOT" diff --cached --quiet; then
       git -C "$DEPLOY_ROOT" commit -m "chore: homebrew sha256 v${v}"
       git -C "$DEPLOY_ROOT" push "$GITHUB_REMOTE" HEAD

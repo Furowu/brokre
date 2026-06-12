@@ -2,7 +2,7 @@ use std::io;
 use thiserror::Error;
 
 #[derive(Error, Debug)]
-pub enum BrokrError {
+pub enum BrokreError {
     #[error("vault error: {0}")]
     Vault(String),
     #[error("crypto error: {0}")]
@@ -23,4 +23,4 @@ pub enum BrokrError {
     Io(#[from] io::Error),
 }
 
-pub type Result<T> = std::result::Result<T, BrokrError>;
+pub type Result<T> = std::result::Result<T, BrokreError>;

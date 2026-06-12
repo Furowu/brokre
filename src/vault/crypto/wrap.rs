@@ -1,4 +1,4 @@
-use crate::utils::errors::{BrokrError, Result};
+use crate::utils::errors::{BrokreError, Result};
 use serde::{Deserialize, Serialize};
 
 /// A DEK wrapped by a KEK using AES-256-GCM.
@@ -17,7 +17,7 @@ pub fn unwrap_dek(w: &WrappedKey, kek: &[u8; 32]) -> Result<[u8; 32]> {
     let pt = super::aead::aead_decrypt(kek, &w.nonce, &w.ct)?;
     let bytes = pt.expose();
     if bytes.len() != 32 {
-        return Err(BrokrError::Crypto("unwrapped dek length mismatch".into()));
+        return Err(BrokreError::Crypto("unwrapped dek length mismatch".into()));
     }
     let mut dek = [0u8; 32];
     dek.copy_from_slice(bytes);

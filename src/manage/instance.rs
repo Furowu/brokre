@@ -1,6 +1,6 @@
-//! Cross-process singleton registry for the manage HTTP server (`~/.brokr/run/manage.json`).
+//! Cross-process singleton registry for the manage HTTP server (`~/.brokre/run/manage.json`).
 
-use crate::utils::errors::{BrokrError, Result};
+use crate::utils::errors::{BrokreError, Result};
 use crate::utils::paths::run_dir;
 use fs4::fs_std::FileExt;
 use serde::{Deserialize, Serialize};
@@ -113,14 +113,14 @@ pub fn acquire_start_lock() -> Result<ManageStartLock> {
         .create(true)
         .truncate(true)
         .open(&path)
-        .map_err(BrokrError::Io)?;
+        .map_err(BrokreError::Io)?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
         let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
     }
     file.try_lock_exclusive()
-        .map_err(|_| BrokrError::Runtime("another brokr manage is starting".into()))?;
+        .map_err(|_| BrokreError::Runtime("another brokre manage is starting".into()))?;
     Ok(ManageStartLock { _lock: file })
 }
 
@@ -130,20 +130,20 @@ pub fn register_instance(port: u16, token: &str) -> Result<()> {
         port,
         token: token.to_string(),
     };
-    let json = serde_json::to_string_pretty(&rec).map_err(|e| BrokrError::Cli(e.to_string()))?;
+    let json = serde_json::to_string_pretty(&rec).map_err(|e| BrokreError::Cli(e.to_string()))?;
     let path = instance_path();
     let mut f = OpenOptions::new()
         .write(true)
         .create(true)
         .truncate(true)
         .open(&path)
-        .map_err(BrokrError::Io)?;
+        .map_err(BrokreError::Io)?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
         let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
     }
-    f.write_all(json.as_bytes()).map_err(BrokrError::Io)?;
+    f.write_all(json.as_bytes()).map_err(BrokreError::Io)?;
     f.sync_all().ok();
     Ok(())
 }

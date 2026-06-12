@@ -24,9 +24,9 @@
 .env
 .env.*
 
-# Local brokr runtime data (if copied into repo for testing)
-.brokr/
-**/.brokr/
+# Local brokre runtime data (if copied into repo for testing)
+.brokre/
+**/.brokre/
 
 # macOS file-backed keychain keys (prevent accidental commit)
 .master_kek

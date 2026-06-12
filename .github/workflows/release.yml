@@ -35,15 +35,15 @@ jobs:
         run: |
           mkdir -p dist
           if [[ "${{ matrix.target }}" == *windows* ]]; then
-            cp target/${{ matrix.target }}/release/brokr.exe dist/brokr.exe
-            cd dist && tar -czf brokr-${{ matrix.target }}.tar.gz brokr.exe
+            cp target/${{ matrix.target }}/release/brokre.exe dist/brokre.exe
+            cd dist && tar -czf brokre-${{ matrix.target }}.tar.gz brokre.exe
           else
-            cp target/${{ matrix.target }}/release/brokr dist/brokr
-            cd dist && tar -czf brokr-${{ matrix.target }}.tar.gz brokr
+            cp target/${{ matrix.target }}/release/brokre dist/brokre
+            cd dist && tar -czf brokre-${{ matrix.target }}.tar.gz brokre
           fi
       - uses: actions/upload-artifact@v4
         with:
-          name: brokr-${{ matrix.target }}
+          name: brokre-${{ matrix.target }}
           path: dist/*.tar.gz
 
   release:

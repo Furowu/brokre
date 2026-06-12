@@ -4,7 +4,7 @@
 //! fire as the prompt becomes visible to the user. They are deliberately strict
 //! enough to avoid matching unrelated text like "password rotation policy".
 //!
-//! Users may override / extend this dictionary via `~/.brokr/prompts.toml`.
+//! Users may override / extend this dictionary via `~/.brokre/prompts.toml`.
 
 use regex::bytes::{Regex, RegexBuilder};
 use serde::Deserialize;
@@ -76,7 +76,7 @@ struct PromptsConfig {
 fn user_overrides() -> &'static HashMap<String, Vec<String>> {
     static CACHE: OnceLock<HashMap<String, Vec<String>>> = OnceLock::new();
     CACHE.get_or_init(|| {
-        let path = crate::utils::paths::brokr_home().join("prompts.toml");
+        let path = crate::utils::paths::brokre_home().join("prompts.toml");
         if !path.exists() {
             return HashMap::new();
         }

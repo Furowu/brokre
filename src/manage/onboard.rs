@@ -1,12 +1,12 @@
-use crate::utils::paths::brokr_home;
+use crate::utils::paths::brokre_home;
 use std::path::PathBuf;
 
 pub fn onboard_done_path() -> PathBuf {
-    brokr_home().join("onboard.done")
+    brokre_home().join("onboard.done")
 }
 
 pub fn onboard_spawned_path() -> PathBuf {
-    brokr_home().join(".onboard_spawned")
+    brokre_home().join(".onboard_spawned")
 }
 
 pub fn is_onboard_complete() -> bool {

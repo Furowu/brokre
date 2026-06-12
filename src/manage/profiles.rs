@@ -1,4 +1,4 @@
-use crate::utils::paths::brokr_home;
+use crate::utils::paths::brokre_home;
 use crate::vault::service::default_port_for;
 use crate::vault::store::VaultStore;
 use serde::{Deserialize, Serialize};
@@ -230,7 +230,7 @@ fn group_from_def(def: &ProfileGroupDef) -> ProfileGroupInfo {
 }
 
 fn load_user_groups() -> Vec<ProfileGroupInfo> {
-    let path = brokr_home().join("manage.toml");
+    let path = brokre_home().join("manage.toml");
     let Ok(content) = std::fs::read_to_string(&path) else {
         return Vec::new();
     };
@@ -328,7 +328,7 @@ fn custom_cli_group() -> ProfileGroupInfo {
     }
 }
 
-/// Built-in + `~/.brokr/manage.toml` + vault orphans + catch-all custom section.
+/// Built-in + `~/.brokre/manage.toml` + vault orphans + catch-all custom section.
 pub fn detect_profile_groups() -> Vec<ProfileGroupInfo> {
     let mut groups: Vec<ProfileGroupInfo> =
         BUILTIN_GROUPS.iter().map(group_from_def).collect();
@@ -448,7 +448,7 @@ mod tests {
 
     #[test]
     fn profile_available_requires_path_binary() {
-        assert!(!profile_available_for_create("definitely-not-a-real-brokr-cli-xyz"));
+        assert!(!profile_available_for_create("definitely-not-a-real-brokre-cli-xyz"));
         if which::which("ssh").is_ok() {
             assert!(profile_available_for_create("ssh"));
         }
@@ -459,10 +459,10 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let old_home = std::env::var_os("HOME");
         std::env::set_var("HOME", tmp.path());
-        let brokr = tmp.path().join(".brokr");
-        std::fs::create_dir_all(&brokr).unwrap();
+        let brokre = tmp.path().join(".brokre");
+        std::fs::create_dir_all(&brokre).unwrap();
         std::fs::write(
-            brokr.join("manage.toml"),
+            brokre.join("manage.toml"),
             r#"
 [[group]]
 id = "gaussdb"

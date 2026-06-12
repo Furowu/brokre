@@ -5,6 +5,6 @@ pub fn run() -> Result<()> {
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
-        .map_err(|e| crate::utils::errors::BrokrError::Runtime(e.to_string()))?;
+        .map_err(|e| crate::utils::errors::BrokreError::Runtime(e.to_string()))?;
     rt.block_on(run_mcp_server())
 }

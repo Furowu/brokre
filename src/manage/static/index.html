@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title data-i18n="title">brokr manage</title>
+<title data-i18n="title">brokre manage</title>
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
 body{font-family:system-ui,-apple-system,sans-serif;background:#f8f9fa;color:#111827;line-height:1.5;padding:1rem}
@@ -62,7 +62,7 @@ textarea{font:inherit;border:1px solid #d1d5db;border-radius:6px;padding:.4rem .
 <body>
 <div class="wrap">
   <header>
-    <h1 data-i18n="title">brokr manage</h1>
+    <h1 data-i18n="title">brokre manage</h1>
     <div class="hdr-right">
       <div class="lang-switch" id="lang-switch" title="Language">
         <span data-lang="en" class="on">EN</span>|<span data-lang="zh">中文</span>
@@ -90,28 +90,28 @@ textarea{font:inherit;border:1px solid #d1d5db;border-radius:6px;padding:.4rem .
     <div class="field hidden" id="field-cli">
       <label data-i18n="form.cli">CLI binary (on PATH)</label>
       <input id="f-cli" data-i18n-placeholder="form.cliPh" placeholder="gsql">
-      <p class="hint" data-i18n="form.cliHint">Any CLI on PATH, or add groups in ~/.brokr/manage.toml</p>
+      <p class="hint" data-i18n="form.cliHint">Any CLI on PATH, or add groups in ~/.brokre/manage.toml</p>
     </div>
-    <div class="field"><label data-i18n="form.alias">alias</label><input id="f-name" name="brokr-alias" autocomplete="off" placeholder="prod-bastion"></div>
+    <div class="field"><label data-i18n="form.alias">alias</label><input id="f-name" name="brokre-alias" autocomplete="off" placeholder="prod-bastion"></div>
     <div class="field" id="field-host-row">
       <label data-i18n="form.host">host</label>
       <div class="host-port-row">
         <div class="host-cell">
-          <input id="f-host" name="brokr-host" autocomplete="off" placeholder="10.0.0.1">
+          <input id="f-host" name="brokre-host" autocomplete="off" placeholder="10.0.0.1">
         </div>
         <div class="port-cell hidden" id="field-port-inline">
           <label data-i18n="form.portShort">port</label>
-          <input id="f-port" type="text" name="brokr-port" inputmode="numeric" pattern="[0-9]*" autocomplete="off" data-lpignore="true" data-1p-ignore placeholder="">
+          <input id="f-port" type="text" name="brokre-port" inputmode="numeric" pattern="[0-9]*" autocomplete="off" data-lpignore="true" data-1p-ignore placeholder="">
         </div>
       </div>
       <p class="hint hidden" id="field-port-hint"></p>
     </div>
     <div class="field" id="field-user">
       <label id="f-user-label" data-i18n="form.userRequired">user (required)</label>
-      <input id="f-user" name="brokr-user" autocomplete="off" placeholder="">
+      <input id="f-user" name="brokre-user" autocomplete="off" placeholder="">
       <p class="hint" id="field-user-hint"></p>
     </div>
-    <div class="field" id="field-extra"><label data-i18n="form.extra">extra args (optional, quoted)</label><input id="f-extra" name="brokr-extra" autocomplete="off" placeholder="-e &quot;SHOW TABLES&quot;"></div>
+    <div class="field" id="field-extra"><label data-i18n="form.extra">extra args (optional, quoted)</label><input id="f-extra" name="brokre-extra" autocomplete="off" placeholder="-e &quot;SHOW TABLES&quot;"></div>
     <div class="field hidden" id="field-ssh-auth">
       <label data-i18n="form.sshAuth">SSH auth method</label>
       <select id="f-auth-type">
@@ -128,11 +128,11 @@ textarea{font:inherit;border:1px solid #d1d5db;border-radius:6px;padding:.4rem .
     </div>
     <div class="field hidden" id="field-key-passphrase">
       <label data-i18n="form.keyPass">Key passphrase (unlock encrypted key)</label>
-      <input id="f-key-passphrase" type="text" class="input-secret brokr-secret" name="brokr-key-passphrase" autocomplete="one-time-code" spellcheck="false" autocorrect="off" autocapitalize="off" data-lpignore="true" data-1p-ignore data-form-type="other">
+      <input id="f-key-passphrase" type="text" class="input-secret brokre-secret" name="brokre-key-passphrase" autocomplete="one-time-code" spellcheck="false" autocorrect="off" autocapitalize="off" data-lpignore="true" data-1p-ignore data-form-type="other">
       <p class="hint" data-i18n="form.keyPassHint">Not the server login password; leave blank if key is unencrypted.</p>
     </div>
-    <div class="field" id="field-password"><label id="f-password-label" data-i18n="form.password">password</label><input id="f-password" type="text" class="input-secret brokr-secret" name="brokr-credential-secret" autocomplete="one-time-code" spellcheck="false" autocorrect="off" autocapitalize="off" data-lpignore="true" data-1p-ignore data-form-type="other"></div>
-    <div class="field"><label data-i18n="form.reveal">reveal passphrase (optional, for brokr reveal)</label><input id="f-reveal" type="text" class="input-secret brokr-secret" name="brokr-reveal-passphrase" autocomplete="one-time-code" spellcheck="false" autocorrect="off" autocapitalize="off" data-lpignore="true" data-1p-ignore data-form-type="other"></div>
+    <div class="field" id="field-password"><label id="f-password-label" data-i18n="form.password">password</label><input id="f-password" type="text" class="input-secret brokre-secret" name="brokre-credential-secret" autocomplete="one-time-code" spellcheck="false" autocorrect="off" autocapitalize="off" data-lpignore="true" data-1p-ignore data-form-type="other"></div>
+    <div class="field"><label data-i18n="form.reveal">reveal passphrase (optional, for brokre reveal)</label><input id="f-reveal" type="text" class="input-secret brokre-secret" name="brokre-reveal-passphrase" autocomplete="one-time-code" spellcheck="false" autocorrect="off" autocapitalize="off" data-lpignore="true" data-1p-ignore data-form-type="other"></div>
     <div class="err" id="form-err"></div>
     <div class="actions">
       <button type="button" class="secondary" data-close data-i18n="btn.cancel">Cancel</button>
@@ -147,8 +147,8 @@ textarea{font:inherit;border:1px solid #d1d5db;border-radius:6px;padding:.4rem .
     <form autocomplete="off" onsubmit="return false" data-bwignore>
     <h3 data-i18n="rotate.title">Rotate password</h3>
     <p class="muted" id="rotate-target"></p>
-    <div class="field"><label data-i18n="rotate.new">New password</label><input id="r-password" type="text" class="input-secret brokr-secret" name="brokr-rotate-secret" autocomplete="one-time-code" spellcheck="false" autocorrect="off" autocapitalize="off" data-lpignore="true" data-1p-ignore data-form-type="other"></div>
-    <div class="field"><label data-i18n="rotate.auth">reveal passphrase or YES</label><input id="r-auth" type="text" class="input-secret brokr-secret" name="brokr-rotate-auth" autocomplete="one-time-code" spellcheck="false" autocorrect="off" autocapitalize="off" data-lpignore="true" data-1p-ignore data-form-type="other"></div>
+    <div class="field"><label data-i18n="rotate.new">New password</label><input id="r-password" type="text" class="input-secret brokre-secret" name="brokre-rotate-secret" autocomplete="one-time-code" spellcheck="false" autocorrect="off" autocapitalize="off" data-lpignore="true" data-1p-ignore data-form-type="other"></div>
+    <div class="field"><label data-i18n="rotate.auth">reveal passphrase or YES</label><input id="r-auth" type="text" class="input-secret brokre-secret" name="brokre-rotate-auth" autocomplete="one-time-code" spellcheck="false" autocorrect="off" autocapitalize="off" data-lpignore="true" data-1p-ignore data-form-type="other"></div>
     <div class="err" id="rotate-err"></div>
     <div class="actions">
       <button type="button" class="secondary" data-close data-i18n="btn.cancel">Cancel</button>
@@ -163,7 +163,7 @@ textarea{font:inherit;border:1px solid #d1d5db;border-radius:6px;padding:.4rem .
     <form autocomplete="off" onsubmit="return false" data-bwignore>
     <h3 data-i18n="delete.title">Delete credential</h3>
     <p class="muted" id="delete-target"></p>
-    <div class="field"><label data-i18n="delete.auth">reveal passphrase or YES</label><input id="d-auth" type="text" class="input-secret brokr-secret" name="brokr-delete-auth" autocomplete="one-time-code" spellcheck="false" autocorrect="off" autocapitalize="off" data-lpignore="true" data-1p-ignore data-form-type="other"></div>
+    <div class="field"><label data-i18n="delete.auth">reveal passphrase or YES</label><input id="d-auth" type="text" class="input-secret brokre-secret" name="brokre-delete-auth" autocomplete="one-time-code" spellcheck="false" autocorrect="off" autocapitalize="off" data-lpignore="true" data-1p-ignore data-form-type="other"></div>
     <div class="err" id="delete-err"></div>
     <div class="actions">
       <button type="button" class="secondary" data-close data-i18n="btn.cancel">Cancel</button>
@@ -177,14 +177,14 @@ textarea{font:inherit;border:1px solid #d1d5db;border-radius:6px;padding:.4rem .
 (function(){
   const I18N = {
     en: {
-      title: 'brokr manage',
+      title: 'brokre manage',
       'onboard.text': 'Maintain accounts by installed CLI groups. Passwords are write-only.',
       'onboard.skip': 'Skip',
       'search.placeholder': 'Search alias / host',
       'form.new': 'New credential',
       'form.cli': 'CLI binary (on PATH)',
       'form.cliPh': 'gsql',
-      'form.cliHint': 'Any CLI on PATH, or add groups in ~/.brokr/manage.toml',
+      'form.cliHint': 'Any CLI on PATH, or add groups in ~/.brokre/manage.toml',
       'form.alias': 'alias',
       'form.host': 'host',
       'form.port': 'port (optional)',
@@ -210,7 +210,7 @@ textarea{font:inherit;border:1px solid #d1d5db;border-radius:6px;padding:.4rem .
       'form.password': 'password',
       'form.passwordSsh': 'SSH login password',
       'form.passwordSsh2': 'SSH login password (server)',
-      'form.reveal': 'reveal passphrase (optional, for brokr reveal)',
+      'form.reveal': 'reveal passphrase (optional, for brokre reveal)',
       'rotate.title': 'Rotate password',
       'rotate.new': 'New password',
       'rotate.auth': 'reveal passphrase or YES',
@@ -242,7 +242,7 @@ textarea{font:inherit;border:1px solid #d1d5db;border-radius:6px;padding:.4rem .
       'last': 'last',
       'profile': 'profile',
       'form.newGroup': 'New {label} account',
-      'form.cmdHint': 'Command: brokr {cli} <alias> (detected: {bins})',
+      'form.cmdHint': 'Command: brokre {cli} <alias> (detected: {bins})',
       'keyReadErr': 'Cannot read key file',
       'group.custom': 'Other CLI',
       'group.ssh': 'SSH', 'group.ftp': 'FTP', 'group.lftp': 'LFTP',
@@ -250,14 +250,14 @@ textarea{font:inherit;border:1px solid #d1d5db;border-radius:6px;padding:.4rem .
       'group.clickhouse': 'ClickHouse', 'group.minio': 'MinIO'
     },
     zh: {
-      title: 'brokr 管理',
+      title: 'brokre 管理',
       'onboard.text': '按本机已安装的 CLI 分组维护账号。密码只能写入，无法查看。',
       'onboard.skip': '跳过引导',
       'search.placeholder': '搜索 alias / host',
       'form.new': '新建凭证',
       'form.cli': 'CLI 命令名（需在 PATH）',
       'form.cliPh': 'gsql',
-      'form.cliHint': '任意 PATH 上的 CLI；也可在 ~/.brokr/manage.toml 中定义分组',
+      'form.cliHint': '任意 PATH 上的 CLI；也可在 ~/.brokre/manage.toml 中定义分组',
       'form.alias': 'alias',
       'form.host': 'host',
       'form.port': 'port（可选）',
@@ -283,7 +283,7 @@ textarea{font:inherit;border:1px solid #d1d5db;border-radius:6px;padding:.4rem .
       'form.password': 'password',
       'form.passwordSsh': 'SSH 登录密码',
       'form.passwordSsh2': 'SSH 登录密码（服务器口令）',
-      'form.reveal': 'reveal passphrase（可选，用于 brokr reveal）',
+      'form.reveal': 'reveal passphrase（可选，用于 brokre reveal）',
       'rotate.title': '轮换密码',
       'rotate.new': '新 password',
       'rotate.auth': 'reveal passphrase 或 YES',
@@ -315,7 +315,7 @@ textarea{font:inherit;border:1px solid #d1d5db;border-radius:6px;padding:.4rem .
       'last': 'last',
       'profile': 'profile',
       'form.newGroup': '新建 {label} 账号',
-      'form.cmdHint': '将使用命令: brokr {cli} <alias>（已检测: {bins}）',
+      'form.cmdHint': '将使用命令: brokre {cli} <alias>（已检测: {bins}）',
       'keyReadErr': '无法读取私钥文件',
       'group.custom': '其他 CLI',
       'group.ssh': 'SSH', 'group.ftp': 'FTP', 'group.lftp': 'LFTP',
@@ -325,7 +325,7 @@ textarea{font:inherit;border:1px solid #d1d5db;border-radius:6px;padding:.4rem .
   };
 
   function detectLang() {
-    const stored = localStorage.getItem('brokr_lang');
+    const stored = localStorage.getItem('brokre_lang');
     if (stored === 'en' || stored === 'zh') return stored;
     const nav = (navigator.language || navigator.userLanguage || 'en').toLowerCase();
     return nav.startsWith('zh') ? 'zh' : 'en';
@@ -368,13 +368,13 @@ textarea{font:inherit;border:1px solid #d1d5db;border-radius:6px;padding:.4rem .
     const el = ev.target.closest('[data-lang]');
     if (!el) return;
     lang = el.dataset.lang;
-    localStorage.setItem('brokr_lang', lang);
+    localStorage.setItem('brokre_lang', lang);
     applyI18n();
   });
 
   const params = new URLSearchParams(location.search);
-  const token = params.get('t') || sessionStorage.getItem('brokr_token') || '';
-  if (token) sessionStorage.setItem('brokr_token', token);
+  const token = params.get('t') || sessionStorage.getItem('brokre_token') || '';
+  if (token) sessionStorage.setItem('brokre_token', token);
   if (params.has('t') && history.replaceState) {
     history.replaceState(null, '', location.pathname);
   }
@@ -508,7 +508,7 @@ textarea{font:inherit;border:1px solid #d1d5db;border-radius:6px;padding:.4rem .
   /** Block browser password-manager heuristics (readonly until focus). */
   function armSecretInputs(container) {
     if (!container) return;
-    container.querySelectorAll('.brokr-secret').forEach(function(el) {
+    container.querySelectorAll('.brokre-secret').forEach(function(el) {
       el.setAttribute('readonly', 'readonly');
       el.addEventListener('focus', function onSecretFocus() {
         el.removeAttribute('readonly');

@@ -1,4 +1,4 @@
-use crate::utils::errors::{BrokrError, Result};
+use crate::utils::errors::{BrokreError, Result};
 use crate::utils::paths::vault_path;
 use crate::vault::model::SecretRecord;
 use fs4::fs_std::FileExt;
@@ -43,7 +43,7 @@ impl VaultStore {
                 continue;
             }
             let rec: SecretRecord =
-                serde_json::from_str(&line).map_err(|e| BrokrError::Vault(e.to_string()))?;
+                serde_json::from_str(&line).map_err(|e| BrokreError::Vault(e.to_string()))?;
             records.push(rec);
         }
         Ok(records)
@@ -64,7 +64,7 @@ impl VaultStore {
             }
             for rec in records {
                 let line =
-                    serde_json::to_string(rec).map_err(|e| BrokrError::Vault(e.to_string()))?;
+                    serde_json::to_string(rec).map_err(|e| BrokreError::Vault(e.to_string()))?;
                 writeln!(file, "{}", line)?;
             }
             file.sync_all()?;
@@ -78,7 +78,7 @@ impl VaultStore {
             return Ok(vec![]);
         }
         let file = OpenOptions::new().read(true).open(&self.path)?;
-        file.lock_shared().map_err(BrokrError::Io)?;
+        file.lock_shared().map_err(BrokreError::Io)?;
         let result = self.read_all();
         let _ = file.unlock();
         result
@@ -98,7 +98,7 @@ impl VaultStore {
 
     pub fn insert(&self, r: SecretRecord) -> Result<()> {
         if !SecretRecord::validate_name(&r.name) {
-            return Err(BrokrError::Vault(format!("invalid name: {}", r.name)));
+            return Err(BrokreError::Vault(format!("invalid name: {}", r.name)));
         }
         let file = OpenOptions::new()
             .read(true)
@@ -106,14 +106,14 @@ impl VaultStore {
             .create(true)
             .truncate(false)
             .open(&self.path)?;
-        file.lock_exclusive().map_err(BrokrError::Io)?;
+        file.lock_exclusive().map_err(BrokreError::Io)?;
         let mut records = self.read_all()?;
         if records
             .iter()
             .any(|rec| rec.profile == r.profile && rec.name == r.name)
         {
             let _ = file.unlock();
-            return Err(BrokrError::Vault(format!(
+            return Err(BrokreError::Vault(format!(
                 "record ({}, {}) already exists",
                 r.profile, r.name
             )));
@@ -126,13 +126,13 @@ impl VaultStore {
 
     pub fn update(&self, r: SecretRecord) -> Result<()> {
         let file = OpenOptions::new().read(true).write(true).open(&self.path)?;
-        file.lock_exclusive().map_err(BrokrError::Io)?;
+        file.lock_exclusive().map_err(BrokreError::Io)?;
         let mut records = self.read_all()?;
         let pos = records
             .iter()
             .position(|rec| rec.profile == r.profile && rec.name == r.name)
             .ok_or_else(|| {
-                BrokrError::Vault(format!("record ({}, {}) not found", r.profile, r.name))
+                BrokreError::Vault(format!("record ({}, {}) not found", r.profile, r.name))
             })?;
         records[pos] = r;
         let result = self.write_all(&records);
@@ -142,13 +142,13 @@ impl VaultStore {
 
     pub fn delete(&self, profile: &str, name: &str) -> Result<()> {
         let file = OpenOptions::new().read(true).write(true).open(&self.path)?;
-        file.lock_exclusive().map_err(BrokrError::Io)?;
+        file.lock_exclusive().map_err(BrokreError::Io)?;
         let mut records = self.read_all()?;
         let old_len = records.len();
         records.retain(|rec| !(rec.profile == profile && rec.name == name));
         if records.len() == old_len {
             let _ = file.unlock();
-            return Err(BrokrError::Vault(format!(
+            return Err(BrokreError::Vault(format!(
                 "record ({}, {}) not found",
                 profile, name
             )));

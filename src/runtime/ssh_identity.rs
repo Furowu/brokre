@@ -1,7 +1,7 @@
 //! Write a vault-stored SSH private key to a short-lived 0600 file for `ssh -i`.
 
 use crate::security::secret::SecretString;
-use crate::utils::errors::{BrokrError, Result};
+use crate::utils::errors::{BrokreError, Result};
 use crate::utils::paths::run_dir;
 use crate::vault::crypto::record::decrypt_for_exec;
 use crate::vault::keychain::get_or_init_master_kek;
@@ -61,7 +61,7 @@ pub fn insert_identity_arg(argv: &mut Vec<String>, key_path: &std::path::Path) {
     argv.insert(pos, "-i".into());
 }
 
-/// Decrypt `private_key`, write to `~/.brokr/run/`, return guard that deletes on drop.
+/// Decrypt `private_key`, write to `~/.brokre/run/`, return guard that deletes on drop.
 ///
 /// **Security note (T1):** Unlike vault passwords (injector child), private keys are
 /// decrypted in the parent process today. See `docs/HARDENING.md`.
@@ -73,7 +73,7 @@ pub fn materialize_identity(rec: &SecretRecord) -> Result<Option<SecureKeyFile>>
     let fields = decrypt_for_exec(&rec.crypto, &master)?;
     let key = fields
         .get("private_key")
-        .ok_or_else(|| BrokrError::Vault("record missing private_key field".into()))?;
+        .ok_or_else(|| BrokreError::Vault("record missing private_key field".into()))?;
     let path = write_key_file(key)?;
     Ok(Some(SecureKeyFile { path }))
 }
@@ -86,15 +86,15 @@ fn write_key_file(key: &SecretString) -> Result<PathBuf> {
             .write(true)
             .create_new(true)
             .open(&path)
-            .map_err(BrokrError::Io)?;
+            .map_err(BrokreError::Io)?;
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
             let _ = fs::set_permissions(&path, fs::Permissions::from_mode(0o600));
         }
         file.write_all(key.expose().as_bytes())
-            .map_err(BrokrError::Io)?;
-        file.sync_all().map_err(BrokrError::Io)?;
+            .map_err(BrokreError::Io)?;
+        file.sync_all().map_err(BrokreError::Io)?;
     }
     Ok(path)
 }
@@ -151,19 +151,19 @@ pub fn build_ssh_secret_fields(
     let mut fields = BTreeMap::new();
     match auth_type {
         "password" => {
-            let pw = password.ok_or_else(|| BrokrError::Vault("password is required".into()))?;
+            let pw = password.ok_or_else(|| BrokreError::Vault("password is required".into()))?;
             if pw.is_empty() {
-                return Err(BrokrError::Vault("password is required".into()));
+                return Err(BrokreError::Vault("password is required".into()));
             }
             fields.insert("password".into(), pw);
         }
         "key" => {
-            let key = private_key.ok_or_else(|| BrokrError::Vault("private_key is required".into()))?;
+            let key = private_key.ok_or_else(|| BrokreError::Vault("private_key is required".into()))?;
             if key.is_empty() {
-                return Err(BrokrError::Vault("private_key is required".into()));
+                return Err(BrokreError::Vault("private_key is required".into()));
             }
             if !validate_private_key_pem(key.expose()) {
-                return Err(BrokrError::Vault("invalid private key PEM".into()));
+                return Err(BrokreError::Vault("invalid private key PEM".into()));
             }
             fields.insert("private_key".into(), key);
             if let Some(kp) = key_passphrase.filter(|s| !s.is_empty()) {
@@ -171,13 +171,13 @@ pub fn build_ssh_secret_fields(
             }
         }
         "key_and_password" => {
-            let key = private_key.ok_or_else(|| BrokrError::Vault("private_key is required".into()))?;
-            let pw = password.ok_or_else(|| BrokrError::Vault("password is required".into()))?;
+            let key = private_key.ok_or_else(|| BrokreError::Vault("private_key is required".into()))?;
+            let pw = password.ok_or_else(|| BrokreError::Vault("password is required".into()))?;
             if key.is_empty() || pw.is_empty() {
-                return Err(BrokrError::Vault("private_key and password are required".into()));
+                return Err(BrokreError::Vault("private_key and password are required".into()));
             }
             if !validate_private_key_pem(key.expose()) {
-                return Err(BrokrError::Vault("invalid private key PEM".into()));
+                return Err(BrokreError::Vault("invalid private key PEM".into()));
             }
             fields.insert("private_key".into(), key);
             fields.insert("password".into(), pw);
@@ -186,7 +186,7 @@ pub fn build_ssh_secret_fields(
             }
         }
         other => {
-            return Err(BrokrError::Vault(format!("unknown auth_type: {}", other)));
+            return Err(BrokreError::Vault(format!("unknown auth_type: {}", other)));
         }
     }
     Ok(fields)

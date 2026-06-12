@@ -1,7 +1,7 @@
 use crate::audit::logger::{append, AuditEvent};
 use crate::security::prompt::prompt_with_retries;
 use crate::security::tty::{stdin_is_real_tty, stdout_is_real_tty};
-use crate::utils::errors::{BrokrError, Result};
+use crate::utils::errors::{BrokreError, Result};
 use crate::vault::keychain::get_or_init_audit_hmac_key;
 use crate::vault::store::VaultStore;
 use chrono::Utc;
@@ -27,13 +27,13 @@ pub fn run(profile: String, name: String, field: Option<String>) -> Result<()> {
             hmac: None,
         };
         let _ = append(&mut ev, &get_or_init_audit_hmac_key()?);
-        return Err(BrokrError::NoTty);
+        return Err(BrokreError::NoTty);
     }
 
     let store = VaultStore::open()?;
     let rec = store
         .get(&profile, &name)?
-        .ok_or_else(|| BrokrError::Cli(format!("record not found: {}/{}", profile, name)))?;
+        .ok_or_else(|| BrokreError::Cli(format!("record not found: {}/{}", profile, name)))?;
 
     let passphrase = prompt_with_retries(
         "Master passphrase",
@@ -55,7 +55,7 @@ pub fn run(profile: String, name: String, field: Option<String>) -> Result<()> {
         if let Some(val) = fields.get(&f) {
             println!("{}", val.expose());
         } else {
-            return Err(BrokrError::Cli(format!("field not found: {}", f)));
+            return Err(BrokreError::Cli(format!("field not found: {}", f)));
         }
     } else {
         for (k, v) in &fields {

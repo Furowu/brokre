@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-REPO="Furowu/brokr"
+REPO="Furowu/brokre"
 INSTALL_DIR="/usr/local/bin"
 
 OS=$(uname -s | tr '[:upper:]' '[:lower:]')
@@ -28,13 +28,13 @@ case "$OS" in
         ;;
 esac
 
-parse_brokr_version() {
+parse_brokre_version() {
     echo "$1" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1
 }
 
 INSTALLED_VER=""
-if command -v brokr >/dev/null 2>&1; then
-    INSTALLED_VER=$(parse_brokr_version "$(brokr --version 2>/dev/null || true)")
+if command -v brokre >/dev/null 2>&1; then
+    INSTALLED_VER=$(parse_brokre_version "$(brokre --version 2>/dev/null || true)")
 fi
 
 VERSION_ARG=${1:-latest}
@@ -46,60 +46,60 @@ if [ "$VERSION_ARG" = "latest" ]; then
         exit 1
     fi
     TARGET_VER="$TAG"
-    URL="https://github.com/$REPO/releases/latest/download/brokr-$TARGET.tar.gz"
+    URL="https://github.com/$REPO/releases/latest/download/brokre-$TARGET.tar.gz"
 else
     TARGET_VER="${VERSION_ARG#v}"
-    URL="https://github.com/$REPO/releases/download/v${TARGET_VER}/brokr-$TARGET.tar.gz"
+    URL="https://github.com/$REPO/releases/download/v${TARGET_VER}/brokre-$TARGET.tar.gz"
 fi
 
-if [ -n "$INSTALLED_VER" ] && [ "$INSTALLED_VER" = "$TARGET_VER" ] && [ "${BROKR_INSTALL_FORCE:-}" != "1" ]; then
-    echo "brokr v$INSTALLED_VER already installed (up to date)."
-    echo "Force reinstall: BROKR_INSTALL_FORCE=1 curl -fsSL ... | bash"
+if [ -n "$INSTALLED_VER" ] && [ "$INSTALLED_VER" = "$TARGET_VER" ] && [ "${BROKRE_INSTALL_FORCE:-}" != "1" ]; then
+    echo "brokre v$INSTALLED_VER already installed (up to date)."
+    echo "Force reinstall: BROKRE_INSTALL_FORCE=1 curl -fsSL ... | bash"
     exit 0
 fi
 
 if [ -n "$INSTALLED_VER" ]; then
-    echo "Upgrading brokr v$INSTALLED_VER → v$TARGET_VER for $TARGET..."
+    echo "Upgrading brokre v$INSTALLED_VER → v$TARGET_VER for $TARGET..."
 else
-    echo "Installing brokr v$TARGET_VER for $TARGET..."
+    echo "Installing brokre v$TARGET_VER for $TARGET..."
 fi
 
 TMPDIR=$(mktemp -d)
 trap 'rm -rf "$TMPDIR"' EXIT
 
 echo "Downloading..."
-curl -fsSL "$URL" -o "$TMPDIR/brokr.tar.gz"
+curl -fsSL "$URL" -o "$TMPDIR/brokre.tar.gz"
 
 echo "Extracting..."
-tar -xzf "$TMPDIR/brokr.tar.gz" -C "$TMPDIR"
+tar -xzf "$TMPDIR/brokre.tar.gz" -C "$TMPDIR"
 
 echo "Installing to $INSTALL_DIR..."
-chmod +x "$TMPDIR/brokr"
-mv "$TMPDIR/brokr" "$INSTALL_DIR/brokr"
+chmod +x "$TMPDIR/brokre"
+mv "$TMPDIR/brokre" "$INSTALL_DIR/brokre"
 
 echo "Verifying..."
-brokr --version || true
+brokre --version || true
 
 if [ "$OS" = "darwin" ]; then
     echo
-    echo "Note: On macOS brokr stores its master key in ~/.brokr/ (file-based)"
+    echo "Note: On macOS brokre stores its master key in ~/.brokre/ (file-based)"
     echo "      instead of the OS Keychain to avoid authorization dialogs on"
-    echo "      every run. Set BROKR_USE_KEYCHAIN=1 if you prefer Keychain."
+    echo "      every run. Set BROKRE_USE_KEYCHAIN=1 if you prefer Keychain."
 fi
 
-echo "brokr installed successfully."
+echo "brokre installed successfully."
 
 if [ -z "$INSTALLED_VER" ]; then
     echo
     echo "Opening credential manager (background)..."
-    BROKR_HOME="${HOME}/.brokr"
-    mkdir -p "${BROKR_HOME}"
-    # Prevent a duplicate wizard if the user runs brokr immediately after install.
-    touch "${BROKR_HOME}/.onboard_spawned"
-    if brokr manage --onboard --open & then
+    BROKRE_HOME="${HOME}/.brokre"
+    mkdir -p "${BROKRE_HOME}"
+    # Prevent a duplicate wizard if the user runs brokre immediately after install.
+    touch "${BROKRE_HOME}/.onboard_spawned"
+    if brokre manage --onboard --open & then
         sleep 2
-        echo "If the browser did not open, check the URL printed above or run: brokr manage --onboard --open"
+        echo "If the browser did not open, check the URL printed above or run: brokre manage --onboard --open"
     else
-        echo "Run: brokr manage --onboard --open"
+        echo "Run: brokre manage --onboard --open"
     fi
 fi

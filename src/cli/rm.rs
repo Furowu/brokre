@@ -1,7 +1,7 @@
 use crate::audit::logger::{append, AuditEvent};
 use crate::security::prompt::prompt_with_retries;
 use crate::security::tty::stdin_is_real_tty;
-use crate::utils::errors::{BrokrError, Result};
+use crate::utils::errors::{BrokreError, Result};
 use crate::vault::keychain::get_or_init_audit_hmac_key;
 use crate::vault::service::verify_reveal_auth;
 use crate::vault::store::VaultStore;
@@ -38,20 +38,20 @@ fn audit_rm(action: &str, profile: &str, name: &str) {
 pub fn run(profile: String, name: String) -> Result<()> {
     if !stdin_is_real_tty() {
         audit_rm("rm/denied", &profile, &name);
-        return Err(BrokrError::NoTty);
+        return Err(BrokreError::NoTty);
     }
 
     let store = VaultStore::open()?;
     let rec = store
         .get(&profile, &name)?
-        .ok_or_else(|| BrokrError::Cli(format!("record not found: {}/{}", profile, name)))?;
+        .ok_or_else(|| BrokreError::Cli(format!("record not found: {}/{}", profile, name)))?;
 
     println!("Remove {}/{}? [y/N]", profile, name);
     let mut buf = String::new();
     std::io::stdin().read_line(&mut buf)?;
     if !buf.trim().eq_ignore_ascii_case("y") {
         audit_rm("rm/denied", &profile, &name);
-        return Err(BrokrError::Cli("cancelled".into()));
+        return Err(BrokreError::Cli("cancelled".into()));
     }
 
     // Verify passphrase — if the record has no reveal-capable passphrase
@@ -64,7 +64,7 @@ pub fn run(profile: String, name: String) -> Result<()> {
     );
     if needs_pass.is_err() {
         audit_rm("rm/denied", &profile, &name);
-        return Err(BrokrError::Cli("authentication failed".into()));
+        return Err(BrokreError::Cli("authentication failed".into()));
     }
 
     store.delete(&profile, &name)?;

@@ -1,4 +1,4 @@
-//! `brokr <cli> [args...]` — transparent PTY wrapper that:
+//! `brokre <cli> [args...]` — transparent PTY wrapper that:
 //!   1. Looks up an existing alias matching args; replays its saved_args
 //!      (leading flags before the alias, trailing command args after it)
 //!      and auto-injects the stored password.
@@ -6,17 +6,17 @@
 //!      types at a prompt, and offers to save it as an alias on success.
 //!
 //! Saved-alias one-shot commands:
-//!   `brokr ssh prod-bastion uname -a`
-//!   `brokr mysql prod-db -e "SHOW TABLES"`
+//!   `brokre ssh prod-bastion uname -a`
+//!   `brokre mysql prod-db -e "SHOW TABLES"`
 //!
-//! Exit code of the child is propagated verbatim. brokr never invents
+//! Exit code of the child is propagated verbatim. brokre never invents
 //! its own error code to mask a real connection / auth failure.
 
 use crate::audit::logger::{append, redact_args, AuditEvent};
 use crate::runtime::prompts::patterns_for;
 use crate::runtime::pty::PtyCredential;
 use crate::security::secret::SecretString;
-use crate::utils::errors::{BrokrError, Result};
+use crate::utils::errors::{BrokreError, Result};
 #[cfg(not(unix))]
 use crate::vault::crypto::record::decrypt_for_exec;
 use crate::vault::keychain::get_or_init_audit_hmac_key;
@@ -100,7 +100,7 @@ pub fn run(binary: String, args: Vec<String>) -> Result<()> {
     // Confirm binary is actually on PATH; otherwise produce the same error a
     // user would see by typing the command directly.
     if which::which(&binary).is_err() {
-        return Err(BrokrError::Runtime(format!(
+        return Err(BrokreError::Runtime(format!(
             "{}: command not found",
             binary
         )));
@@ -164,12 +164,12 @@ fn resolve_record(
                 )));
             }
             _ => {
-                eprintln!("brokr: multiple records match host '{}':", h);
+                eprintln!("brokre: multiple records match host '{}':", h);
                 for r in &matches {
                     eprintln!("  - {}/{}", r.profile, r.name);
                 }
                 eprintln!(
-                    "Use the alias name to disambiguate, e.g. `brokr {} <alias>`",
+                    "Use the alias name to disambiguate, e.g. `brokre {} <alias>`",
                     profile
                 );
                 std::process::exit(2);
@@ -218,7 +218,7 @@ fn exec_saved(
         let fields = decrypt_for_exec(&rec.crypto, &master_kek)?;
         let password = fields
             .get("password")
-            .ok_or_else(|| BrokrError::Vault("no password field in record".into()))?;
+            .ok_or_else(|| BrokreError::Vault("no password field in record".into()))?;
         crate::runtime::pty::run(
             profile,
             &argv,
@@ -266,13 +266,13 @@ fn exec_fresh(
     args: Vec<String>,
 ) -> Result<()> {
     if args.is_empty() {
-        // Allow zero-arg invocation (e.g. `brokr mysql` to launch interactive shell)
+        // Allow zero-arg invocation (e.g. `brokre mysql` to launch interactive shell)
         // — still run it but skip the save prompt.
     }
 
     if crate::security::tty::stdin_is_pipe() && is_openssh_profile(&profile) {
         eprintln!(
-            "brokr: stdin is a pipe; save credentials first with an interactive `brokr {} <host>` (TTY required).",
+            "brokre: stdin is a pipe; save credentials first with an interactive `brokre {} <host>` (TTY required).",
             profile.rsplit('/').next().unwrap_or(&profile)
         );
     }
@@ -314,7 +314,7 @@ fn exec_fresh(
         && is_openssh_profile(&profile)
     {
         eprintln!(
-            "brokr: password prompt seen but stdin is a pipe — cannot type or save. Run interactively first."
+            "brokre: password prompt seen but stdin is a pipe — cannot type or save. Run interactively first."
         );
     }
 
@@ -335,7 +335,7 @@ fn exec_fresh(
         }
     } else if pre_alias.is_some() {
         eprintln!(
-            "brokr: connection did not complete successfully — password not saved for alias '{}'",
+            "brokre: connection did not complete successfully — password not saved for alias '{}'",
             pre_alias.unwrap()
         );
     }
@@ -351,7 +351,7 @@ fn prompt_alias_beforehand(
 ) -> Result<Option<String>> {
     let suggested = suggest_name(profile, args);
     eprintln!();
-    eprintln!("brokr: first-time connection. Save as alias for next time?");
+    eprintln!("brokre: first-time connection. Save as alias for next time?");
     eprintln!("       alias (blank = skip) [{}]: ", suggested);
 
     let alias = read_line_from_tty()?;
@@ -365,12 +365,12 @@ fn prompt_alias_beforehand(
         alias
     };
     if !SecretRecord::validate_name(&alias) {
-        eprintln!("brokr: invalid alias '{}' — will skip save", alias);
+        eprintln!("brokre: invalid alias '{}' — will skip save", alias);
         return Ok(None);
     }
     if store.get(profile, &alias)?.is_some() {
         eprintln!(
-            "brokr: alias '{}/{}' already exists — will skip save",
+            "brokre: alias '{}/{}' already exists — will skip save",
             profile, alias
         );
         return Ok(None);
@@ -385,7 +385,7 @@ fn offer_save(
     password: SecretString,
 ) -> Result<()> {
     eprintln!();
-    eprintln!("brokr: ✓ login successful — save this connection for next time?");
+    eprintln!("brokre: ✓ login successful — save this connection for next time?");
     let suggested = suggest_name(profile, args);
     eprintln!("       alias (blank = skip) [{}]: ", suggested);
 
@@ -400,12 +400,12 @@ fn offer_save(
         alias
     };
     if !SecretRecord::validate_name(&alias) {
-        eprintln!("brokr: invalid alias '{}' — skipping save", alias);
+        eprintln!("brokre: invalid alias '{}' — skipping save", alias);
         return Ok(());
     }
     if store.get(profile, &alias)?.is_some() {
         eprintln!(
-            "brokr: alias '{}/{}' already exists — skipping save",
+            "brokre: alias '{}/{}' already exists — skipping save",
             profile, alias
         );
         return Ok(());
@@ -441,17 +441,17 @@ mod tests {
     {
         let tmp = tempfile::tempdir().unwrap();
         let old_home = env::var_os("HOME");
-        let old_fallback = env::var_os("BROKR_ALLOW_FILE_KEYCHAIN");
+        let old_fallback = env::var_os("BROKRE_ALLOW_FILE_KEYCHAIN");
         env::set_var("HOME", tmp.path());
-        env::set_var("BROKR_ALLOW_FILE_KEYCHAIN", "1");
+        env::set_var("BROKRE_ALLOW_FILE_KEYCHAIN", "1");
         let result = f();
         match old_home {
             Some(v) => env::set_var("HOME", v),
             None => env::remove_var("HOME"),
         }
         match old_fallback {
-            Some(v) => env::set_var("BROKR_ALLOW_FILE_KEYCHAIN", v),
-            None => env::remove_var("BROKR_ALLOW_FILE_KEYCHAIN"),
+            Some(v) => env::set_var("BROKRE_ALLOW_FILE_KEYCHAIN", v),
+            None => env::remove_var("BROKRE_ALLOW_FILE_KEYCHAIN"),
         }
         result
     }

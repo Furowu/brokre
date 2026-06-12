@@ -1,5 +1,5 @@
 use crate::security::secret::SecretString;
-use crate::utils::errors::{BrokrError, Result};
+use crate::utils::errors::{BrokreError, Result};
 use crate::vault::crypto::record::encrypt_record;
 use crate::vault::crypto::wrap::unwrap_dek;
 use crate::vault::keychain::get_or_init_master_kek;
@@ -47,8 +47,8 @@ fn insert_record(
         reveal_protected: reveal.protected,
     };
     store.insert(record)?;
-    eprintln!("brokr: ✓ saved as {}/{}", profile, alias);
-    eprintln!("       next time: brokr {} {}", profile, alias);
+    eprintln!("brokre: ✓ saved as {}/{}", profile, alias);
+    eprintln!("       next time: brokre {} {}", profile, alias);
     Ok(())
 }
 
@@ -85,13 +85,13 @@ pub fn create_credential_with_fields(
     reveal_passphrase: Option<&SecretString>,
 ) -> Result<Uuid> {
     if fields.is_empty() {
-        return Err(BrokrError::Vault("at least one secret field is required".into()));
+        return Err(BrokreError::Vault("at least one secret field is required".into()));
     }
     if !SecretRecord::validate_name(name) {
-        return Err(BrokrError::Vault(format!("invalid name: {}", name)));
+        return Err(BrokreError::Vault(format!("invalid name: {}", name)));
     }
     if store.get(profile, name)?.is_some() {
-        return Err(BrokrError::Vault(format!(
+        return Err(BrokreError::Vault(format!(
             "record ({}, {}) already exists",
             profile, name
         )));
@@ -170,7 +170,7 @@ pub fn save_with_reveal_prompt(
     password: SecretString,
     alias: &str,
 ) -> Result<()> {
-    eprintln!("       master passphrase for `brokr reveal` (blank = no reveal): ");
+    eprintln!("       master passphrase for `brokre reveal` (blank = no reveal): ");
     let reveal_input = crate::security::prompt::prompt_field("passphrase", true)
         .unwrap_or_else(|_| SecretString::new(String::new()));
 
@@ -221,10 +221,10 @@ pub fn rotate_password(
 ) -> Result<()> {
     let mut rec = store
         .get(profile, name)?
-        .ok_or_else(|| BrokrError::Vault(format!("record ({}, {}) not found", profile, name)))?;
+        .ok_or_else(|| BrokreError::Vault(format!("record ({}, {}) not found", profile, name)))?;
 
     if !verify_reveal_auth(&rec, auth) {
-        return Err(BrokrError::PolicyDenied);
+        return Err(BrokreError::PolicyDenied);
     }
 
     let master_kek = get_or_init_master_kek()?;
@@ -258,7 +258,7 @@ fn reencrypt_update_password(
         .iter()
         .map(|(k, v)| (k.clone(), v.expose().to_string()))
         .collect();
-    let plaintext = serde_json::to_vec(&plain_map).map_err(|e| BrokrError::Crypto(e.to_string()))?;
+    let plaintext = serde_json::to_vec(&plain_map).map_err(|e| BrokreError::Crypto(e.to_string()))?;
     let (nonce, ct) = crate::vault::crypto::aead::aead_encrypt(&dek, &plaintext);
     Ok(crate::vault::crypto::record::RecordCiphertext {
         nonce,
@@ -630,10 +630,10 @@ pub fn infer_user(profile: &str, args: &[String]) -> Option<String> {
     }
 }
 
-/// Format a brokr command template for display (no secrets).
+/// Format a brokre command template for display (no secrets).
 /// Connection flags live in `saved_args` and are replayed internally when the alias is used.
 pub fn command_template(profile: &str, name: &str, _saved_args: &[String]) -> String {
-    format!("brokr {} {}", profile, name)
+    format!("brokre {} {}", profile, name)
 }
 
 #[cfg(test)]
@@ -821,6 +821,6 @@ mod tests {
             "prod",
             &["-h".into(), "db".into(), "-e".into(), "SHOW TABLES".into()],
         );
-        assert_eq!(t, "brokr mysql prod");
+        assert_eq!(t, "brokre mysql prod");
     }
 }

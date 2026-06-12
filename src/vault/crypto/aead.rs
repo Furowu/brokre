@@ -1,5 +1,5 @@
 use crate::security::secret::SecretBytes;
-use crate::utils::errors::{BrokrError, Result};
+use crate::utils::errors::{BrokreError, Result};
 use aes_gcm::aead::{Aead, KeyInit, OsRng};
 use aes_gcm::{Aes256Gcm, Nonce};
 use rand::RngCore;
@@ -16,11 +16,11 @@ pub fn aead_encrypt(key: &[u8; 32], plaintext: &[u8]) -> ([u8; 12], Vec<u8>) {
 }
 
 pub fn aead_decrypt(key: &[u8; 32], nonce: &[u8; 12], ct: &[u8]) -> Result<SecretBytes> {
-    let cipher = Aes256Gcm::new_from_slice(key).map_err(|e| BrokrError::Crypto(e.to_string()))?;
+    let cipher = Aes256Gcm::new_from_slice(key).map_err(|e| BrokreError::Crypto(e.to_string()))?;
     let nonce = Nonce::from_slice(nonce);
     let plaintext = cipher
         .decrypt(nonce, ct)
-        .map_err(|_| BrokrError::Crypto("decryption failed: tampered or wrong key".into()))?;
+        .map_err(|_| BrokreError::Crypto("decryption failed: tampered or wrong key".into()))?;
     Ok(SecretBytes::new(plaintext))
 }
 

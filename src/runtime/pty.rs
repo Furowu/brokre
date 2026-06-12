@@ -1,11 +1,11 @@
 //! Transparent PTY pass-through with optional password capture / injection.
 //!
 //! Cross-platform implementation using portable-pty + crossterm.
-//! On Unix, saved credentials use a short-lived `brokr --internal-injector` child
+//! On Unix, saved credentials use a short-lived `brokre --internal-injector` child
 //! so the parent never holds decrypted passwords (T1 mitigation).
 
 use crate::security::secret::SecretString;
-use crate::utils::errors::{BrokrError, Result};
+use crate::utils::errors::{BrokreError, Result};
 use crossterm::terminal;
 use portable_pty::{CommandBuilder, MasterPty, NativePtySystem, PtySize, PtySystem};
 use regex::bytes::Regex;
@@ -150,7 +150,7 @@ pub fn run(
             pixel_width: 0,
             pixel_height: 0,
         })
-        .map_err(|e| BrokrError::Runtime(format!("openpty: {}", e)))?;
+        .map_err(|e| BrokreError::Runtime(format!("openpty: {}", e)))?;
 
     let master = pair.master;
     #[cfg(unix)]
@@ -168,16 +168,16 @@ pub fn run(
     let mut child = pair
         .slave
         .spawn_command(cmd)
-        .map_err(|e| BrokrError::Runtime(format!("spawn: {}", e)))?;
+        .map_err(|e| BrokreError::Runtime(format!("spawn: {}", e)))?;
 
     drop(pair.slave);
 
     let mut reader = master
         .try_clone_reader()
-        .map_err(|e| BrokrError::Runtime(format!("clone reader: {}", e)))?;
+        .map_err(|e| BrokreError::Runtime(format!("clone reader: {}", e)))?;
     let mut writer = master
         .take_writer()
-        .map_err(|e| BrokrError::Runtime(format!("take writer: {}", e)))?;
+        .map_err(|e| BrokreError::Runtime(format!("take writer: {}", e)))?;
 
     let stdin_is_tty = crate::security::tty::stdin_is_real_tty();
     let stdin_is_pipe = crate::security::tty::stdin_is_pipe();
@@ -386,14 +386,14 @@ pub fn run(
                                 stdin_forward_b.store(true, Ordering::Release);
                             } else {
                                 let _ = std::io::stderr().write_all(
-                                    format!("brokr: injector exited {} ({})\n", code, out)
+                                    format!("brokre: injector exited {} ({})\n", code, out)
                                         .as_bytes(),
                                 );
                             }
                         }
                         Err(e) => {
                             let _ = std::io::stderr()
-                                .write_all(format!("brokr: injector failed: {}\n", e).as_bytes());
+                                .write_all(format!("brokre: injector failed: {}\n", e).as_bytes());
                         }
                     }
                     continue;
@@ -537,7 +537,7 @@ pub fn run(
 
     let exit_status = child
         .wait()
-        .map_err(|e| BrokrError::Runtime(format!("child wait: {}", e)))?;
+        .map_err(|e| BrokreError::Runtime(format!("child wait: {}", e)))?;
     let exit_code = exit_status.exit_code() as i32;
 
     done.store(true, Ordering::Release);

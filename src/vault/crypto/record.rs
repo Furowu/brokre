@@ -1,5 +1,5 @@
 use crate::security::secret::SecretString;
-use crate::utils::errors::{BrokrError, Result};
+use crate::utils::errors::{BrokreError, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
@@ -46,7 +46,7 @@ pub fn decrypt_for_exec(
     let dek = unwrap_dek(&rc.dek_for_exec, master_kek)?;
     let pt = super::aead::aead_decrypt(&dek, &rc.nonce, &rc.ct)?;
     let map: BTreeMap<String, String> =
-        serde_json::from_slice(pt.expose()).map_err(|e| BrokrError::Crypto(e.to_string()))?;
+        serde_json::from_slice(pt.expose()).map_err(|e| BrokreError::Crypto(e.to_string()))?;
     Ok(map
         .into_iter()
         .map(|(k, v)| (k, SecretString::new(v)))
@@ -60,7 +60,7 @@ pub fn decrypt_for_reveal(
     let dek = unwrap_dek(&rc.dek_for_reveal, reveal_kek)?;
     let pt = super::aead::aead_decrypt(&dek, &rc.nonce, &rc.ct)?;
     let map: BTreeMap<String, String> =
-        serde_json::from_slice(pt.expose()).map_err(|e| BrokrError::Crypto(e.to_string()))?;
+        serde_json::from_slice(pt.expose()).map_err(|e| BrokreError::Crypto(e.to_string()))?;
     Ok(map
         .into_iter()
         .map(|(k, v)| (k, SecretString::new(v)))

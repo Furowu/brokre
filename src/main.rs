@@ -1,22 +1,22 @@
-use brokr::cli;
+use brokre::cli;
 use clap::{Parser, Subcommand};
 use std::ffi::OsString;
 use tracing::Level;
 use tracing_subscriber::FmtSubscriber;
 
-/// brokr — AI-safe credential broker.
+/// brokre — AI-safe credential broker.
 ///
 /// Usage patterns:
 ///
-///   brokr ssh root@host           # first time: type password; offered to save.
-///   brokr ssh prod-bastion        # next time: alias auto-injects the password.
-///   brokr ssh prod-bastion uptime # one-shot remote command via saved alias.
-///   brokr list                    # show saved aliases (metadata only).
-///   brokr rm ssh prod-bastion     # delete (requires passphrase or YES).
-///   brokr reveal ssh prod-bastion # show plaintext (TTY + passphrase required).
-///   brokr audit verify            # verify the tamper-evident audit log.
+///   brokre ssh root@host           # first time: type password; offered to save.
+///   brokre ssh prod-bastion        # next time: alias auto-injects the password.
+///   brokre ssh prod-bastion uptime # one-shot remote command via saved alias.
+///   brokre list                    # show saved aliases (metadata only).
+///   brokre rm ssh prod-bastion     # delete (requires passphrase or YES).
+///   brokre reveal ssh prod-bastion # show plaintext (TTY + passphrase required).
+///   brokre audit verify            # verify the tamper-evident audit log.
 #[derive(Parser)]
-#[command(name = "brokr", version, about, long_about = None)]
+#[command(name = "brokre", version, about, long_about = None)]
 #[command(disable_help_subcommand = true)]
 struct Cli {
     #[command(subcommand)]
@@ -64,7 +64,7 @@ enum Commands {
     /// Model Context Protocol server for AI assistants (Cursor, Claude Code, …).
     Mcp,
     /// Any other word is treated as `<cli> [args...]` — the transparent
-    /// pass-through that's the whole point of brokr.
+    /// pass-through that's the whole point of brokre.
     #[command(external_subcommand)]
     External(Vec<OsString>),
 }
@@ -84,17 +84,17 @@ fn main() {
 
     #[cfg(unix)]
     if std::env::args().nth(1).as_deref() == Some("--internal-injector") {
-        brokr::cli::injector::run_internal_injector_main();
+        brokre::cli::injector::run_internal_injector_main();
     }
 
     #[cfg(unix)]
     {
         let mode = if cfg!(debug_assertions) {
-            brokr::security::hardening::HardeningMode::WarnOnly
+            brokre::security::hardening::HardeningMode::WarnOnly
         } else {
-            brokr::security::hardening::HardeningMode::Enforce
+            brokre::security::hardening::HardeningMode::Enforce
         };
-        let _ = brokr::security::hardening::apply_hardening_cached(mode);
+        let _ = brokre::security::hardening::apply_hardening_cached(mode);
     }
 
     let cli = Cli::parse();
@@ -126,7 +126,7 @@ fn main() {
             let binary = match it.next() {
                 Some(b) => b.to_string_lossy().into_owned(),
                 None => {
-                    eprintln!("brokr: empty external command");
+                    eprintln!("brokre: empty external command");
                     std::process::exit(2);
                 }
             };
@@ -141,7 +141,7 @@ fn main() {
     };
 
     if let Err(e) = res {
-        eprintln!("brokr: {}", e);
+        eprintln!("brokre: {}", e);
         std::process::exit(1);
     }
 }
@@ -150,16 +150,16 @@ fn maybe_spawn_onboard(command: &Option<Commands>) {
     if matches!(command, Some(Commands::Manage { .. })) {
         return;
     }
-    if brokr::manage::onboard::is_onboard_complete() {
+    if brokre::manage::onboard::is_onboard_complete() {
         return;
     }
-    if brokr::manage::onboard::was_onboard_spawned() {
+    if brokre::manage::onboard::was_onboard_spawned() {
         return;
     }
-    if !brokr::security::tty::stdin_is_real_tty() {
+    if !brokre::security::tty::stdin_is_real_tty() {
         return;
     }
-    if brokr::manage::onboard::mark_onboard_spawned().is_err() {
+    if brokre::manage::onboard::mark_onboard_spawned().is_err() {
         return;
     }
     cli::manage::spawn_onboard_background();
@@ -167,23 +167,23 @@ fn maybe_spawn_onboard(command: &Option<Commands>) {
 
 fn print_usage() {
     eprintln!(
-        "brokr {} — AI-safe credential broker",
+        "brokre {} — AI-safe credential broker",
         env!("CARGO_PKG_VERSION")
     );
     eprintln!();
     eprintln!("Usage:");
-    eprintln!("  brokr <cli> [args...]              run any CLI through brokr");
-    eprintln!("  brokr list [--profile P] [--json]  list saved aliases");
-    eprintln!("  brokr rm <profile> <alias>         delete an alias");
-    eprintln!("  brokr reveal <profile> <alias>     show stored plaintext (TTY + passphrase)");
-    eprintln!("  brokr audit verify                 verify tamper-evident log");
-    eprintln!("  brokr manage [--onboard] [--open]    local credential manager (web UI)");
-    eprintln!("  brokr mcp                          MCP server for Cursor / Claude Code");
+    eprintln!("  brokre <cli> [args...]              run any CLI through brokre");
+    eprintln!("  brokre list [--profile P] [--json]  list saved aliases");
+    eprintln!("  brokre rm <profile> <alias>         delete an alias");
+    eprintln!("  brokre reveal <profile> <alias>     show stored plaintext (TTY + passphrase)");
+    eprintln!("  brokre audit verify                 verify tamper-evident log");
+    eprintln!("  brokre manage [--onboard] [--open]    local credential manager (web UI)");
+    eprintln!("  brokre mcp                          MCP server for Cursor / Claude Code");
     eprintln!();
     eprintln!("Examples:");
-    eprintln!("  brokr ssh root@10.0.0.1            first-time, type password, then save");
-    eprintln!("  brokr ssh prod                     reuse saved alias");
-    eprintln!("  brokr ssh prod uname -a            one-shot remote command via alias");
-    eprintln!("  brokr mysql prod-db -e \"SHOW TABLES\"  one-shot SQL via alias");
-    eprintln!("  brokr mysql -h db -u root          first-time mysql login");
+    eprintln!("  brokre ssh root@10.0.0.1            first-time, type password, then save");
+    eprintln!("  brokre ssh prod                     reuse saved alias");
+    eprintln!("  brokre ssh prod uname -a            one-shot remote command via alias");
+    eprintln!("  brokre mysql prod-db -e \"SHOW TABLES\"  one-shot SQL via alias");
+    eprintln!("  brokre mysql -h db -u root          first-time mysql login");
 }

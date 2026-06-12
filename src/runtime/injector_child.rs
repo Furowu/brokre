@@ -1,6 +1,6 @@
-//! Fork/exec short-lived `brokr --internal-injector` to write a vault password to a PTY fd.
+//! Fork/exec short-lived `brokre --internal-injector` to write a vault password to a PTY fd.
 
-use crate::utils::errors::{BrokrError, Result};
+use crate::utils::errors::{BrokreError, Result};
 use std::io::Write;
 use std::os::unix::io::FromRawFd;
 use std::os::unix::process::CommandExt;
@@ -17,14 +17,14 @@ pub fn spawn_injector_child(
     field: &str,
 ) -> Result<(i32, u64, Option<u32>, String)> {
     if hardening::hardening_disabled_by_env() {
-        return Err(BrokrError::Runtime(
-            "BROKR_DISABLE_HARDENING=1 — cannot inject password".into(),
+        return Err(BrokreError::Runtime(
+            "BROKRE_DISABLE_HARDENING=1 — cannot inject password".into(),
         ));
     }
 
     let mut pipe_fds: [libc::c_int; 2] = [0, 0];
     if unsafe { libc::pipe(pipe_fds.as_mut_ptr()) } != 0 {
-        return Err(BrokrError::Io(std::io::Error::last_os_error()));
+        return Err(BrokreError::Io(std::io::Error::last_os_error()));
     }
     let r_tok = pipe_fds[0];
     let w_tok = pipe_fds[1];
@@ -35,7 +35,7 @@ pub fn spawn_injector_child(
             libc::close(r_tok);
             libc::close(w_tok);
         }
-        return Err(BrokrError::Io(std::io::Error::last_os_error()));
+        return Err(BrokreError::Io(std::io::Error::last_os_error()));
     }
     let tok_dup = unsafe { libc::dup(r_tok) };
     if tok_dup < 0 {
@@ -44,16 +44,16 @@ pub fn spawn_injector_child(
             libc::close(r_tok);
             libc::close(w_tok);
         }
-        return Err(BrokrError::Io(std::io::Error::last_os_error()));
+        return Err(BrokreError::Io(std::io::Error::last_os_error()));
     }
     unsafe {
         libc::close(r_tok);
     }
 
-    let exe: std::path::PathBuf = std::env::var_os("BROKR_INJECTOR_EXE")
+    let exe: std::path::PathBuf = std::env::var_os("BROKRE_INJECTOR_EXE")
         .map(std::path::PathBuf::from)
         .or_else(|| std::env::current_exe().ok())
-        .ok_or_else(|| BrokrError::Runtime("cannot resolve injector binary path".into()))?;
+        .ok_or_else(|| BrokreError::Runtime("cannot resolve injector binary path".into()))?;
     let ppid = std::process::id();
 
     let mut cmd = Command::new(exe);
@@ -82,7 +82,7 @@ pub fn spawn_injector_child(
     let start = Instant::now();
     let mut child = cmd
         .spawn()
-        .map_err(|e| BrokrError::Runtime(format!("injector spawn: {}", e)))?;
+        .map_err(|e| BrokreError::Runtime(format!("injector spawn: {}", e)))?;
     let cid = child.id();
 
     unsafe {
@@ -94,11 +94,11 @@ pub fn spawn_injector_child(
     {
         let mut w = unsafe { std::fs::File::from_raw_fd(w_tok) };
         w.write_all(token.as_bytes())
-            .map_err(BrokrError::Io)?;
-        w.flush().map_err(BrokrError::Io)?;
+            .map_err(BrokreError::Io)?;
+        w.flush().map_err(BrokreError::Io)?;
     }
 
-    let status = child.wait().map_err(BrokrError::Io)?;
+    let status = child.wait().map_err(BrokreError::Io)?;
     let dur_ms = start.elapsed().as_millis() as u64;
     let code = status.code().unwrap_or(-1);
     let outcome = if code == 0 {

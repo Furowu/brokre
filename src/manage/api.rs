@@ -3,7 +3,7 @@ use crate::manage::auth::{extract_bearer, token_matches};
 use crate::manage::onboard::mark_onboard_complete;
 use crate::manage::profiles::{detect_profile_groups, profile_available_for_create};
 use crate::security::secret::SecretString;
-use crate::utils::errors::BrokrError;
+use crate::utils::errors::BrokreError;
 use crate::vault::keychain::get_or_init_audit_hmac_key;
 use crate::runtime::ssh_identity::{
     auth_methods_from_meta, build_ssh_field_meta, build_ssh_secret_fields,
@@ -127,11 +127,11 @@ fn check_write_auth(state: &ManageState, req: &Request) -> bool {
     token_matches(&state.token, bearer)
 }
 
-fn read_body(req: &mut Request) -> Result<String, BrokrError> {
+fn read_body(req: &mut Request) -> Result<String, BrokreError> {
     let mut body = String::new();
     req.as_reader()
         .read_to_string(&mut body)
-        .map_err(BrokrError::Io)?;
+        .map_err(BrokreError::Io)?;
     Ok(body)
 }
 
@@ -151,7 +151,7 @@ struct CredentialMeta {
     auth_methods: Vec<String>,
 }
 
-fn list_credentials() -> Result<String, BrokrError> {
+fn list_credentials() -> Result<String, BrokreError> {
     let store = VaultStore::open()?;
     let records = store.list()?;
     let out: Vec<CredentialMeta> = records
@@ -174,7 +174,7 @@ fn list_credentials() -> Result<String, BrokrError> {
                 .unwrap_or_else(|| vec!["password".into()]),
         })
         .collect();
-    serde_json::to_string(&out).map_err(|e| BrokrError::Cli(e.to_string()))
+    serde_json::to_string(&out).map_err(|e| BrokreError::Cli(e.to_string()))
 }
 
 #[derive(Deserialize)]
@@ -412,7 +412,7 @@ fn dispatch(
                 .password
                 .filter(|s| !s.is_empty())
                 .map(SecretString::new)
-                .ok_or_else(|| BrokrError::Vault("password is required".into()));
+                .ok_or_else(|| BrokreError::Vault("password is required".into()));
             match pw {
                 Ok(password) => create_credential(
                     &store,
@@ -497,7 +497,7 @@ fn handle_credential_route(
                 audit_manage("manage/password_rotate", profile, name);
                 empty_response(StatusCode(204))
             }
-            Err(BrokrError::PolicyDenied) => {
+            Err(BrokreError::PolicyDenied) => {
                 audit_manage("manage/denied", profile, name);
                 error_response(StatusCode(403), "authentication failed")
             }
@@ -583,17 +583,17 @@ mod tests {
     fn with_temp_home<F: FnOnce()>(f: F) {
         let tmp = tempfile::tempdir().unwrap();
         let old_home = env::var_os("HOME");
-        let old_fallback = env::var_os("BROKR_ALLOW_FILE_KEYCHAIN");
+        let old_fallback = env::var_os("BROKRE_ALLOW_FILE_KEYCHAIN");
         env::set_var("HOME", tmp.path());
-        env::set_var("BROKR_ALLOW_FILE_KEYCHAIN", "1");
+        env::set_var("BROKRE_ALLOW_FILE_KEYCHAIN", "1");
         f();
         match old_home {
             Some(v) => env::set_var("HOME", v),
             None => env::remove_var("HOME"),
         }
         match old_fallback {
-            Some(v) => env::set_var("BROKR_ALLOW_FILE_KEYCHAIN", v),
-            None => env::remove_var("BROKR_ALLOW_FILE_KEYCHAIN"),
+            Some(v) => env::set_var("BROKRE_ALLOW_FILE_KEYCHAIN", v),
+            None => env::remove_var("BROKRE_ALLOW_FILE_KEYCHAIN"),
         }
     }
 
@@ -798,7 +798,7 @@ mod tests {
     fn create_rejects_unavailable_cli() {
         with_temp_home(|| {
             let server = run_manage_server(false).unwrap();
-            let body = r#"{"profile":"definitely-not-a-real-brokr-cli-xyz","name":"x","host":"h","password":"p"}"#;
+            let body = r#"{"profile":"definitely-not-a-real-brokre-cli-xyz","name":"x","host":"h","password":"p"}"#;
             let (status, resp) = http_request(
                 server.port,
                 "POST",

@@ -21,8 +21,8 @@ e2e:
 
 release-local:
 	$(CARGO) build --release
-	strip target/release/brokr
-	@echo "Binary: target/release/brokr"
+	strip target/release/brokre
+	@echo "Binary: target/release/brokre"
 
 clean:
 	$(CARGO) clean

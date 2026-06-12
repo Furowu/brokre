@@ -1,19 +1,19 @@
 use crate::security::secret::SecretString;
-use crate::utils::errors::{BrokrError, Result};
+use crate::utils::errors::{BrokreError, Result};
 use argon2::{Argon2, Params};
 use rand::RngCore;
 
 pub fn derive_reveal_key(passphrase: &SecretString, salt: &[u8; 16]) -> Result<[u8; 32]> {
     if passphrase.is_empty() {
-        return Err(BrokrError::Crypto("empty passphrase".into()));
+        return Err(BrokreError::Crypto("empty passphrase".into()));
     }
     let params =
-        Params::new(65536, 3, 1, Some(32)).map_err(|e| BrokrError::Crypto(e.to_string()))?;
+        Params::new(65536, 3, 1, Some(32)).map_err(|e| BrokreError::Crypto(e.to_string()))?;
     let argon2 = Argon2::new(argon2::Algorithm::Argon2id, argon2::Version::V0x13, params);
     let mut hash = [0u8; 32];
     argon2
         .hash_password_into(passphrase.expose().as_bytes(), salt, &mut hash)
-        .map_err(|e| BrokrError::Crypto(e.to_string()))?;
+        .map_err(|e| BrokreError::Crypto(e.to_string()))?;
     Ok(hash)
 }
 

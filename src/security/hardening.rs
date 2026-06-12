@@ -4,9 +4,9 @@
 use serde::{Deserialize, Serialize};
 use std::cell::RefCell;
 
-const ENV_DISABLE: &str = "BROKR_DISABLE_HARDENING";
+const ENV_DISABLE: &str = "BROKRE_DISABLE_HARDENING";
 #[cfg(target_os = "linux")]
-const ENV_SOFT_MEMLOCK: &str = "BROKR_SOFT_MEMLOCK";
+const ENV_SOFT_MEMLOCK: &str = "BROKRE_SOFT_MEMLOCK";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum HardeningMode {
@@ -84,7 +84,7 @@ fn apply_unix(mode: HardeningMode) -> HardeningReport {
             r.warnings
                 .push("process appears ptraced (TracerPid != 0)".into());
             if enforce {
-                eprintln!("brokr: fatal: refusing to run under ptrace (TracerPid)");
+                eprintln!("brokre: fatal: refusing to run under ptrace (TracerPid)");
                 std::process::exit(2);
             }
         }
@@ -122,7 +122,7 @@ fn apply_unix(mode: HardeningMode) -> HardeningReport {
                     .unwrap_or(false);
                 if enforce && !soft {
                     eprintln!(
-                        "brokr: fatal: mlockall failed — set {}=1 to allow soft start, or raise memlock ulimit",
+                        "brokre: fatal: mlockall failed — set {}=1 to allow soft start, or raise memlock ulimit",
                         ENV_SOFT_MEMLOCK
                     );
                     std::process::exit(2);
@@ -137,7 +137,7 @@ fn apply_unix(mode: HardeningMode) -> HardeningReport {
         if r.traced {
             r.warnings.push("kern.proc shows P_TRACED".into());
             if enforce {
-                eprintln!("brokr: fatal: refusing to run while being traced");
+                eprintln!("brokre: fatal: refusing to run while being traced");
                 std::process::exit(2);
             }
         }

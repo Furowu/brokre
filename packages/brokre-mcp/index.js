@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 /**
- * @techinone/brokr — MCP launcher for brokr credential broker.
+ * brokre — MCP launcher for brokre credential broker.
  *
- * Spawns `brokr mcp` (stdio). Uses brokr on PATH, or downloads a prebuilt
- * release from GitHub into ~/.brokr/bin/ on first run.
+ * Spawns `brokre mcp` (stdio). Uses brokre on PATH, or downloads a prebuilt
+ * release from GitHub into ~/.brokre/bin/ on first run.
  */
 'use strict';
 
@@ -15,9 +15,9 @@ const path = require('path');
 const { pipeline } = require('stream/promises');
 
 const { version: PKG_VERSION } = require('./package.json');
-const REPO = 'Furowu/brokr';
+const REPO = 'Furowu/brokre';
 const INSTALL_DOC =
-  'https://raw.githubusercontent.com/Furowu/brokr/main/install.sh';
+  'https://raw.githubusercontent.com/Furowu/brokre/main/install.sh';
 
 function redactManageTokens(chunk) {
   return chunk
@@ -25,20 +25,20 @@ function redactManageTokens(chunk) {
     .split('\n')
     .map((line) =>
       line.replace(/\?t=[a-f0-9]+/gi, '?t=<redacted>').replace(
-        /brokr manage: http:\/\/127\.0\.0\.1:\d+\/\?t=[a-f0-9]+/gi,
+        /brokre manage: http:\/\/127\.0\.0\.1:\d+\/\?t=[a-f0-9]+/gi,
         (m) => m.replace(/\?t=[a-f0-9]+/i, '?t=<redacted>')
       )
     )
     .join('\n');
 }
 
-function findBrokrOnPath() {
-  if (process.env.BROKR_BIN) {
-    return process.env.BROKR_BIN;
+function findBrokreOnPath() {
+  if (process.env.BROKRE_BIN) {
+    return process.env.BROKRE_BIN;
   }
   try {
     const which = process.platform === 'win32' ? 'where' : 'which';
-    const out = execFileSync(which, ['brokr'], { encoding: 'utf8' });
+    const out = execFileSync(which, ['brokre'], { encoding: 'utf8' });
     const line = out.trim().split(/\r?\n/)[0];
     if (line) return line;
   } catch (_) {
@@ -61,13 +61,13 @@ function detectTarget() {
   throw new Error(`unsupported platform: ${platform} ${arch}`);
 }
 
-function cachedBrokrPath() {
-  const name = process.platform === 'win32' ? 'brokr.exe' : 'brokr';
-  return path.join(os.homedir(), '.brokr', 'bin', name);
+function cachedBrokrePath() {
+  const name = process.platform === 'win32' ? 'brokre.exe' : 'brokre';
+  return path.join(os.homedir(), '.brokre', 'bin', name);
 }
 
 function versionFilePath() {
-  return path.join(os.homedir(), '.brokr', 'bin', '.version');
+  return path.join(os.homedir(), '.brokre', 'bin', '.version');
 }
 
 function readCachedVersion() {
@@ -83,9 +83,9 @@ function parseVersion(output) {
   return m ? m[1] : null;
 }
 
-function getInstalledVersion(brokrPath) {
+function getInstalledVersion(brokrePath) {
   try {
-    const out = execFileSync(brokrPath, ['--version'], { encoding: 'utf8' });
+    const out = execFileSync(brokrePath, ['--version'], { encoding: 'utf8' });
     return parseVersion(out);
   } catch (_) {
     return null;
@@ -132,51 +132,51 @@ function extractTarGz(tarPath, destDir) {
   execFileSync('tar', ['-xzf', tarPath, '-C', destDir], { stdio: 'inherit' });
 }
 
-async function ensureBrokrBinary() {
-  if (process.env.BROKR_BIN) {
-    return process.env.BROKR_BIN;
+async function ensureBrokreBinary() {
+  if (process.env.BROKRE_BIN) {
+    return process.env.BROKRE_BIN;
   }
 
-  if (process.env.BROKR_SKIP_AUTO_INSTALL === '1') {
-    const onPath = findBrokrOnPath();
+  if (process.env.BROKRE_SKIP_AUTO_INSTALL === '1') {
+    const onPath = findBrokreOnPath();
     if (onPath) return onPath;
-    throw new Error('brokr not on PATH (BROKR_SKIP_AUTO_INSTALL=1)');
+    throw new Error('brokre not on PATH (BROKRE_SKIP_AUTO_INSTALL=1)');
   }
 
-  const brokrVersion = process.env.BROKR_VERSION || PKG_VERSION;
-  const cache = cachedBrokrPath();
+  const brokreVersion = process.env.BROKRE_VERSION || PKG_VERSION;
+  const cache = cachedBrokrePath();
   const cachedVersion = readCachedVersion();
 
-  if (fs.existsSync(cache) && cachedVersion === brokrVersion) {
+  if (fs.existsSync(cache) && cachedVersion === brokreVersion) {
     return cache;
   }
 
-  const onPath = findBrokrOnPath();
+  const onPath = findBrokreOnPath();
   if (onPath) {
     const installed = getInstalledVersion(onPath);
-    if (installed === brokrVersion) {
+    if (installed === brokreVersion) {
       return onPath;
     }
     if (installed) {
       process.stderr.write(
-        `brokr: PATH has v${installed}, need v${brokrVersion}; downloading...\n`
+        `brokre: PATH has v${installed}, need v${brokreVersion}; downloading...\n`
       );
     }
-  } else if (cachedVersion && cachedVersion !== brokrVersion) {
+  } else if (cachedVersion && cachedVersion !== brokreVersion) {
     process.stderr.write(
-      `brokr: updating cached v${cachedVersion} → v${brokrVersion}...\n`
+      `brokre: updating cached v${cachedVersion} → v${brokreVersion}...\n`
     );
   }
 
   const target = detectTarget();
-  const url = `https://github.com/${REPO}/releases/download/v${brokrVersion}/brokr-${target}.tar.gz`;
-  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'brokr-mcp-'));
-  const tgz = path.join(tmpDir, 'brokr.tar.gz');
+  const url = `https://github.com/${REPO}/releases/download/v${brokreVersion}/brokre-${target}.tar.gz`;
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'brokre-mcp-'));
+  const tgz = path.join(tmpDir, 'brokre.tar.gz');
 
   try {
     if (!onPath && !cachedVersion) {
       process.stderr.write(
-        `brokr: downloading v${brokrVersion} for ${target}...\n`
+        `brokre: downloading v${brokreVersion} for ${target}...\n`
       );
     }
     await downloadToFile(url, tgz);
@@ -184,10 +184,10 @@ async function ensureBrokrBinary() {
 
     const extracted =
       process.platform === 'win32'
-        ? path.join(tmpDir, 'brokr.exe')
-        : path.join(tmpDir, 'brokr');
+        ? path.join(tmpDir, 'brokre.exe')
+        : path.join(tmpDir, 'brokre');
     if (!fs.existsSync(extracted)) {
-      throw new Error(`brokr binary missing in release tarball (${target})`);
+      throw new Error(`brokre binary missing in release tarball (${target})`);
     }
 
     await fs.promises.mkdir(path.dirname(cache), { recursive: true });
@@ -195,15 +195,15 @@ async function ensureBrokrBinary() {
     if (process.platform !== 'win32') {
       await fs.promises.chmod(cache, 0o755);
     }
-    await fs.promises.writeFile(versionFilePath(), `${brokrVersion}\n`);
+    await fs.promises.writeFile(versionFilePath(), `${brokreVersion}\n`);
     return cache;
   } finally {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   }
 }
 
-function spawnBrokrMcp(brokr) {
-  const child = spawn(brokr, ['mcp'], {
+function spawnBrokreMcp(brokre) {
+  const child = spawn(brokre, ['mcp'], {
     stdio: ['inherit', 'inherit', 'pipe'],
     env: process.env,
   });
@@ -215,10 +215,10 @@ function spawnBrokrMcp(brokr) {
   child.on('error', (err) => {
     if (err.code === 'ENOENT') {
       process.stderr.write(
-        `brokr: not found (${brokr}). Install: curl -fsSL ${INSTALL_DOC} | bash\n`
+        `brokre: not found (${brokre}). Install: curl -fsSL ${INSTALL_DOC} | bash\n`
       );
     } else {
-      process.stderr.write(`brokr mcp: ${err.message}\n`);
+      process.stderr.write(`brokre mcp: ${err.message}\n`);
     }
     process.exit(1);
   });
@@ -234,13 +234,13 @@ function spawnBrokrMcp(brokr) {
 
 async function main() {
   try {
-    const brokr = await ensureBrokrBinary();
-    spawnBrokrMcp(brokr);
+    const brokre = await ensureBrokreBinary();
+    spawnBrokreMcp(brokre);
   } catch (err) {
     process.stderr.write(
-      `brokr: ${err.message}\n` +
+      `brokre: ${err.message}\n` +
         `Install manually: curl -fsSL ${INSTALL_DOC} | bash\n` +
-        `Or set BROKR_BIN to your brokr executable.\n`
+        `Or set BROKRE_BIN to your brokre executable.\n`
     );
     process.exit(1);
   }

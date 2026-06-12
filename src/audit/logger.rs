@@ -1,5 +1,5 @@
 use crate::security::hardening::HardeningReport;
-use crate::utils::errors::{BrokrError, Result};
+use crate::utils::errors::{BrokreError, Result};
 use crate::utils::mask::redact;
 use crate::utils::paths::audit_path;
 use hmac::{Hmac, Mac};
@@ -114,19 +114,19 @@ pub fn append(event: &mut AuditEvent, hmac_key: &[u8; 32]) -> Result<()> {
     event.prev_hmac = prev_hmac.clone();
     event.hmac = Some(compute_hmac(event, hmac_key));
 
-    let line = serde_json::to_string(event).map_err(|e| BrokrError::Audit(e.to_string()))?;
+    let line = serde_json::to_string(event).map_err(|e| BrokreError::Audit(e.to_string()))?;
     let mut file = OpenOptions::new()
         .append(true)
         .create(true)
         .open(&path)
-        .map_err(BrokrError::Io)?;
+        .map_err(BrokreError::Io)?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
         let _ = fs::set_permissions(&path, fs::Permissions::from_mode(0o600));
     }
-    writeln!(file, "{}", line).map_err(BrokrError::Io)?;
-    file.sync_all().map_err(BrokrError::Io)?;
+    writeln!(file, "{}", line).map_err(BrokreError::Io)?;
+    file.sync_all().map_err(BrokreError::Io)?;
     Ok(())
 }
 
@@ -134,19 +134,19 @@ pub fn verify_chain(path: &Path, hmac_key: &[u8; 32]) -> Result<()> {
     let file = OpenOptions::new()
         .read(true)
         .open(path)
-        .map_err(BrokrError::Io)?;
+        .map_err(BrokreError::Io)?;
     let reader = BufReader::new(file);
     let mut prev_hmac: Option<String> = None;
     for line in reader.lines() {
-        let line = line.map_err(BrokrError::Io)?;
+        let line = line.map_err(BrokreError::Io)?;
         let event: AuditEvent =
-            serde_json::from_str(&line).map_err(|e| BrokrError::Audit(e.to_string()))?;
+            serde_json::from_str(&line).map_err(|e| BrokreError::Audit(e.to_string()))?;
         if event.prev_hmac != prev_hmac {
-            return Err(BrokrError::Audit("chain broken: prev_hmac mismatch".into()));
+            return Err(BrokreError::Audit("chain broken: prev_hmac mismatch".into()));
         }
         let expected = compute_hmac(&event, hmac_key);
         if event.hmac.as_ref() != Some(&expected) {
-            return Err(BrokrError::Audit("chain broken: hmac mismatch".into()));
+            return Err(BrokreError::Audit("chain broken: hmac mismatch".into()));
         }
         prev_hmac = event.hmac;
     }
