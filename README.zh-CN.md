@@ -6,7 +6,7 @@
 
 <!-- README-I18N:END -->
 
-`brokr` 是面向 AI 代理与人类的**本地凭据代理**。它包装 **`PATH` 上任意 CLI** — 不限于 SSH 或 MySQL — 在密码提示处注入已保存凭据，**不向 AI 进程、shell 历史、`ps` 或进程环境暴露明文**。
+`brokr` 是面向 AI AGENT与个人管理的**本地凭据代理**。它包装 **`PATH` 上任意 CLI** — 不限于 SSH 或 MySQL — 在密码提示处注入已保存凭据，**不向 AI 进程、shell 历史、`ps` 或进程环境暴露明文**。
 
 由 [Techinone](https://www.tio.tech)（成都同创合一科技有限公司）开发维护。
 
