@@ -1,0 +1,25 @@
+#!/bin/sh
+# Strip Cursor agent attribution trailers before commit is finalized.
+# Works on macOS and Linux.
+
+MSG_FILE="$1"
+
+if [ ! -f "$MSG_FILE" ]; then
+  exit 0
+fi
+
+if [ "$(uname)" = "Darwin" ]; then
+  sed -i '' \
+    -e '/^Co-authored-by: Cursor /d' \
+    -e '/^Made-with: Cursor$/d' \
+    -e '/^Made with Cursor$/d' \
+    "$MSG_FILE"
+else
+  sed -i \
+    -e '/^Co-authored-by: Cursor /d' \
+    -e '/^Made-with: Cursor$/d' \
+    -e '/^Made with Cursor$/d' \
+    "$MSG_FILE"
+fi
+
+exit 0
