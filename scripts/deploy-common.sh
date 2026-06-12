@@ -290,11 +290,17 @@ publish_github() {
   remote="$GITHUB_REMOTE"
   tag="v${v}"
   assert_clean_git
-  if git -C "$DEPLOY_ROOT" rev-parse "$tag" >/dev/null 2>&1; then
-    die "tag $tag already exists locally"
+  sync_git_with_remote "$remote"
+  if git -C "$DEPLOY_ROOT" ls-remote --exit-code --tags "$remote" "refs/tags/${tag}" >/dev/null 2>&1; then
+    die "tag $tag already exists on $remote"
   fi
-  log "git tag $tag + push $remote (GitHub Actions builds all platforms)"
-  git -C "$DEPLOY_ROOT" tag -a "$tag" -m "release $tag"
+  if ! git -C "$DEPLOY_ROOT" rev-parse "$tag" >/dev/null 2>&1; then
+    log "git tag $tag"
+    git -C "$DEPLOY_ROOT" tag -a "$tag" -m "release $tag"
+  else
+    log "tag $tag exists locally — pushing to $remote"
+  fi
+  log "push $remote (GitHub Actions builds all platforms)"
   git -C "$DEPLOY_ROOT" push "$remote" HEAD
   git -C "$DEPLOY_ROOT" push "$remote" "$tag"
   wait_for_github_release "$v"
@@ -491,7 +497,30 @@ commit_version_bump() {
   v=$(read_version)
   msg="${1:-chore: release v${v}}"
   git -C "$DEPLOY_ROOT" add VERSION Cargo.toml packages/brokr-mcp/package.json homebrew/brokr.rb
-  git -C "$DEPLOY_ROOT" diff --cached --quiet && die "nothing to commit after version sync"
+  if git -C "$DEPLOY_ROOT" diff --cached --quiet; then
+    log "version already at v$v (nothing to commit)"
+    return 0
+  fi
   git -C "$DEPLOY_ROOT" commit -m "$msg"
   log "committed version bump v$v"
+}
+
+# Rebase current branch onto remote before push (avoids non-fast-forward on release).
+sync_git_with_remote() {
+  local remote="$1"
+  local branch
+  branch=$(git -C "$DEPLOY_ROOT" rev-parse --abbrev-ref HEAD)
+  git -C "$DEPLOY_ROOT" fetch "$remote"
+  if ! git -C "$DEPLOY_ROOT" show-ref --verify --quiet "refs/remotes/${remote}/${branch}"; then
+    log "no ${remote}/${branch} — skip rebase"
+    return 0
+  fi
+  local behind
+  behind=$(git -C "$DEPLOY_ROOT" rev-list --count "HEAD..${remote}/${branch}")
+  if [[ "$behind" -eq 0 ]]; then
+    return 0
+  fi
+  log "rebasing onto ${remote}/${branch} ($behind commit(s) behind)..."
+  git -C "$DEPLOY_ROOT" pull --rebase "$remote" "$branch" \
+    || die "git rebase failed — resolve conflicts, then retry"
 }
