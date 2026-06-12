@@ -1,5 +1,5 @@
 {
-  "name": "@Techinone/brokr",
+  "name": "@techinone/brokr",
   "version": "0.1.1",
   "description": "MCP server for brokr — AI-safe credential broker (ssh, mysql, psql, …)",
   "license": "MIT",
@@ -20,7 +20,7 @@
     "claude"
   ],
   "bin": {
-    "brokr-mcp": "./index.js"
+    "brokr-mcp": "index.js"
   },
   "files": [
     "index.js",
