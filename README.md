@@ -6,7 +6,7 @@
 
 <!-- README-I18N:END -->
 
-`brokre` is a **local credential broker** for AI agents and humans. It wraps **any CLI on your `PATH`** — not only SSH or MySQL — and injects saved passwords at the prompt **without exposing plaintext** to the AI process, shell history, `ps`, or process environment.
+`brokre` is a **local credential broker** for AI agents and humans. Use it with Cursor, Claude Code, Kimi Code, Trae, OpenClaw, Hermes Agent, ChatClaw, and other MCP-capable clients to run `ssh`, `mysql`, `psql`, and more — **passwords never enter AI context, environment variables, or `ps` output**. It wraps **any CLI on your `PATH`** — not only SSH or MySQL — and injects saved passwords at the prompt **without exposing plaintext** to the AI process, shell history, or process environment.
 
 Developed by [Techinone](https://www.tio.tech) (成都同创合一科技有限公司).
 
@@ -55,7 +55,7 @@ Built-in manage UI tabs (when the binary is installed) include SSH, FTP, MySQL, 
 
 ## Install (MCP first — recommended for AI)
 
-The npm package [`brokre`](https://www.npmjs.com/package/brokre) is the MCP launcher for Cursor, Claude Code, and other MCP clients. It spawns the local `brokre mcp` server over stdio.
+The npm package [`brokre`](https://www.npmjs.com/package/brokre) is the MCP launcher for Cursor, Claude Code, Kimi Code, Trae, OpenClaw, Hermes Agent, ChatClaw, and other **MCP clients**. It spawns the local `brokre mcp` server over stdio. Any agent or IDE with stdio MCP support can use the same setup.
 
 ### 1. Add brokre to your AI editor
 

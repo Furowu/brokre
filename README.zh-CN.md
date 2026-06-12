@@ -6,7 +6,7 @@
 
 <!-- README-I18N:END -->
 
-`brokre` 是面向 AI AGENT与个人管理的**本地凭据代理**。它包装 **`PATH` 上任意 CLI** — 不限于 SSH 或 MySQL — 在密码提示处注入已保存凭据，**不向 AI 进程、shell 历史、`ps` 或进程环境暴露明文**。
+`brokre` 是面向 AI Agent 与个人管理的**本地凭据代理**。让 Cursor、Claude Code、Kimi Code、Trae、OpenClaw（龙虾）、Hermes Agent、ChatClaw（小龙虾）等支持 MCP 的工具安全执行 `ssh`、`mysql`、`psql` 等命令——**密码不进 AI 上下文、不进环境变量、不进 `ps`**。它包装 **`PATH` 上任意 CLI** — 不限于 SSH 或 MySQL — 在密码提示处注入已保存凭据，**不向 AI 进程、shell 历史或进程环境暴露明文**。
 
 由 [Techinone](https://www.tio.tech)（成都同创合一科技有限公司）开发维护。
 
@@ -55,7 +55,7 @@ brokre my-internal-tool --host db.internal
 
 ## 安装（优先 MCP — 推荐给 AI 场景）
 
-npm 包 [`brokre`](https://www.npmjs.com/package/brokre) 是面向 Cursor、Claude Code 等 MCP 客户端的启动器，通过 stdio 拉起本地 `brokre mcp` 服务。
+npm 包 [`brokre`](https://www.npmjs.com/package/brokre) 是面向 Cursor、Claude Code、Kimi Code、Trae、OpenClaw（龙虾）、Hermes Agent、ChatClaw（小龙虾）等 **MCP 客户端**的启动器，通过 stdio 拉起本地 `brokre mcp` 服务。凡支持 stdio MCP 的 Agent / IDE，均可按同样方式接入。
 
 ### 1. 将 brokre 接入 AI 编辑器
 

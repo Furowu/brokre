@@ -1,6 +1,6 @@
 # brokre
 
-MCP launcher for [brokre](https://github.com/Furowu/brokre) — lets Cursor, Claude Code, and other MCP clients list credential aliases and run `ssh` / `mysql` / `psql` **without exposing passwords to the AI**.
+MCP launcher for [brokre](https://github.com/Furowu/brokre) — a **local credential broker for AI agents**. Use it with Cursor, Claude Code, Kimi Code, Trae, OpenClaw, Hermes Agent, ChatClaw, and other MCP-capable clients to run `ssh` / `mysql` / `psql` and more — **passwords never enter AI context, environment variables, or `ps` output**. Agents list credential aliases and execute saved connections via MCP **without exposing passwords to the AI**.
 
 ## Prerequisites
 
@@ -14,6 +14,10 @@ curl -fsSL https://raw.githubusercontent.com/Furowu/brokre/main/install.sh | bas
 ```
 
 Re-run the same command to upgrade; the script skips download when already up to date.
+
+## Supported clients
+
+Any tool with **stdio MCP** support can use brokre — configure `npx -y brokre@latest` (or `brokre mcp` after CLI install) as the MCP server command. Tested and documented below for Cursor and Claude Code; the same pattern applies to Kimi Code, Trae, OpenClaw, Hermes Agent, ChatClaw, and similar agents.
 
 ## Cursor
 

@@ -1,7 +1,7 @@
 {
   "name": "brokre",
   "version": "0.1.8",
-  "description": "MCP server for brokre — AI-safe credential broker (ssh, mysql, psql, …)",
+  "description": "MCP launcher for brokre — local credential broker for Cursor, Claude Code, Kimi Code, Trae, OpenClaw, Hermes Agent, ChatClaw, and other MCP clients",
   "license": "MIT",
   "author": "brokre contributors",
   "repository": {
