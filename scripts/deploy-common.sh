@@ -13,7 +13,16 @@ HOMEBREW_RELEASE_BASE="${HOMEBREW_RELEASE_BASE:-https://github.com/Furowu/brokr/
 MCP_DIR="$DEPLOY_ROOT/packages/brokr-mcp"
 DIST_DIR="$DEPLOY_ROOT/dist"
 
-# Homebrew formula targets (match .github/workflows/release.yml, excluding Windows).
+# Release targets (match .github/workflows/release.yml).
+RELEASE_TARGETS=(
+  x86_64-apple-darwin
+  aarch64-apple-darwin
+  x86_64-unknown-linux-gnu
+  aarch64-unknown-linux-gnu
+  x86_64-pc-windows-msvc
+)
+
+# Homebrew formula targets (RELEASE_TARGETS minus Windows).
 HOMEBREW_TARGETS=(
   x86_64-apple-darwin
   aarch64-apple-darwin
@@ -171,12 +180,21 @@ verify_mcp_package_clean() {
   log "npm pack scrub OK ($(basename "$tgz"))"
 }
 
-build_release() {
-  local v
+target_binary_path() {
+  local target="$1"
+  if [[ "$target" == *windows* ]]; then
+    printf '%s/target/%s/release/brokr.exe' "$DEPLOY_ROOT" "$target"
+  else
+    printf '%s/target/%s/release/brokr' "$DEPLOY_ROOT" "$target"
+  fi
+}
+
+build_release_native() {
+  local v bin
   v=$(read_version)
-  log "building brokr v$v (release, stripped)..."
+  log "building brokr v$v (native host only)..."
   (cd "$DEPLOY_ROOT" && cargo build --release)
-  local bin="$DEPLOY_ROOT/target/release/brokr"
+  bin="$DEPLOY_ROOT/target/release/brokr"
   [[ -f "$bin" ]] || die "missing $bin"
   if command -v strip >/dev/null 2>&1; then
     strip "$bin" 2>/dev/null || true
@@ -188,38 +206,77 @@ build_release() {
   log "binary: $bin"
 }
 
-pack_dist() {
-  local v os arch target name
-  v=$(read_version)
-  mkdir -p "$DIST_DIR"
-  os=$(uname -s | tr '[:upper:]' '[:lower:]')
-  arch=$(uname -m)
-  case "$os-$arch" in
-    darwin-arm64)  target="aarch64-apple-darwin" ;;
-    darwin-x86_64) target="x86_64-apple-darwin" ;;
-    linux-x86_64)  target="x86_64-unknown-linux-gnu" ;;
-    linux-aarch64|linux-arm64) target="aarch64-unknown-linux-gnu" ;;
-    *) target="${arch}-${os}" ;;
-  esac
-  name="brokr-${target}"
-  local staging="$DIST_DIR/$name"
+build_release() {
+  build_release_native
+}
+
+pack_one_target() {
+  local target="$1"
+  local staging="$DIST_DIR/.staging-${target}"
+  local out="$DIST_DIR/brokr-${target}.tar.gz"
   rm -rf "$staging"
   mkdir -p "$staging"
-  cp "$DEPLOY_ROOT/target/release/brokr" "$staging/brokr"
-  chmod 755 "$staging/brokr"
-  scan_sensitive_in_dir "$staging" || die "sensitive files in dist staging"
-  (cd "$DIST_DIR" && tar -czf "${name}-v${v}.tar.gz" "$name")
+  if [[ "$target" == *windows* ]]; then
+    cp "$(target_binary_path "$target")" "$staging/brokr.exe"
+    scan_sensitive_in_dir "$staging" || die "sensitive files in dist staging"
+    tar -czf "$out" -C "$staging" brokr.exe
+  else
+    cp "$(target_binary_path "$target")" "$staging/brokr"
+    chmod 755 "$staging/brokr"
+    scan_sensitive_in_dir "$staging" || die "sensitive files in dist staging"
+    tar -czf "$out" -C "$staging" brokr
+  fi
   rm -rf "$staging"
-  log "dist: $DIST_DIR/${name}-v${v}.tar.gz"
+  log "dist: $out"
+}
 
+pack_dist_all() {
+  local v target packed=0
+  v=$(read_version)
+  mkdir -p "$DIST_DIR"
+  rm -f "$DIST_DIR"/brokr-*.tar.gz "$DIST_DIR"/checksums.txt
+  for target in "${RELEASE_TARGETS[@]}"; do
+    if [[ -f "$(target_binary_path "$target")" ]]; then
+      pack_one_target "$target"
+      packed=$((packed + 1))
+    else
+      log "skip $target (no local binary — release assets come from GitHub Actions)"
+    fi
+  done
+  ((${packed} > 0)) || die "no binaries to pack — run ./d build for this host, or download CI artifacts into target/"
+  (
+    cd "$DIST_DIR"
+    if command -v sha256sum >/dev/null 2>&1; then
+      sha256sum brokr-*.tar.gz >checksums.txt
+    else
+      shasum -a 256 brokr-*.tar.gz >checksums.txt
+    fi
+  )
   verify_mcp_package_clean
   (cd "$MCP_DIR" && npm pack --pack-destination "$DIST_DIR")
-  log "dist: MCP npm tgz in $DIST_DIR/"
+  log "dist: $packed tarball(s) + checksums.txt in $DIST_DIR/ (full release: GitHub Actions)"
+}
+
+pack_dist() {
+  pack_dist_all
+}
+
+verify_release_assets() {
+  local v target url
+  v=$(read_version)
+  for target in "${RELEASE_TARGETS[@]}"; do
+    url="${HOMEBREW_RELEASE_BASE}/v${v}/brokr-${target}.tar.gz"
+    curl -fsSL -o /dev/null "$url" \
+      || die "release asset missing: $url"
+  done
+  log "all ${#RELEASE_TARGETS[@]} GitHub release assets verified for v${v}"
 }
 
 publish_npm() {
   local v
   v=$(read_version)
+  log "checking GitHub release assets before npm publish..."
+  verify_release_assets
   verify_mcp_package_clean
   log "publishing @techinone/brokr@$v to npm..."
   (cd "$MCP_DIR" && npm publish --access public)
@@ -236,11 +293,13 @@ publish_github() {
   if git -C "$DEPLOY_ROOT" rev-parse "$tag" >/dev/null 2>&1; then
     die "tag $tag already exists locally"
   fi
-  log "git tag $tag + push $remote"
+  log "git tag $tag + push $remote (GitHub Actions builds all platforms)"
   git -C "$DEPLOY_ROOT" tag -a "$tag" -m "release $tag"
   git -C "$DEPLOY_ROOT" push "$remote" HEAD
   git -C "$DEPLOY_ROOT" push "$remote" "$tag"
-  log "GitHub: pushed $tag — release workflow will build artifacts if configured"
+  wait_for_github_release "$v"
+  verify_release_assets
+  log "GitHub: release $tag ready (CI assets verified)"
 }
 
 publish_gitee() {

@@ -3,16 +3,17 @@
 #
 # Usage:
 #   ./d version 0.2.0       Set semver and sync VERSION / Cargo.toml / npm / homebrew
-#   ./d build               Release build + strip binary
-#   ./d pack                Dist tarball + npm pack (scrub sensitive files)
-#   ./d npm                 Publish @techinone/brokr to npm (MCP market)
-#   ./d github              Tag vX.Y.Z and push to GitHub (triggers release CI)
-#   ./d brew [--wait]       Update homebrew/brokr.rb sha256 + push homebrew tap
-#   ./d brew --from-dist    Use local dist/ tarballs (before GitHub Release)
+#   ./d build               Native release build for current host (dev)
+#   ./d pack                Pack any local target/ binaries into dist/ (optional)
+#   ./d github              Tag, push; GitHub Actions builds all platforms
+#   ./d npm                 Publish @techinone/brokr (after GitHub assets exist)
+#   ./d brew [--from-dist]  Update homebrew/brokr.rb sha256 + push tap
 #   ./d gitee               Push branch + tag to Gitee mirror
 #   ./d remotes             Ensure origin (GitHub) + gitee remotes
-#   ./d release 0.2.0       Full pipeline (add --skip-brew after GitHub CI)
-#   ./d release 0.2.0 --skip-npm
+#   ./d release 0.2.0       Full pipeline (tag → CI build → brew → npm)
+#
+# Prerequisites: rustup, node (version sync), git remotes in .deploy.env
+# Release binaries: .github/workflows/release.yml (all 5 platforms, incl. Windows)
 #
 # Config (optional): .deploy.env
 #   GITHUB_REMOTE=origin          → https://github.com/Furowu/brokr.git
@@ -31,7 +32,7 @@ source "$ROOT/scripts/deploy-common.sh"
 load_deploy_env
 
 usage() {
-  sed -n '3,20p' "$0" | sed 's/^# \?//'
+  sed -n '3,22p' "$0" | sed 's/^# \?//'
   exit "${1:-0}"
 }
 
@@ -41,11 +42,11 @@ cmd_version() {
 }
 
 cmd_build() {
-  build_release
+  build_release_native
 }
 
 cmd_pack() {
-  pack_dist
+  pack_dist_all
 }
 
 cmd_npm() {
@@ -70,17 +71,19 @@ cmd_remotes() {
 }
 
 cmd_release() {
-  local v="${1:?usage: ./d release X.Y.Z [--skip-npm] [--skip-github] [--skip-gitee] [--skip-brew] [--brew-wait] [--no-commit]}"
+  local v="${1:?usage: ./d release X.Y.Z [--skip-npm] [--skip-github] [--skip-gitee] [--skip-brew] [--no-commit]}"
   shift
-  local skip_npm=0 skip_github=0 skip_gitee=0 skip_brew=0 no_commit=0 brew_wait=0
+  local skip_npm=0 skip_github=0 skip_gitee=0 skip_brew=0 no_commit=0
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --skip-npm) skip_npm=1 ;;
       --skip-github) skip_github=1 ;;
       --skip-gitee) skip_gitee=1 ;;
       --skip-brew) skip_brew=1 ;;
-      --brew-wait) brew_wait=1 ;;
       --no-commit) no_commit=1 ;;
+      --brew-wait)
+        log "WARN: --brew-wait is deprecated; release waits for GitHub Actions automatically"
+        ;;
       *) die "unknown flag: $1" ;;
     esac
     shift
@@ -90,11 +93,6 @@ cmd_release() {
   if [[ "$no_commit" -eq 0 ]]; then
     commit_version_bump "chore: release v${v}"
   fi
-  build_release
-  pack_dist
-  if [[ "$skip_npm" -eq 0 ]]; then
-    publish_npm
-  fi
   if [[ "$skip_github" -eq 0 ]]; then
     publish_github
   fi
@@ -102,18 +100,18 @@ cmd_release() {
     publish_gitee
   fi
   if [[ "$skip_brew" -eq 0 ]]; then
-    log "brew: run ./d brew --wait after GitHub Release CI finishes (or ./d release ... --brew-wait)"
-    if [[ "$brew_wait" -eq 1 ]]; then
-      update_homebrew_formula --wait
-      publish_homebrew_tap
-      git -C "$DEPLOY_ROOT" add homebrew/brokr.rb
-      if ! git -C "$DEPLOY_ROOT" diff --cached --quiet; then
-        git -C "$DEPLOY_ROOT" commit -m "chore: homebrew sha256 v${v}"
-        git -C "$DEPLOY_ROOT" push "$GITHUB_REMOTE" HEAD
-      fi
+    update_homebrew_formula --wait
+    publish_homebrew_tap
+    git -C "$DEPLOY_ROOT" add homebrew/brokr.rb
+    if ! git -C "$DEPLOY_ROOT" diff --cached --quiet; then
+      git -C "$DEPLOY_ROOT" commit -m "chore: homebrew sha256 v${v}"
+      git -C "$DEPLOY_ROOT" push "$GITHUB_REMOTE" HEAD
     fi
   fi
-  log "release v${v} complete"
+  if [[ "$skip_npm" -eq 0 ]]; then
+    publish_npm
+  fi
+  log "release v${v} complete (binaries on GitHub Release, MCP on npm)"
 }
 
 main() {

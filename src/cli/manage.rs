@@ -1,3 +1,4 @@
+use crate::manage::instance::{acquire_start_lock, find_running_instance, unregister_instance};
 use crate::manage::run_manage_server;
 use crate::utils::errors::Result;
 use std::thread;
@@ -7,6 +8,16 @@ pub fn run(onboard: bool, open: bool) -> Result<()> {
     if onboard {
         let _ = crate::manage::onboard::mark_onboard_spawned();
     }
+
+    if let Some(existing) = find_running_instance() {
+        return reuse_existing(existing, open);
+    }
+
+    let _start_lock = acquire_start_lock()?;
+    if let Some(existing) = find_running_instance() {
+        return reuse_existing(existing, open);
+    }
+
     let server = run_manage_server(onboard)?;
 
     if open {
@@ -21,6 +32,31 @@ pub fn run(onboard: bool, open: bool) -> Result<()> {
     Ok(())
 }
 
+fn reuse_existing(
+    existing: crate::manage::instance::ManageInstanceRecord,
+    open: bool,
+) -> Result<()> {
+    let url = existing.url();
+    eprintln!(
+        "brokr manage: reusing existing instance (pid {})",
+        existing.pid
+    );
+    eprintln!("brokr manage: {}", url);
+    if open {
+        let open_url = url.clone();
+        thread::spawn(move || {
+            thread::sleep(Duration::from_millis(200));
+            let _ = crate::manage::open_browser(&open_url);
+        });
+    } else {
+        eprintln!(
+            "brokr manage: already running — use --open for browser, or stop pid {} first",
+            existing.pid
+        );
+    }
+    Ok(())
+}
+
 fn wait_for_shutdown() {
     #[cfg(unix)]
     {
@@ -29,6 +65,7 @@ fn wait_for_shutdown() {
         if let Ok(mut signals) = Signals::new([SIGINT, SIGTERM]) {
             if signals.forever().next().is_some() {
                 eprintln!("brokr manage: stopped");
+                unregister_instance();
                 std::process::exit(0);
             }
             return;

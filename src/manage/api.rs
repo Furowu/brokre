@@ -186,6 +186,9 @@ struct CreateBody {
     user: Option<String>,
     #[serde(default)]
     extra_args: Vec<String>,
+    /// SSH / SCP / SFTP port (omit or 22 for default).
+    #[serde(default)]
+    port: Option<u16>,
     #[serde(default)]
     password: Option<String>,
     #[serde(default)]
@@ -334,6 +337,14 @@ fn dispatch(
         if parsed.name.trim().is_empty() || parsed.host.trim().is_empty() {
             return error_response(StatusCode(400), "name and host are required");
         }
+        if parsed.port == Some(0) {
+            return error_response(StatusCode(400), "port must be 1-65535");
+        }
+        if let Err(msg) =
+            crate::manage::profiles::validate_user_for_profile(&parsed.profile, parsed.user.as_deref())
+        {
+            return error_response(StatusCode(400), msg);
+        }
         if !profile_available_for_create(&parsed.profile) {
             audit_manage("manage/denied", &parsed.profile, &parsed.name);
             return error_response(
@@ -341,11 +352,14 @@ fn dispatch(
                 "CLI not installed on this system (not on PATH)",
             );
         }
+        let (host, host_port) = crate::vault::service::parse_host_port(parsed.host.trim());
+        let port = parsed.port.or(host_port);
         let args = build_saved_args(
             &parsed.profile,
-            &parsed.host,
+            &host,
             parsed.user.as_deref(),
             &parsed.extra_args,
+            port,
         );
         let reveal = parsed
             .reveal_passphrase
@@ -726,6 +740,20 @@ mod tests {
 
     #[test]
     #[serial_test::serial]
+    fn running_server_registers_singleton() {
+        with_temp_home(|| {
+            let server = run_manage_server(false).unwrap();
+            let found = crate::manage::instance::find_running_instance()
+                .expect("manage.json should describe live server");
+            assert_eq!(found.port, server.port);
+            assert_eq!(found.token, server.token);
+            assert_eq!(found.pid, std::process::id());
+            crate::manage::instance::unregister_instance();
+        });
+    }
+
+    #[test]
+    #[serial_test::serial]
     fn profiles_endpoint_lists_groups() {
         with_temp_home(|| {
             let server = run_manage_server(false).unwrap();
@@ -741,6 +769,27 @@ mod tests {
                 assert!(ssh.available);
                 assert_eq!(ssh.create_profile, "ssh");
             }
+        });
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn create_ssh_requires_user() {
+        with_temp_home(|| {
+            if which::which("ssh").is_err() {
+                return;
+            }
+            let server = run_manage_server(false).unwrap();
+            let body = r#"{"profile":"ssh","name":"x","host":"10.0.0.1","password":"p"}"#;
+            let (status, resp) = http_request(
+                server.port,
+                "POST",
+                "/api/credentials",
+                Some(&server.token),
+                Some(body),
+            );
+            assert_eq!(status, 400);
+            assert!(resp.contains("user is required"));
         });
     }
 
@@ -769,6 +818,60 @@ mod tests {
         assert_eq!(profile, "ssh");
         assert_eq!(name, "foo/bar");
         assert_eq!(suffix, Some("password"));
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn create_mysql_with_port_via_api() {
+        with_temp_home(|| {
+            if which::which("mysql").is_err() {
+                return;
+            }
+            let server = run_manage_server(false).unwrap();
+            let body = r#"{"profile":"mysql","name":"db","host":"10.0.0.2","user":"app","port":3307,"password":"secret"}"#;
+            let (status, _) = http_request(
+                server.port,
+                "POST",
+                "/api/credentials",
+                Some(&server.token),
+                Some(body),
+            );
+            assert_eq!(status, 201);
+            let store = VaultStore::open().unwrap();
+            let rec = store.get("mysql", "db").unwrap().unwrap();
+            assert_eq!(
+                rec.saved_args,
+                vec!["-h", "10.0.0.2", "-P", "3307", "-u", "app"]
+            );
+            assert_eq!(rec.host_alias.as_deref(), Some("10.0.0.2:3307"));
+        });
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn create_ssh_with_port_via_api() {
+        with_temp_home(|| {
+            if which::which("ssh").is_err() {
+                return;
+            }
+            let server = run_manage_server(false).unwrap();
+            let body = r#"{"profile":"ssh","name":"bastion","host":"10.0.0.1","user":"root","port":9000,"password":"secret"}"#;
+            let (status, _) = http_request(
+                server.port,
+                "POST",
+                "/api/credentials",
+                Some(&server.token),
+                Some(body),
+            );
+            assert_eq!(status, 201);
+            let store = VaultStore::open().unwrap();
+            let rec = store.get("ssh", "bastion").unwrap().unwrap();
+            assert_eq!(
+                rec.saved_args,
+                vec!["-p", "9000", "root@10.0.0.1"]
+            );
+            assert_eq!(rec.host_alias.as_deref(), Some("10.0.0.1:9000"));
+        });
     }
 
     #[test]

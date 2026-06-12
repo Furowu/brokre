@@ -1,5 +1,4 @@
 CARGO := cargo
-TARGETS := x86_64-apple-darwin aarch64-apple-darwin x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu x86_64-pc-windows-msvc
 
 .PHONY: all build test lint fmt e2e release-local clean
 
@@ -27,9 +26,3 @@ release-local:
 
 clean:
 	$(CARGO) clean
-
-cross-release:
-	@for target in $(TARGETS); do \
-		echo "Building for $$target..."; \
-		$(CARGO) build --release --target $$target || true; \
-	done

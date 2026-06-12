@@ -1,7 +1,20 @@
 use crate::utils::paths::brokr_home;
+use crate::vault::service::default_port_for;
 use crate::vault::store::VaultStore;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
+
+/// How the manage form treats the user / login name field.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum UserFieldMode {
+    /// No `-u` / `user@` in saved args (FTP, Redis, …).
+    Hidden,
+    /// Must be filled — empty makes the CLI fall back to the OS user and auth usually fails.
+    Required,
+    /// Custom / unknown CLI — optional.
+    Optional,
+}
 
 /// A manage UI group maps to one tab/section (e.g. SSH, FTP, or user-defined GaussDB).
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -21,6 +34,79 @@ pub struct ProfileGroupInfo {
     /// User-defined or auto-discovered (not built-in preset).
     #[serde(default)]
     pub generic: bool,
+    /// Manage form: whether user/login name is shown and required.
+    pub user_field: UserFieldMode,
+    /// Placeholder hint (e.g. `root` for SSH); not a default value.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub user_placeholder: Option<String>,
+    /// Manage form: inline host+port row.
+    pub port_field: PortFieldMode,
+    /// Well-known default port for placeholder (omit from saved args when blank).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub default_port: Option<u16>,
+}
+
+/// How the manage form treats the port field beside host.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum PortFieldMode {
+    /// Host only (MinIO `mc`, custom group before CLI name, …).
+    Hidden,
+    /// Known CLI default port (SSH 22, MySQL 3306, …).
+    Optional,
+    /// Unknown CLI — passed as `-p` before host.
+    Generic,
+}
+
+pub fn port_field_mode(profile: &str) -> PortFieldMode {
+    let bin = profile.rsplit('/').next().unwrap_or(profile);
+    if bin.is_empty() {
+        return PortFieldMode::Hidden;
+    }
+    if default_port_for(bin).is_some() {
+        PortFieldMode::Optional
+    } else if matches!(bin, "mc" | "minio") {
+        PortFieldMode::Hidden
+    } else {
+        PortFieldMode::Generic
+    }
+}
+
+pub fn user_field_mode(profile: &str) -> UserFieldMode {
+    match profile.rsplit('/').next().unwrap_or(profile) {
+        "ssh" | "scp" | "sftp" | "mysql" | "mariadb" | "postgres" | "psql" => {
+            UserFieldMode::Required
+        }
+        "ftp" | "lftp" | "redis" | "redis-cli" | "clickhouse" | "clickhouse-client" | "mc"
+        | "minio" => UserFieldMode::Hidden,
+        _ => UserFieldMode::Optional,
+    }
+}
+
+pub fn user_placeholder(profile: &str) -> Option<&'static str> {
+    match profile.rsplit('/').next().unwrap_or(profile) {
+        "ssh" | "scp" | "sftp" | "mysql" | "mariadb" => Some("root"),
+        "postgres" | "psql" => Some("postgres"),
+        _ => None,
+    }
+}
+
+/// Validate manage create form user field against CLI semantics.
+pub fn validate_user_for_profile(profile: &str, user: Option<&str>) -> Result<(), &'static str> {
+    if user_field_mode(profile) == UserFieldMode::Required
+        && user.map(str::trim).filter(|s| !s.is_empty()).is_none()
+    {
+        return Err("user is required for this CLI");
+    }
+    Ok(())
+}
+
+fn with_form_meta(create_profile: &str, mut info: ProfileGroupInfo) -> ProfileGroupInfo {
+    info.user_field = user_field_mode(create_profile);
+    info.user_placeholder = user_placeholder(create_profile).map(str::to_string);
+    info.port_field = port_field_mode(create_profile);
+    info.default_port = default_port_for(create_profile);
+    info
 }
 
 struct ProfileGroupDef {
@@ -124,15 +210,23 @@ fn group_from_def(def: &ProfileGroupDef) -> ProfileGroupInfo {
         .first()
         .cloned()
         .unwrap_or_else(|| def.detect_binaries[0].to_string());
-    ProfileGroupInfo {
-        id: def.id.to_string(),
-        label: def.label.to_string(),
-        available,
-        create_profile,
-        detected,
-        profiles: def.vault_profiles.iter().map(|s| (*s).to_string()).collect(),
-        generic: false,
-    }
+    let create_profile_for_meta = create_profile.clone();
+    with_form_meta(
+        &create_profile_for_meta,
+        ProfileGroupInfo {
+            id: def.id.to_string(),
+            label: def.label.to_string(),
+            available,
+            create_profile,
+            detected,
+            profiles: def.vault_profiles.iter().map(|s| (*s).to_string()).collect(),
+            generic: false,
+            user_field: UserFieldMode::Optional,
+            user_placeholder: None,
+            port_field: PortFieldMode::Hidden,
+            default_port: None,
+        },
+    )
 }
 
 fn load_user_groups() -> Vec<ProfileGroupInfo> {
@@ -156,15 +250,23 @@ fn load_user_groups() -> Vec<ProfileGroupInfo> {
             let available = !detected.is_empty();
             let create_profile = pick_create_profile(&g.binaries)
                 .unwrap_or_else(|| g.binaries[0].clone());
-            ProfileGroupInfo {
-                id: g.id,
-                label: g.label,
-                available,
-                create_profile,
-                detected,
-                profiles: g.binaries,
-                generic: true,
-            }
+            let create_profile_for_meta = create_profile.clone();
+            with_form_meta(
+                &create_profile_for_meta,
+                ProfileGroupInfo {
+                    id: g.id,
+                    label: g.label,
+                    available,
+                    create_profile,
+                    detected,
+                    profiles: g.binaries,
+                    generic: true,
+                    user_field: UserFieldMode::Optional,
+                    user_placeholder: None,
+                    port_field: PortFieldMode::Hidden,
+                    default_port: None,
+                },
+            )
         })
         .collect()
 }
@@ -192,15 +294,22 @@ fn synthesize_group(profile: &str) -> ProfileGroupInfo {
     } else {
         vec![]
     };
-    ProfileGroupInfo {
-        id: format!("cli-{}", profile),
-        label: profile.to_string(),
-        available: !detected.is_empty(),
-        create_profile: profile.to_string(),
-        detected,
-        profiles: vec![profile.to_string()],
-        generic: true,
-    }
+    with_form_meta(
+        profile,
+        ProfileGroupInfo {
+            id: format!("cli-{}", profile),
+            label: profile.to_string(),
+            available: !detected.is_empty(),
+            create_profile: profile.to_string(),
+            detected,
+            profiles: vec![profile.to_string()],
+            generic: true,
+            user_field: UserFieldMode::Optional,
+            user_placeholder: None,
+            port_field: PortFieldMode::Hidden,
+            default_port: None,
+        },
+    )
 }
 
 fn custom_cli_group() -> ProfileGroupInfo {
@@ -212,6 +321,10 @@ fn custom_cli_group() -> ProfileGroupInfo {
         detected: vec![],
         profiles: vec![],
         generic: true,
+        user_field: UserFieldMode::Optional,
+        user_placeholder: None,
+        port_field: PortFieldMode::Hidden,
+        default_port: None,
     }
 }
 
@@ -277,6 +390,40 @@ pub fn section_id_for_profile(profile: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn user_field_mode_ssh_required() {
+        assert_eq!(user_field_mode("ssh"), UserFieldMode::Required);
+        assert_eq!(user_field_mode("mysql"), UserFieldMode::Required);
+        assert_eq!(user_field_mode("redis-cli"), UserFieldMode::Hidden);
+        assert_eq!(user_field_mode("gsql"), UserFieldMode::Optional);
+    }
+
+    #[test]
+    fn validate_user_rejects_empty_ssh() {
+        assert!(validate_user_for_profile("ssh", None).is_err());
+        assert!(validate_user_for_profile("ssh", Some("")).is_err());
+        assert!(validate_user_for_profile("ssh", Some("root")).is_ok());
+        assert!(validate_user_for_profile("ftp", None).is_ok());
+    }
+
+    #[test]
+    fn ssh_group_exposes_user_metadata() {
+        let groups = detect_profile_groups();
+        let ssh = groups.iter().find(|g| g.id == "ssh").unwrap();
+        assert_eq!(ssh.user_field, UserFieldMode::Required);
+        assert_eq!(ssh.user_placeholder.as_deref(), Some("root"));
+        assert_eq!(ssh.port_field, PortFieldMode::Optional);
+        assert_eq!(ssh.default_port, Some(22));
+    }
+
+    #[test]
+    fn minio_hides_port_field() {
+        assert_eq!(port_field_mode("mc"), PortFieldMode::Hidden);
+        let groups = detect_profile_groups();
+        let minio = groups.iter().find(|g| g.id == "minio").unwrap();
+        assert_eq!(minio.port_field, PortFieldMode::Hidden);
+    }
 
     #[test]
     fn section_mapping_covers_openssh_family() {

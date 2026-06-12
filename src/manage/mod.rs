@@ -1,6 +1,7 @@
 pub mod api;
 pub mod auth;
 pub mod browser;
+pub mod instance;
 pub mod onboard;
 pub mod profiles;
 pub mod server;

@@ -114,11 +114,13 @@ npm install -g @techinone/brokr
 
 首次连接且**保险库为空**时，brokr 会在浏览器打开 **manage**（`http://127.0.0.1:56777/?t=…`）。会话 token 留在本机 — 不返回给 AI。设置 `BROKR_MCP_NO_AUTO_OPEN=1` 可禁用自动打开。
 
+**无需单独安装 CLI**：`npx @techinone/brokr` 首次运行时会从 GitHub Release 下载对应平台的预编译 `brokr` 到 `~/.brokr/bin/`（需 Node 18+）。若 `brokr` 已在 `PATH` 上则直接使用。禁用自动下载：`BROKR_SKIP_AUTO_INSTALL=1`。
+
 更多说明：[packages/brokr-mcp/README.md](packages/brokr-mcp/README.md)。
 
-### 2. 安装 brokr CLI（必需的后端）
+### 2. 安装 brokr CLI（可选 — MCP 可自动下载）
 
-MCP 启动器会调用本机 `brokr mcp` — 请先安装 CLI：
+也可手动安装 CLI（系统级 `PATH`，推荐生产环境）：
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/Furowu/brokr/main/install.sh | bash

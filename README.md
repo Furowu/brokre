@@ -114,11 +114,13 @@ Then use `"command": "brokr-mcp"` in MCP config instead of `npx`.
 
 On first connect with an **empty vault**, brokr opens **manage** in your browser (`http://127.0.0.1:56777/?t=…`). Session tokens stay on localhost — never returned to the AI. Set `BROKR_MCP_NO_AUTO_OPEN=1` to disable auto-open.
 
+**No separate CLI install required**: on first run, `npx @techinone/brokr` downloads the matching prebuilt `brokr` from GitHub Releases into `~/.brokr/bin/` (Node 18+). If `brokr` is already on `PATH`, that binary is used. Disable auto-download: `BROKR_SKIP_AUTO_INSTALL=1`.
+
 More detail: [packages/brokr-mcp/README.md](packages/brokr-mcp/README.md).
 
-### 2. Install the brokr CLI (required backend)
+### 2. Install the brokr CLI (optional — MCP can auto-download)
 
-The MCP launcher calls `brokr mcp` on your machine — install the CLI once:
+You can also install the CLI system-wide (recommended for production):
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/Furowu/brokr/main/install.sh | bash

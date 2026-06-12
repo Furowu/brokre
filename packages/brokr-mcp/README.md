@@ -4,7 +4,10 @@ MCP launcher for [brokr](https://github.com/Furowu/brokr) — lets Cursor, Claud
 
 ## Prerequisites
 
-Install the `brokr` CLI first:
+- **Node.js 18+** (for `npx`)
+- **No Rust required** — on first run this package downloads a prebuilt `brokr` from [GitHub Releases](https://github.com/Furowu/brokr/releases) into `~/.brokr/bin/` when `brokr` is not on `PATH`.
+
+Optional — install the CLI yourself (recommended for production):
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/Furowu/brokr/main/install.sh | bash
@@ -25,7 +28,7 @@ Add to `~/.cursor/mcp.json` or `.cursor/mcp.json`:
 }
 ```
 
-Or use the native binary directly (no Node):
+Or use the native binary directly (no Node, after CLI install):
 
 ```json
 {
@@ -80,7 +83,9 @@ Disable auto-open: `BROKR_MCP_NO_AUTO_OPEN=1`
 
 | Variable | Description |
 |----------|-------------|
-| `BROKR_BIN` | Path to `brokr` if not on `PATH` |
+| `BROKR_BIN` | Path to `brokr` if not on `PATH` (skips auto-download) |
+| `BROKR_VERSION` | Release version to download (default: npm package version) |
+| `BROKR_SKIP_AUTO_INSTALL` | Set to `1` to disable GitHub download |
 | `BROKR_MCP_NO_AUTO_OPEN` | Set to `1` to skip browser on empty vault |
 
 ## License

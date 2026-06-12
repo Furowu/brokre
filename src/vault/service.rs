@@ -25,7 +25,7 @@ pub fn insert_record(
     fields.insert("password".into(), password);
     let crypto = encrypt_record(&fields, &master_kek, reveal_kek, reveal_salt);
 
-    let host_alias = infer_host(profile, args);
+    let host_alias = infer_host_alias(profile, args);
     let record = SecretRecord {
         id: Uuid::new_v4(),
         profile: profile.to_string(),
@@ -118,7 +118,7 @@ pub fn create_credential_with_fields(
         profile: profile.to_string(),
         name: name.to_string(),
         labels: vec![],
-        host_alias: infer_host(profile, args),
+        host_alias: infer_host_alias(profile, args),
         binary: Some(profile.to_string()),
         fields_meta,
         saved_args: args.to_vec(),
@@ -261,26 +261,178 @@ fn reencrypt_update_password(
     })
 }
 
+/// Split `host:port` / `[::1]:port` from manage UI host field (IPv6-safe).
+pub fn parse_host_port(host: &str) -> (String, Option<u16>) {
+    let host = host.trim();
+    if host.starts_with('[') {
+        if let Some(end) = host.find(']') {
+            let addr = format!("[{}]", &host[1..end]);
+            if let Some(p) = host[end + 1..].strip_prefix(':') {
+                if let Ok(port) = p.parse::<u16>() {
+                    if port > 0 {
+                        return (addr, Some(port));
+                    }
+                }
+            }
+            return (addr, None);
+        }
+    }
+    if let Some((h, p)) = host.split_once(':') {
+        if !h.is_empty() && p.chars().all(|c| c.is_ascii_digit()) {
+            if let Ok(port) = p.parse::<u16>() {
+                if port > 0 {
+                    return (h.to_string(), Some(port));
+                }
+            }
+        }
+    }
+    (host.to_string(), None)
+}
+
+fn openssh_port_flag(bin: &str) -> &'static str {
+    match bin {
+        "scp" | "sftp" => "-P",
+        _ => "-p",
+    }
+}
+
+/// Well-known default port per CLI (for omitting redundant `-p` / display).
+pub fn default_port_for(profile: &str) -> Option<u16> {
+    match profile.rsplit('/').next().unwrap_or(profile) {
+        "ssh" | "scp" | "sftp" => Some(22),
+        "mysql" | "mariadb" => Some(3306),
+        "postgres" | "psql" => Some(5432),
+        "redis" | "redis-cli" => Some(6379),
+        "clickhouse" | "clickhouse-client" => Some(9000),
+        "ftp" | "lftp" => Some(21),
+        _ => None,
+    }
+}
+
+fn read_flag_port(args: &[String], flags: &[&str]) -> Option<u16> {
+    let mut iter = args.iter().peekable();
+    while let Some(a) = iter.next() {
+        for flag in flags {
+            if a == *flag {
+                if let Some(p) = iter.next() {
+                    return p.parse().ok().filter(|&port: &u16| port > 0);
+                }
+            } else if let Some(rest) = a.strip_prefix(&format!("{flag}=")) {
+                if !rest.is_empty() {
+                    return rest.parse().ok().filter(|&port: &u16| port > 0);
+                }
+            }
+        }
+    }
+    None
+}
+
+fn infer_ftp_port(args: &[String]) -> Option<u16> {
+    let mut seen_host = false;
+    for a in args {
+        if a.starts_with('-') {
+            continue;
+        }
+        if !seen_host {
+            seen_host = true;
+            continue;
+        }
+        if let Ok(p) = a.parse::<u16>() {
+            return Some(p).filter(|&port| port > 0);
+        }
+        break;
+    }
+    None
+}
+
+/// Read port from saved argv for a profile.
+pub fn infer_cli_port(profile: &str, args: &[String]) -> Option<u16> {
+    let bin = profile.rsplit('/').next().unwrap_or(profile);
+    match bin {
+        "ssh" | "scp" | "sftp" => {
+            read_flag_port(args, &[openssh_port_flag(bin)])
+        }
+        "mysql" | "mariadb" => read_flag_port(args, &["-P", "--port"]),
+        "postgres" | "psql" | "redis" | "redis-cli" | "lftp" => {
+            read_flag_port(args, &["-p", "--port"])
+        }
+        "clickhouse" | "clickhouse-client" => read_flag_port(args, &["--port"]),
+        "ftp" => infer_ftp_port(args),
+        _ => read_flag_port(args, &["-p", "-P", "--port"]),
+    }
+}
+
+/// Host label for list / fuzzy match; includes `:port` when not the CLI default.
+pub fn infer_host_alias(profile: &str, args: &[String]) -> Option<String> {
+    let host = infer_host(profile, args)?;
+    let bin = profile.rsplit('/').next().unwrap_or(profile);
+    match infer_cli_port(profile, args) {
+        Some(port) if default_port_for(bin).is_none_or(|d| d != port) => {
+            Some(format!("{host}:{port}"))
+        }
+        _ => Some(host),
+    }
+}
+
+fn push_port_args(args: &mut Vec<String>, bin: &str, port: Option<u16>) {
+    let Some(p) = port else {
+        return;
+    };
+    let default = default_port_for(bin);
+    if default.is_some_and(|d| d == p) {
+        return;
+    }
+    match bin {
+        "ssh" | "scp" | "sftp" => {
+            args.push(openssh_port_flag(bin).into());
+            args.push(p.to_string());
+        }
+        "mysql" | "mariadb" => {
+            args.push("-P".into());
+            args.push(p.to_string());
+        }
+        "postgres" | "psql" | "redis" | "redis-cli" | "lftp" => {
+            args.push("-p".into());
+            args.push(p.to_string());
+        }
+        "clickhouse" | "clickhouse-client" => {
+            args.push(format!("--port={p}"));
+        }
+        "ftp" => {
+            args.push(p.to_string());
+        }
+        _ => {
+            args.push("-p".into());
+            args.push(p.to_string());
+        }
+    }
+}
+
 /// Build `saved_args` from manage form fields.
 pub fn build_saved_args(
     profile: &str,
     host: &str,
     user: Option<&str>,
     extra: &[String],
+    port: Option<u16>,
 ) -> Vec<String> {
     let bin = profile.rsplit('/').next().unwrap_or(profile);
+    let (host, host_port) = parse_host_port(host);
+    let port = port.or(host_port);
     let mut args = Vec::new();
     match bin {
         "ssh" | "scp" | "sftp" => {
+            push_port_args(&mut args, bin, port);
             if let Some(u) = user.filter(|s| !s.is_empty()) {
                 args.push(format!("{}@{}", u, host));
             } else {
-                args.push(host.to_string());
+                args.push(host);
             }
         }
         "mysql" | "mariadb" => {
             args.push("-h".into());
-            args.push(host.to_string());
+            args.push(host);
+            push_port_args(&mut args, bin, port);
             if let Some(u) = user.filter(|s| !s.is_empty()) {
                 args.push("-u".into());
                 args.push(u.to_string());
@@ -288,7 +440,8 @@ pub fn build_saved_args(
         }
         "postgres" | "psql" => {
             args.push("-h".into());
-            args.push(host.to_string());
+            args.push(host);
+            push_port_args(&mut args, bin, port);
             if let Some(u) = user.filter(|s| !s.is_empty()) {
                 args.push("-U".into());
                 args.push(u.to_string());
@@ -296,16 +449,24 @@ pub fn build_saved_args(
         }
         "redis" | "redis-cli" => {
             args.push("-h".into());
-            args.push(host.to_string());
+            args.push(host);
+            push_port_args(&mut args, bin, port);
         }
         "clickhouse" | "clickhouse-client" => {
-            args.push(format!("--host={}", host));
+            args.push(format!("--host={host}"));
+            push_port_args(&mut args, bin, port);
         }
-        "ftp" | "lftp" => {
-            args.push(host.to_string());
+        "ftp" => {
+            args.push(host);
+            push_port_args(&mut args, bin, port);
+        }
+        "lftp" => {
+            push_port_args(&mut args, bin, port);
+            args.push(host);
         }
         _ => {
-            args.push(host.to_string());
+            push_port_args(&mut args, bin, port);
+            args.push(host);
         }
     }
     args.extend(extra.iter().cloned());
@@ -376,7 +537,8 @@ pub fn infer_host(profile: &str, args: &[String]) -> Option<String> {
                     } else {
                         rest
                     };
-                    return Some(host.to_string());
+                    let (host, _) = parse_host_port(host);
+                    return Some(host);
                 }
             }
             for a in args {
@@ -392,10 +554,14 @@ pub fn infer_host(profile: &str, args: &[String]) -> Option<String> {
             let mut iter = args.iter().peekable();
             while let Some(a) = iter.next() {
                 if a == "-h" || a == "--host" {
-                    return iter.next().cloned();
+                    if let Some(h) = iter.next() {
+                        let (host, _) = parse_host_port(h);
+                        return Some(host);
+                    }
                 }
                 if let Some(rest) = a.strip_prefix("--host=") {
-                    return Some(rest.to_string());
+                    let (host, _) = parse_host_port(rest);
+                    return Some(host);
                 }
             }
             None
@@ -405,7 +571,8 @@ pub fn infer_host(profile: &str, args: &[String]) -> Option<String> {
                 if a.starts_with('-') {
                     continue;
                 }
-                return Some(a.clone());
+                let (host, _) = parse_host_port(a);
+                return Some(host);
             }
             None
         }
@@ -521,19 +688,122 @@ mod tests {
 
     #[test]
     fn build_saved_args_ftp() {
-        let args = build_saved_args("ftp", "ftp.example.com", None, &[]);
+        let args = build_saved_args("ftp", "ftp.example.com", None, &[], None);
         assert_eq!(args, vec!["ftp.example.com"]);
     }
 
     #[test]
     fn build_saved_args_ssh() {
-        let args = build_saved_args("ssh", "10.0.0.1", Some("root"), &[]);
+        let args = build_saved_args("ssh", "10.0.0.1", Some("root"), &[], None);
         assert_eq!(args, vec!["root@10.0.0.1"]);
     }
 
     #[test]
+    fn build_saved_args_ssh_with_port() {
+        let args = build_saved_args("ssh", "10.0.0.1", Some("root"), &[], Some(9000));
+        assert_eq!(args, vec!["-p", "9000", "root@10.0.0.1"]);
+    }
+
+    #[test]
+    fn build_saved_args_scp_uses_capital_p() {
+        let args = build_saved_args("scp", "10.0.0.1", Some("root"), &[], Some(2222));
+        assert_eq!(args, vec!["-P", "2222", "root@10.0.0.1"]);
+    }
+
+    #[test]
+    fn parse_host_port_splits_ipv4_suffix() {
+        assert_eq!(
+            parse_host_port("198.51.100.88:9000"),
+            ("198.51.100.88".into(), Some(9000))
+        );
+    }
+
+    #[test]
+    fn parse_host_port_leaves_ipv6_untouched() {
+        assert_eq!(
+            parse_host_port("2001:db8::1"),
+            ("2001:db8::1".into(), None)
+        );
+    }
+
+    #[test]
+    fn infer_host_alias_includes_non_default_port() {
+        let args = vec!["-p".into(), "9000".into(), "root@10.0.0.1".into()];
+        assert_eq!(
+            infer_host_alias("ssh", &args).as_deref(),
+            Some("10.0.0.1:9000")
+        );
+    }
+
+    #[test]
+    fn build_saved_args_mysql_with_port() {
+        let args = build_saved_args("mysql", "db.local", Some("u"), &[], Some(3307));
+        assert_eq!(
+            args,
+            vec!["-h", "db.local", "-P", "3307", "-u", "u"]
+        );
+    }
+
+    #[test]
+    fn build_saved_args_psql_with_port() {
+        let args = build_saved_args("psql", "db.local", Some("u"), &[], Some(5433));
+        assert_eq!(
+            args,
+            vec!["-h", "db.local", "-p", "5433", "-U", "u"]
+        );
+    }
+
+    #[test]
+    fn build_saved_args_redis_with_port() {
+        let args = build_saved_args("redis-cli", "127.0.0.1", None, &[], Some(6380));
+        assert_eq!(args, vec!["-h", "127.0.0.1", "-p", "6380"]);
+    }
+
+    #[test]
+    fn build_saved_args_clickhouse_with_port() {
+        let args = build_saved_args("clickhouse-client", "ch.local", None, &[], Some(9440));
+        assert_eq!(
+            args,
+            vec!["--host=ch.local", "--port=9440"]
+        );
+    }
+
+    #[test]
+    fn build_saved_args_ftp_with_port() {
+        let args = build_saved_args("ftp", "ftp.example.com", None, &[], Some(2121));
+        assert_eq!(args, vec!["ftp.example.com", "2121"]);
+    }
+
+    #[test]
+    fn build_saved_args_lftp_with_port() {
+        let args = build_saved_args("lftp", "ftp.example.com", None, &[], Some(2121));
+        assert_eq!(args, vec!["-p", "2121", "ftp.example.com"]);
+    }
+
+    #[test]
+    fn build_saved_args_splits_host_port_in_field() {
+        let args = build_saved_args("mysql", "db.local:3307", Some("u"), &[], None);
+        assert_eq!(
+            args,
+            vec!["-h", "db.local", "-P", "3307", "-u", "u"]
+        );
+    }
+
+    #[test]
+    fn infer_cli_port_mysql_capital_p() {
+        let args = vec!["-h".into(), "db".into(), "-P".into(), "3307".into()];
+        assert_eq!(infer_cli_port("mysql", &args), Some(3307));
+    }
+
+    #[test]
     fn build_saved_args_mysql() {
-        let args = build_saved_args("mysql", "db.local", Some("admin"), &["-e".into(), "SHOW TABLES".into()]);
+        let args = build_saved_args(
+            "mysql",
+            "db.local",
+            Some("admin"),
+            &["-e".into(), "SHOW TABLES".into()],
+            None,
+        );
         assert_eq!(
             args,
             vec!["-h", "db.local", "-u", "admin", "-e", "SHOW TABLES"]

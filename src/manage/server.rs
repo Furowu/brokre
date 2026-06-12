@@ -1,5 +1,6 @@
 use crate::manage::api::{handle_request, ManageState};
 use crate::manage::auth::generate_session_token;
+use crate::manage::instance::{register_instance, unregister_instance};
 use crate::utils::errors::{BrokrError, Result};
 use std::net::{TcpListener, ToSocketAddrs};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -103,6 +104,7 @@ pub fn run_manage_server_with(options: ManageServerOptions) -> Result<ManageServ
                 match idle_behavior {
                     IdleBehavior::ExitProcess => {
                         eprintln!("brokr manage: idle timeout — shutting down");
+                        unregister_instance();
                         std::process::exit(0);
                     }
                     IdleBehavior::LogOnly => {
@@ -119,12 +121,21 @@ pub fn run_manage_server_with(options: ManageServerOptions) -> Result<ManageServ
 
     thread::sleep(Duration::from_millis(50));
 
+    register_instance(port, &token)?;
+
     Ok(ManageServer { port, token, url })
 }
 
 fn bind_localhost_listener() -> Result<TcpListener> {
     for port in MANAGE_PORTS_PREFERRED {
         if let Ok(listener) = try_bind(*port) {
+            if *port != MANAGE_PORTS_PREFERRED[0] {
+                eprintln!(
+                    "brokr manage: port {} in use — using {}",
+                    MANAGE_PORTS_PREFERRED[0],
+                    port
+                );
+            }
             return Ok(listener);
         }
     }
