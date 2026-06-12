@@ -38,8 +38,25 @@ pub fn injectable_field_names(rec: &SecretRecord) -> Vec<String> {
     vec!["password".into()]
 }
 
+/// Unescape JSON/notebook-style `\\n` when PEM was pasted as a single line.
+/// Ensures a trailing newline — OpenSSH rejects PEM without one.
+pub fn normalize_private_key_pem(raw: &str) -> String {
+    let mut t = if raw.contains('\n') {
+        raw.to_string()
+    } else if raw.contains("\\n") {
+        raw.replace("\\n", "\n")
+    } else {
+        raw.to_string()
+    };
+    t = t.trim_start().trim_end_matches('\r').to_string();
+    if !t.ends_with('\n') {
+        t.push('\n');
+    }
+    t
+}
+
 pub fn validate_private_key_pem(pem: &str) -> bool {
-    let t = pem.trim();
+    let t = normalize_private_key_pem(pem);
     (t.contains("BEGIN OPENSSH PRIVATE KEY") || t.contains("BEGIN RSA PRIVATE KEY")
         || t.contains("BEGIN EC PRIVATE KEY")
         || t.contains("BEGIN PRIVATE KEY")
@@ -150,7 +167,7 @@ fn write_key_file(key: &SecretString) -> Result<PathBuf> {
             use std::os::unix::fs::PermissionsExt;
             let _ = fs::set_permissions(&path, fs::Permissions::from_mode(0o600));
         }
-        file.write_all(key.expose().as_bytes())
+        file.write_all(normalize_private_key_pem(key.expose()).as_bytes())
             .map_err(BrokreError::Io)?;
         file.sync_all().map_err(BrokreError::Io)?;
     }
@@ -220,10 +237,11 @@ pub fn build_ssh_secret_fields(
             if key.is_empty() {
                 return Err(BrokreError::Vault("private_key is required".into()));
             }
-            if !validate_private_key_pem(key.expose()) {
+            let normalized = normalize_private_key_pem(key.expose());
+            if !validate_private_key_pem(&normalized) {
                 return Err(BrokreError::Vault("invalid private key PEM".into()));
             }
-            fields.insert("private_key".into(), key);
+            fields.insert("private_key".into(), SecretString::new(normalized));
             if let Some(kp) = key_passphrase.filter(|s| !s.is_empty()) {
                 fields.insert("key_passphrase".into(), kp);
             }
@@ -234,10 +252,11 @@ pub fn build_ssh_secret_fields(
             if key.is_empty() || pw.is_empty() {
                 return Err(BrokreError::Vault("private_key and password are required".into()));
             }
-            if !validate_private_key_pem(key.expose()) {
+            let normalized = normalize_private_key_pem(key.expose());
+            if !validate_private_key_pem(&normalized) {
                 return Err(BrokreError::Vault("invalid private key PEM".into()));
             }
-            fields.insert("private_key".into(), key);
+            fields.insert("private_key".into(), SecretString::new(normalized));
             fields.insert("password".into(), pw);
             if let Some(kp) = key_passphrase.filter(|s| !s.is_empty()) {
                 fields.insert("key_passphrase".into(), kp);
@@ -260,6 +279,15 @@ mod tests {
             "-----BEGIN OPENSSH PRIVATE KEY-----\nabc\n-----END OPENSSH PRIVATE KEY-----"
         ));
         assert!(!validate_private_key_pem("not a key"));
+    }
+
+    #[test]
+    fn normalizes_literal_backslash_n_pem() {
+        let one_line = "-----BEGIN OPENSSH PRIVATE KEY-----\\nabc\\n-----END OPENSSH PRIVATE KEY-----\\n";
+        let norm = normalize_private_key_pem(one_line);
+        assert_eq!(norm.lines().count(), 3);
+        assert!(norm.ends_with('\n'));
+        assert!(validate_private_key_pem(one_line));
     }
 
     #[test]
