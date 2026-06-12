@@ -1,6 +1,6 @@
 {
   "name": "brokre",
-  "version": "0.1.20",
+  "version": "0.1.21",
   "description": "MCP launcher for brokre — local credential broker for Cursor, Claude Code, Kimi Code, Trae, OpenClaw, Hermes Agent, ChatClaw, and other MCP clients",
   "license": "MIT",
   "author": "brokre contributors",
