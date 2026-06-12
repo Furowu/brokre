@@ -78,6 +78,20 @@ function readCachedVersion() {
   }
 }
 
+function parseVersion(output) {
+  const m = String(output).match(/\b(\d+\.\d+\.\d+(?:[-+][\w.-]+)?)\b/);
+  return m ? m[1] : null;
+}
+
+function getInstalledVersion(brokrPath) {
+  try {
+    const out = execFileSync(brokrPath, ['--version'], { encoding: 'utf8' });
+    return parseVersion(out);
+  } catch (_) {
+    return null;
+  }
+}
+
 function httpsGet(url) {
   return new Promise((resolve, reject) => {
     const req = https.get(url, (res) => {
@@ -119,14 +133,16 @@ function extractTarGz(tarPath, destDir) {
 }
 
 async function ensureBrokrBinary() {
-  const onPath = findBrokrOnPath();
-  if (onPath) return onPath;
+  if (process.env.BROKR_BIN) {
+    return process.env.BROKR_BIN;
+  }
 
   if (process.env.BROKR_SKIP_AUTO_INSTALL === '1') {
+    const onPath = findBrokrOnPath();
+    if (onPath) return onPath;
     throw new Error('brokr not on PATH (BROKR_SKIP_AUTO_INSTALL=1)');
   }
 
-  const target = detectTarget();
   const brokrVersion = process.env.BROKR_VERSION || PKG_VERSION;
   const cache = cachedBrokrPath();
   const cachedVersion = readCachedVersion();
@@ -135,14 +151,34 @@ async function ensureBrokrBinary() {
     return cache;
   }
 
+  const onPath = findBrokrOnPath();
+  if (onPath) {
+    const installed = getInstalledVersion(onPath);
+    if (installed === brokrVersion) {
+      return onPath;
+    }
+    if (installed) {
+      process.stderr.write(
+        `brokr: PATH has v${installed}, need v${brokrVersion}; downloading...\n`
+      );
+    }
+  } else if (cachedVersion && cachedVersion !== brokrVersion) {
+    process.stderr.write(
+      `brokr: updating cached v${cachedVersion} → v${brokrVersion}...\n`
+    );
+  }
+
+  const target = detectTarget();
   const url = `https://github.com/${REPO}/releases/download/v${brokrVersion}/brokr-${target}.tar.gz`;
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'brokr-mcp-'));
   const tgz = path.join(tmpDir, 'brokr.tar.gz');
 
   try {
-    process.stderr.write(
-      `brokr: downloading v${brokrVersion} for ${target}...\n`
-    );
+    if (!onPath && !cachedVersion) {
+      process.stderr.write(
+        `brokr: downloading v${brokrVersion} for ${target}...\n`
+      );
+    }
     await downloadToFile(url, tgz);
     extractTarGz(tgz, tmpDir);
 

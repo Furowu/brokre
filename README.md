@@ -66,7 +66,7 @@ The npm package [`@techinone/brokr`](https://www.npmjs.com/package/@techinone/br
   "mcpServers": {
     "brokr": {
       "command": "npx",
-      "args": ["-y", "@techinone/brokr"]
+      "args": ["-y", "@techinone/brokr@latest"]
     }
   }
 }
@@ -80,7 +80,7 @@ The npm package [`@techinone/brokr`](https://www.npmjs.com/package/@techinone/br
     "brokr": {
       "type": "stdio",
       "command": "npx",
-      "args": ["-y", "@techinone/brokr"]
+      "args": ["-y", "@techinone/brokr@latest"]
     }
   }
 }
@@ -89,16 +89,10 @@ The npm package [`@techinone/brokr`](https://www.npmjs.com/package/@techinone/br
 Or via CLI:
 
 ```bash
-claude mcp add --scope project brokr -- npx -y @techinone/brokr
+claude mcp add --scope project brokr -- npx -y @techinone/brokr@latest
 ```
 
-Optional — install the launcher globally (avoids repeated `npx` downloads):
-
-```bash
-npm install -g @techinone/brokr
-```
-
-Then use `"command": "brokr-mcp"` in MCP config instead of `npx`.
+Use `npx -y @techinone/brokr@latest` so both the npm launcher and binary stay current. On each MCP start, if the local `brokr` (`PATH` or `~/.brokr/bin/`) is older than the npm package version, a matching release is downloaded into `~/.brokr/bin/` — even when an older `brokr` is already on `PATH`.
 
 **No Node** — point MCP directly at the native binary:
 
@@ -114,7 +108,7 @@ Then use `"command": "brokr-mcp"` in MCP config instead of `npx`.
 
 On first connect with an **empty vault**, brokr opens **manage** in your browser (`http://127.0.0.1:56777/?t=…`). Session tokens stay on localhost — never returned to the AI. Set `BROKR_MCP_NO_AUTO_OPEN=1` to disable auto-open.
 
-**No separate CLI install required**: on first run, `npx @techinone/brokr` downloads the matching prebuilt `brokr` from GitHub Releases into `~/.brokr/bin/` (Node 18+). If `brokr` is already on `PATH`, that binary is used. Disable auto-download: `BROKR_SKIP_AUTO_INSTALL=1`.
+**No separate CLI install required**: `npx -y @techinone/brokr@latest` downloads or upgrades `~/.brokr/bin/brokr` from GitHub Releases when needed (Node 18+), including when an older `brokr` is on `PATH`. Disable auto-download: `BROKR_SKIP_AUTO_INSTALL=1`; pin a binary: `BROKR_BIN=/path/to/brokr`.
 
 More detail: [packages/brokr-mcp/README.md](packages/brokr-mcp/README.md).
 
@@ -125,6 +119,8 @@ You can also install the CLI system-wide (recommended for production):
 ```bash
 curl -fsSL https://raw.githubusercontent.com/Furowu/brokr/main/install.sh | bash
 ```
+
+Re-run the same command to upgrade; the script detects the installed version, reinstalls when a newer release is available, and skips when already up to date.
 
 Or via Homebrew (macOS / Linux):
 

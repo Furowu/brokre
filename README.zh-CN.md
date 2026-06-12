@@ -66,7 +66,7 @@ npm 包 [`@techinone/brokr`](https://www.npmjs.com/package/@techinone/brokr) 是
   "mcpServers": {
     "brokr": {
       "command": "npx",
-      "args": ["-y", "@techinone/brokr"]
+      "args": ["-y", "@techinone/brokr@latest"]
     }
   }
 }
@@ -80,7 +80,7 @@ npm 包 [`@techinone/brokr`](https://www.npmjs.com/package/@techinone/brokr) 是
     "brokr": {
       "type": "stdio",
       "command": "npx",
-      "args": ["-y", "@techinone/brokr"]
+      "args": ["-y", "@techinone/brokr@latest"]
     }
   }
 }
@@ -89,16 +89,10 @@ npm 包 [`@techinone/brokr`](https://www.npmjs.com/package/@techinone/brokr) 是
 或命令行：
 
 ```bash
-claude mcp add --scope project brokr -- npx -y @techinone/brokr
+claude mcp add --scope project brokr -- npx -y @techinone/brokr@latest
 ```
 
-可选 — 全局安装启动器（减少重复 `npx` 下载）：
-
-```bash
-npm install -g @techinone/brokr
-```
-
-之后在 MCP 配置中用 `"command": "brokr-mcp"` 替代 `npx`。
+推荐 `npx -y @techinone/brokr@latest`：npm 启动器与二进制均会自动保持最新。每次 MCP 启动时，若本地 `brokr`（`PATH` 或 `~/.brokr/bin/`）版本低于 npm 包版本，会自动从 GitHub Release 下载并覆盖 `~/.brokr/bin/`。
 
 **无需 Node** — MCP 直接指向原生二进制：
 
@@ -114,7 +108,7 @@ npm install -g @techinone/brokr
 
 首次连接且**保险库为空**时，brokr 会在浏览器打开 **manage**（`http://127.0.0.1:56777/?t=…`）。会话 token 留在本机 — 不返回给 AI。设置 `BROKR_MCP_NO_AUTO_OPEN=1` 可禁用自动打开。
 
-**无需单独安装 CLI**：`npx @techinone/brokr` 首次运行时会从 GitHub Release 下载对应平台的预编译 `brokr` 到 `~/.brokr/bin/`（需 Node 18+）。若 `brokr` 已在 `PATH` 上则直接使用。禁用自动下载：`BROKR_SKIP_AUTO_INSTALL=1`。
+**无需单独安装 CLI**：`npx -y @techinone/brokr@latest` 会在需要时从 GitHub Release 下载或升级 `~/.brokr/bin/brokr`（需 Node 18+），即使 `PATH` 上已有旧版也会自动更新。禁用自动下载：`BROKR_SKIP_AUTO_INSTALL=1`；固定二进制：`BROKR_BIN=/path/to/brokr`。
 
 更多说明：[packages/brokr-mcp/README.md](packages/brokr-mcp/README.md)。
 
@@ -125,6 +119,8 @@ npm install -g @techinone/brokr
 ```bash
 curl -fsSL https://raw.githubusercontent.com/Furowu/brokr/main/install.sh | bash
 ```
+
+重复执行同一命令可升级；脚本会检测已安装版本，有新版时自动重装，已是最新则跳过。
 
 或通过 Homebrew（macOS / Linux）：
 
