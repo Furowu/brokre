@@ -1,0 +1,32 @@
+{
+  "name": "@Techinone/brokr",
+  "version": "0.1.1",
+  "description": "MCP server for brokr — AI-safe credential broker (ssh, mysql, psql, …)",
+  "license": "MIT",
+  "author": "brokr contributors",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Furowu/brokr.git",
+    "directory": "packages/brokr-mcp"
+  },
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "brokr",
+    "credentials",
+    "ssh",
+    "security",
+    "cursor",
+    "claude"
+  ],
+  "bin": {
+    "brokr-mcp": "./index.js"
+  },
+  "files": [
+    "index.js",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=18"
+  }
+}

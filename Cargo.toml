@@ -1,14 +1,19 @@
 [package]
 name = "brokr"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
-rust-version = "1.75"
+rust-version = "1.89"
 authors = ["brokr contributors"]
 description = "AI-safe credential broker CLI"
 license = "MIT"
-repository = "https://github.com/brokr/brokr"
+repository = "https://github.com/Furowu/brokr"
 keywords = ["cli", "security", "credentials", "ssh", "ai"]
 categories = ["command-line-utilities", "authentication"]
+
+[features]
+default = ["in_proc_inject"]
+# In-process PTY password injection (used by integration tests; optional for strict builds).
+in_proc_inject = []
 
 [dependencies]
 clap = { version = "4.5", features = ["derive", "string"] }
@@ -37,7 +42,12 @@ hex = "0.4"
 regex = "1"
 portable-pty = "0.8"
 crossterm = "0.27"
-signal-hook = "0.3"
+signal-hook = { version = "0.3", features = ["iterator"] }
+tiny_http = "0.12"
+
+rmcp = { version = "1.7", features = ["server", "macros", "transport-io"] }
+schemars = "0.8"
+tokio = { version = "1", features = ["rt", "macros", "process", "io-std"] }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
