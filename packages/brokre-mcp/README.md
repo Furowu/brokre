@@ -96,6 +96,8 @@ Disable auto-open: `BROKRE_MCP_NO_AUTO_OPEN=1`
 | `brokre_list` | List saved aliases (metadata only) |
 | `brokre_exec` | Run a saved connection (`binary` + `args`) |
 | `brokre_setup` | Open manage UI in browser for the human |
+| `brokre_audit_list` | Query audit history (metadata only — args redacted) |
+| `brokre_audit_verify` | Verify tamper-evident audit log chain |
 
 **Not exposed:** `reveal`, password export, or session tokens.
 

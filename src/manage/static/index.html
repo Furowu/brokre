@@ -55,6 +55,17 @@ textarea{font:inherit;border:1px solid #d1d5db;border-radius:6px;padding:.4rem .
 .empty{color:#6b7280;padding:1rem;text-align:center}
 .err{color:#dc2626;font-size:.875rem;margin-top:.5rem}
 .section-empty{color:#9ca3af;font-size:.875rem;padding:.5rem 0 .25rem}
+.nav-tabs{display:flex;gap:.5rem;margin-bottom:1rem;border-bottom:1px solid #e5e7eb;padding-bottom:.35rem}
+.nav-tabs button{background:transparent;color:#6b7280;padding:.35rem .65rem;border-radius:6px 6px 0 0}
+.nav-tabs button.on{background:#eff6ff;color:#1d4ed8;font-weight:600}
+.audit-toolbar{display:flex;flex-wrap:wrap;gap:.5rem;margin-bottom:.75rem;align-items:center}
+.audit-toolbar input,.audit-toolbar select{max-width:140px}
+.audit-table{width:100%;border-collapse:collapse;font-size:.8rem}
+.audit-table th,.audit-table td{border-bottom:1px solid #e5e7eb;padding:.4rem .35rem;text-align:left;vertical-align:top}
+.audit-table th{color:#6b7280;font-weight:600;white-space:nowrap}
+.audit-banner.hidden{display:none!important}
+.audit-banner.ok{background:#ecfdf5;border:1px solid #6ee7b7;color:#065f46}
+.audit-banner.err{background:#fef2f2;border:1px solid #fecaca;color:#991b1b}
 /* Avoid type=password — Chrome/Google Password Manager still offers to save. */
 .input-secret{-webkit-text-security:disc;text-security:disc;font-family:ui-monospace,monospace}
 </style>
@@ -74,10 +85,38 @@ textarea{font:inherit;border:1px solid #d1d5db;border-radius:6px;padding:.4rem .
     <span data-i18n="onboard.text">Maintain accounts by installed CLI groups. Passwords are write-only.</span>
     <button class="secondary" id="skip-onboard" data-i18n="onboard.skip">Skip</button>
   </div>
+  <nav class="nav-tabs" id="nav-tabs">
+    <button type="button" class="on" data-view="credentials" data-i18n="tab.credentials">Credentials</button>
+    <button type="button" data-view="audit" data-i18n="tab.audit">Audit log</button>
+  </nav>
+  <div id="view-credentials">
   <div class="toolbar">
     <input type="search" id="search" data-i18n-placeholder="search.placeholder" placeholder="Search alias / host" style="max-width:220px">
   </div>
   <div id="list"></div>
+  </div>
+  <div id="view-audit" class="hidden">
+    <div class="banner hidden audit-banner" id="audit-banner"></div>
+    <div class="section">
+      <div class="section-head">
+        <h2 data-i18n="audit.title">Audit log</h2>
+        <button type="button" class="secondary" id="audit-verify" data-i18n="audit.verify">Verify chain</button>
+      </div>
+      <div class="audit-toolbar">
+        <input type="text" id="audit-profile" data-i18n-placeholder="audit.profilePh" placeholder="profile">
+        <input type="text" id="audit-name" data-i18n-placeholder="audit.namePh" placeholder="alias">
+        <input type="text" id="audit-action" data-i18n-placeholder="audit.actionPh" placeholder="action">
+        <select id="audit-source">
+          <option value="" data-i18n="audit.sourceAll">All sources</option>
+          <option value="cli">cli</option>
+          <option value="mcp">mcp</option>
+          <option value="manage">manage</option>
+        </select>
+        <button type="button" id="audit-refresh" data-i18n="audit.refresh">Refresh</button>
+      </div>
+      <div id="audit-table-wrap"></div>
+    </div>
+  </div>
 </div>
 
 <div class="modal" id="modal-form">
@@ -247,7 +286,27 @@ textarea{font:inherit;border:1px solid #d1d5db;border-radius:6px;padding:.4rem .
       'group.custom': 'Other CLI',
       'group.ssh': 'SSH', 'group.ftp': 'FTP', 'group.lftp': 'LFTP',
       'group.mysql': 'MySQL', 'group.postgres': 'PostgreSQL', 'group.redis': 'Redis',
-      'group.clickhouse': 'ClickHouse', 'group.minio': 'MinIO'
+      'group.clickhouse': 'ClickHouse', 'group.minio': 'MinIO',
+      'tab.credentials': 'Credentials',
+      'tab.audit': 'Audit log',
+      'audit.title': 'Audit log',
+      'audit.verify': 'Verify chain',
+      'audit.refresh': 'Refresh',
+      'audit.profilePh': 'profile',
+      'audit.namePh': 'alias',
+      'audit.actionPh': 'action (e.g. exec)',
+      'audit.sourceAll': 'All sources',
+      'audit.empty': 'No audit events matched.',
+      'audit.loadFail': 'Failed to load audit log',
+      'audit.matched': 'Matched {n} event(s)',
+      'audit.verifyOk': 'Chain verified — {n} event(s), {first} … {last}',
+      'audit.verifyFail': 'Verification failed: {msg}',
+      'audit.col.time': 'Time',
+      'audit.col.action': 'Action',
+      'audit.col.source': 'Source',
+      'audit.col.target': 'Profile / alias',
+      'audit.col.exit': 'Exit',
+      'audit.col.ms': 'ms'
     },
     zh: {
       title: 'brokre 管理',
@@ -320,7 +379,27 @@ textarea{font:inherit;border:1px solid #d1d5db;border-radius:6px;padding:.4rem .
       'group.custom': '其他 CLI',
       'group.ssh': 'SSH', 'group.ftp': 'FTP', 'group.lftp': 'LFTP',
       'group.mysql': 'MySQL', 'group.postgres': 'PostgreSQL', 'group.redis': 'Redis',
-      'group.clickhouse': 'ClickHouse', 'group.minio': 'MinIO'
+      'group.clickhouse': 'ClickHouse', 'group.minio': 'MinIO',
+      'tab.credentials': '凭据',
+      'tab.audit': '审计日志',
+      'audit.title': '审计日志',
+      'audit.verify': '验证链',
+      'audit.refresh': '刷新',
+      'audit.profilePh': 'profile',
+      'audit.namePh': 'alias',
+      'audit.actionPh': 'action（如 exec）',
+      'audit.sourceAll': '全部来源',
+      'audit.empty': '无匹配的审计事件。',
+      'audit.loadFail': '无法加载审计日志',
+      'audit.matched': '匹配 {n} 条事件',
+      'audit.verifyOk': '链验证通过 — 共 {n} 条，{first} … {last}',
+      'audit.verifyFail': '验证失败：{msg}',
+      'audit.col.time': '时间',
+      'audit.col.action': '操作',
+      'audit.col.source': '来源',
+      'audit.col.target': 'Profile / alias',
+      'audit.col.exit': '退出码',
+      'audit.col.ms': '耗时 ms'
     }
   };
 
@@ -849,6 +928,107 @@ textarea{font:inherit;border:1px solid #d1d5db;border-radius:6px;padding:.4rem .
       closeModals();
       await refresh();
     } catch(e) { err.textContent = e.message; }
+  });
+
+  let currentView = 'credentials';
+
+  function switchView(view) {
+    currentView = view;
+    document.getElementById('view-credentials').classList.toggle('hidden', view !== 'credentials');
+    document.getElementById('view-audit').classList.toggle('hidden', view !== 'audit');
+    document.querySelectorAll('#nav-tabs button').forEach(btn => {
+      btn.classList.toggle('on', btn.dataset.view === view);
+    });
+    if (view === 'audit') loadAudit().catch(() => {});
+  }
+
+  document.querySelectorAll('#nav-tabs button').forEach(btn => {
+    btn.addEventListener('click', () => switchView(btn.dataset.view));
+  });
+
+  function auditQueryString() {
+    const params = new URLSearchParams();
+    const profile = document.getElementById('audit-profile').value.trim();
+    const name = document.getElementById('audit-name').value.trim();
+    const action = document.getElementById('audit-action').value.trim();
+    const source = document.getElementById('audit-source').value;
+    if (profile) params.set('profile', profile);
+    if (name) params.set('name', name);
+    if (action) params.set('action', action);
+    if (source) params.set('source', source);
+    params.set('limit', '100');
+    const qs = params.toString();
+    return qs ? '/api/audit?' + qs : '/api/audit?limit=100';
+  }
+
+  function renderAuditTable(result) {
+    const wrap = document.getElementById('audit-table-wrap');
+    if (!result.events || !result.events.length) {
+      wrap.innerHTML = '<div class="empty">' + esc(t('audit.empty')) + '</div>';
+      return;
+    }
+    let html = '<p class="muted" style="margin-bottom:.5rem">' + esc(t('audit.matched', { n: result.total_matched })) + '</p>';
+    html += '<table class="audit-table"><thead><tr>';
+    html += '<th>' + esc(t('audit.col.time')) + '</th>';
+    html += '<th>' + esc(t('audit.col.action')) + '</th>';
+    html += '<th>' + esc(t('audit.col.source')) + '</th>';
+    html += '<th>' + esc(t('audit.col.target')) + '</th>';
+    html += '<th>' + esc(t('audit.col.exit')) + '</th>';
+    html += '<th>' + esc(t('audit.col.ms')) + '</th>';
+    html += '</tr></thead><tbody>';
+    for (const ev of result.events) {
+      const target = (ev.profile || '') + '/' + (ev.name || '');
+      const exit = ev.exit == null ? '-' : String(ev.exit);
+      const ms = ev.dur_ms == null ? '-' : String(ev.dur_ms);
+      const src = ev.source || '-';
+      html += '<tr>';
+      html += '<td>' + esc(ev.ts) + '</td>';
+      html += '<td>' + esc(ev.action) + '</td>';
+      html += '<td>' + esc(src) + '</td>';
+      html += '<td>' + esc(target) + '</td>';
+      html += '<td>' + esc(exit) + '</td>';
+      html += '<td>' + esc(ms) + '</td>';
+      html += '</tr>';
+    }
+    html += '</tbody></table>';
+    wrap.innerHTML = html;
+  }
+
+  async function loadAudit() {
+    const wrap = document.getElementById('audit-table-wrap');
+    wrap.innerHTML = '<div class="empty">' + esc(t('loading')) + '</div>';
+    try {
+      const result = await api(auditQueryString());
+      renderAuditTable(result);
+    } catch (e) {
+      wrap.innerHTML = '<div class="empty">' + esc(t('audit.loadFail')) + '</div>';
+    }
+  }
+
+  async function verifyAudit() {
+    const banner = document.getElementById('audit-banner');
+    banner.classList.remove('hidden', 'ok', 'err');
+    try {
+      const stats = await api('/api/audit/verify');
+      const first = stats.first_ts || '-';
+      const last = stats.last_ts || '-';
+      banner.textContent = t('audit.verifyOk', { n: stats.count, first: first, last: last });
+      banner.classList.add('ok');
+    } catch (e) {
+      banner.textContent = t('audit.verifyFail', { msg: e.message });
+      banner.classList.add('err');
+    }
+  }
+
+  document.getElementById('audit-refresh').addEventListener('click', () => loadAudit().catch(() => {}));
+  document.getElementById('audit-verify').addEventListener('click', () => verifyAudit().catch(() => {}));
+  ['audit-profile', 'audit-name', 'audit-action'].forEach(id => {
+    document.getElementById(id).addEventListener('keydown', ev => {
+      if (ev.key === 'Enter') loadAudit().catch(() => {});
+    });
+  });
+  document.getElementById('audit-source').addEventListener('change', () => {
+    if (currentView === 'audit') loadAudit().catch(() => {});
   });
 
   applyI18n();

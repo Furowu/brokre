@@ -172,6 +172,117 @@ pub fn insert_mux_options(argv: &mut Vec<String>) {
     }
 }
 
+/// True when a remote command (argv after the connection target) needs a TTY (`sudo` / `su`).
+pub fn remote_command_needs_tty(trailing: &[String]) -> bool {
+    if trailing.is_empty() {
+        return false;
+    }
+    match trailing[0].as_str() {
+        "sudo" | "su" => return true,
+        _ => {}
+    }
+    if let Some(script) = shell_script_from_argv(trailing) {
+        return script_invokes_privilege_escalation(script);
+    }
+    false
+}
+
+fn shell_script_from_argv(trailing: &[String]) -> Option<&str> {
+    if trailing.len() < 3 {
+        return None;
+    }
+    if !matches!(
+        trailing[0].as_str(),
+        "bash" | "sh" | "zsh" | "fish" | "dash" | "ksh" | "csh" | "tcsh"
+    ) {
+        return None;
+    }
+    if trailing[1] != "-c" {
+        return None;
+    }
+    trailing.get(2).map(String::as_str)
+}
+
+fn script_invokes_privilege_escalation(script: &str) -> bool {
+    let s = script.trim().to_ascii_lowercase();
+    if s.starts_with("sudo ") || s == "sudo" || s.starts_with("su ") || s == "su" {
+        return true;
+    }
+    [
+        " sudo ",
+        " su ",
+        ";sudo",
+        "&&sudo",
+        "||sudo",
+        "|sudo",
+        ";su",
+        "&&su",
+        "||su",
+        "|su",
+    ]
+    .iter()
+    .any(|needle| s.contains(needle))
+}
+
+fn has_disable_tty_flag(argv: &[String]) -> bool {
+    let end = connection_target_index(argv);
+    let mut i = 0;
+    while i < end {
+        let a = &argv[i];
+        if a == "-T" {
+            return true;
+        }
+        if a == "-o" && i + 1 < end {
+            let v = argv[i + 1].to_ascii_lowercase();
+            if v == "requesttty=no" || v == "requesttty=never" {
+                return true;
+            }
+            i += 2;
+            continue;
+        }
+        i += 1;
+    }
+    false
+}
+
+fn has_tty_request_flag(argv: &[String]) -> bool {
+    let end = connection_target_index(argv);
+    let mut i = 0;
+    while i < end {
+        let a = &argv[i];
+        if a == "-t" || a == "-tt" {
+            return true;
+        }
+        if a.len() >= 2 && a.starts_with('-') && !a.starts_with("--") {
+            if a[1..].chars().any(|c| c == 't') {
+                return true;
+            }
+        }
+        if a == "-o" && i + 1 < end {
+            let v = argv[i + 1].to_ascii_lowercase();
+            if v.starts_with("requesttty=") && v != "requesttty=no" && v != "requesttty=never" {
+                return true;
+            }
+            i += 2;
+            continue;
+        }
+        i += 1;
+    }
+    false
+}
+
+/// Prepend `-tt` before the connection target when the remote command uses `sudo` / `su`.
+pub fn insert_force_tty_for_privileged_remote(argv: &mut Vec<String>, trailing: &[String]) {
+    if !remote_command_needs_tty(trailing) {
+        return;
+    }
+    if has_tty_request_flag(argv) || has_disable_tty_flag(argv) {
+        return;
+    }
+    let pos = connection_target_index(argv);
+    argv.insert(pos, "-tt".into());
+}
+
 /// Insert `-i <keyfile>` after leading flags, before the connection target.
 pub fn insert_identity_arg(argv: &mut Vec<String>, key_path: &std::path::Path) {
     if argv.iter().any(|a| a == "-i" || a.starts_with("-i")) {
@@ -379,6 +490,70 @@ mod tests {
         assert_eq!(
             argv,
             vec!["-p", "9000", "-i", "/tmp/k", "root@10.0.0.1", "uptime"]
+                .into_iter()
+                .map(String::from)
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn remote_command_needs_tty_for_sudo_and_su() {
+        assert!(remote_command_needs_tty(&["sudo".into(), "whoami".into()]));
+        assert!(remote_command_needs_tty(&["su".into(), "-".into(), "root".into()]));
+        assert!(!remote_command_needs_tty(&["uptime".into()]));
+        assert!(!remote_command_needs_tty(&[]));
+        assert!(remote_command_needs_tty(&[
+            "bash".into(),
+            "-c".into(),
+            "sudo systemctl status nginx".into(),
+        ]));
+        assert!(!remote_command_needs_tty(&[
+            "echo".into(),
+            "hello sudo world".into(),
+        ]));
+        assert!(!remote_command_needs_tty(&[
+            "grep".into(),
+            "pattern".into(),
+            "file".into(),
+        ]));
+    }
+
+    #[test]
+    fn insert_force_tty_before_target() {
+        let mut argv = vec![
+            "-v".into(),
+            "deploy@10.0.0.1".into(),
+            "sudo".into(),
+            "whoami".into(),
+        ];
+        insert_force_tty_for_privileged_remote(
+            &mut argv,
+            &["sudo".into(), "whoami".into()],
+        );
+        assert_eq!(
+            argv,
+            vec!["-v", "-tt", "deploy@10.0.0.1", "sudo", "whoami"]
+                .into_iter()
+                .map(String::from)
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn insert_force_tty_skips_when_already_requested() {
+        let mut argv = vec![
+            "-tt".into(),
+            "deploy@10.0.0.1".into(),
+            "sudo".into(),
+            "whoami".into(),
+        ];
+        insert_force_tty_for_privileged_remote(
+            &mut argv,
+            &["sudo".into(), "whoami".into()],
+        );
+        assert_eq!(
+            argv,
+            vec!["-tt", "deploy@10.0.0.1", "sudo", "whoami"]
                 .into_iter()
                 .map(String::from)
                 .collect::<Vec<_>>()

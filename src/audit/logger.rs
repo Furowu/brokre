@@ -12,7 +12,8 @@ use std::path::Path;
 type HmacSha256 = Hmac<Sha256>;
 
 pub const HMAC_VERSION_LEGACY: u8 = 1;
-pub const HMAC_VERSION_CURRENT: u8 = 2;
+pub const HMAC_VERSION_V2: u8 = 2;
+pub const HMAC_VERSION_V3: u8 = 3;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct AuditEvent {
@@ -32,7 +33,10 @@ pub struct AuditEvent {
     pub injector_dur_ms: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub injector_outcome: Option<String>,
-    /// HMAC canonicalization version (`1` = legacy, `2` = full payload).
+    /// Origin of the event: `cli`, `mcp`, or `manage`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+    /// HMAC canonicalization version (`1` = legacy, `2` = full payload, `3` = + source).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hmac_version: Option<u8>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -55,6 +59,23 @@ struct HmacPayloadV2<'a> {
     injector_pid: Option<u32>,
     injector_dur_ms: Option<u64>,
     injector_outcome: Option<&'a str>,
+}
+
+#[derive(Serialize)]
+struct HmacPayloadV3<'a> {
+    ts: &'a str,
+    sid: &'a str,
+    action: &'a str,
+    profile: &'a str,
+    name: &'a str,
+    exit: Option<i32>,
+    dur_ms: Option<u64>,
+    args_redacted: &'a [String],
+    hardening: Option<&'a HardeningReport>,
+    injector_pid: Option<u32>,
+    injector_dur_ms: Option<u64>,
+    injector_outcome: Option<&'a str>,
+    source: Option<&'a str>,
 }
 
 fn hmac_with_key(key: &[u8; 32], data: &[u8]) -> String {
@@ -90,15 +111,53 @@ fn compute_hmac_v2(event: &AuditEvent, key: &[u8; 32]) -> String {
     hmac_with_key(key, &data)
 }
 
+fn compute_hmac_v3(event: &AuditEvent, key: &[u8; 32]) -> String {
+    let payload = HmacPayloadV3 {
+        ts: &event.ts,
+        sid: &event.sid,
+        action: &event.action,
+        profile: &event.profile,
+        name: &event.name,
+        exit: event.exit,
+        dur_ms: event.dur_ms,
+        args_redacted: &event.args_redacted,
+        hardening: event.hardening.as_ref(),
+        injector_pid: event.injector_pid,
+        injector_dur_ms: event.injector_dur_ms,
+        injector_outcome: event.injector_outcome.as_deref(),
+        source: event.source.as_deref(),
+    };
+    let data = serde_json::to_vec(&payload).expect("HMAC payload serialization");
+    hmac_with_key(key, &data)
+}
+
+pub fn compute_hmac_for_append(event: &AuditEvent, key: &[u8; 32]) -> String {
+    compute_hmac(event, key)
+}
+
 fn compute_hmac(event: &AuditEvent, key: &[u8; 32]) -> String {
     match event.hmac_version {
-        Some(HMAC_VERSION_CURRENT) => compute_hmac_v2(event, key),
+        Some(HMAC_VERSION_V3) => compute_hmac_v3(event, key),
+        Some(HMAC_VERSION_V2) => compute_hmac_v2(event, key),
         _ => compute_hmac_v1(event, key),
     }
 }
 
+/// Audit source for CLI exec paths (`mcp` when spawned from MCP).
+pub fn exec_audit_source() -> String {
+    if std::env::var_os("BROKRE_MCP_EXEC").is_some() {
+        "mcp".into()
+    } else {
+        "cli".into()
+    }
+}
+
 pub fn append(event: &mut AuditEvent, hmac_key: &[u8; 32]) -> Result<()> {
-    event.hmac_version = Some(HMAC_VERSION_CURRENT);
+    event.hmac_version = Some(if event.source.is_some() {
+        HMAC_VERSION_V3
+    } else {
+        HMAC_VERSION_V2
+    });
     let path = audit_path();
     let mut prev_hmac = None;
     if path.exists() {
@@ -176,6 +235,7 @@ mod tests {
             injector_pid: None,
             injector_dur_ms: None,
             injector_outcome: None,
+            source: None,
             hmac_version: None,
             prev_hmac: None,
             hmac: None,
@@ -186,7 +246,7 @@ mod tests {
     fn hmac_v2_tamper_on_name_fails_verify() {
         let key = [7u8; 32];
         let mut ev = sample_event("rm/success", "prod");
-        ev.hmac_version = Some(HMAC_VERSION_CURRENT);
+        ev.hmac_version = Some(HMAC_VERSION_V2);
         ev.hmac = Some(compute_hmac(&ev, &key));
         let line = serde_json::to_string(&ev).unwrap();
         let tampered = line.replace("\"name\":\"prod\"", "\"name\":\"other\"");
@@ -204,5 +264,31 @@ mod tests {
         let tmp = NamedTempFile::new().unwrap();
         std::fs::write(tmp.path(), serde_json::to_string(&ev).unwrap()).unwrap();
         assert!(verify_chain(tmp.path(), &key).is_ok());
+    }
+
+    #[test]
+    fn hmac_v3_with_source_verifies() {
+        let key = [3u8; 32];
+        let mut ev = sample_event("exec", "prod");
+        ev.source = Some("mcp".into());
+        ev.hmac_version = Some(HMAC_VERSION_V3);
+        ev.hmac = Some(compute_hmac(&ev, &key));
+        let tmp = NamedTempFile::new().unwrap();
+        std::fs::write(tmp.path(), serde_json::to_string(&ev).unwrap()).unwrap();
+        assert!(verify_chain(tmp.path(), &key).is_ok());
+    }
+
+    #[test]
+    fn hmac_v3_tamper_on_source_fails_verify() {
+        let key = [3u8; 32];
+        let mut ev = sample_event("exec", "prod");
+        ev.source = Some("mcp".into());
+        ev.hmac_version = Some(HMAC_VERSION_V3);
+        ev.hmac = Some(compute_hmac(&ev, &key));
+        let line = serde_json::to_string(&ev).unwrap();
+        let tampered = line.replace("\"source\":\"mcp\"", "\"source\":\"cli\"");
+        let tmp = NamedTempFile::new().unwrap();
+        std::fs::write(tmp.path(), tampered).unwrap();
+        assert!(verify_chain(tmp.path(), &key).is_err());
     }
 }

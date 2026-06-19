@@ -3,10 +3,15 @@
 //! Exposes metadata listing and saved-credential exec only.
 //! Never exposes reveal, rm, or session tokens via MCP tool results.
 
+use crate::audit::query::{list, verify_with_stats, AuditQuery};
 use crate::manage::{
     open_browser, run_manage_server_with, IdleBehavior, ManageServer, ManageServerOptions,
 };
+use crate::mcp::elevated_session::{mcp_session_enabled, ElevatedSessionPool, RunResult};
+use crate::runtime::elevated::{SessionKey, SessionPolicy};
 use crate::utils::errors::BrokreError;
+use crate::utils::paths::audit_path;
+use crate::vault::keychain::get_or_init_audit_hmac_key;
 use crate::vault::store::VaultStore;
 use rmcp::{
     handler::server::wrapper::Parameters,
@@ -23,8 +28,13 @@ brokre is an AI-safe credential broker. Rules for agents:\n\
 1. NEVER ask the user for passwords or call brokre reveal — it is TTY-gated and unavailable here.\n\
 2. Use brokre_list to discover saved aliases (metadata only: profile, name, host).\n\
 3. Use brokre_exec with a saved alias for ssh/mysql/psql/etc. Example: binary=ssh, args=[\"prod-bastion\", \"uname\", \"-a\"].\n\
-4. If brokre_list is empty or exec fails with no saved credential, call brokre_setup to open the local manage UI for the human to add accounts.\n\
-5. Passwords are injected locally and never returned through MCP.";
+4. For remote root/sudo: use brokre_exec_elevated (alias + command + mode sudo|sudo_login|su). \
+Sessions reuse by default (session=reuse) — sudo password once per idle window (~10 min). \
+session=new forces fresh session; session=close ends it. Set BROKRE_MCP_SESSION=0 to disable reuse.\n\
+5. brokre_exec with ssh+sudo/su args also uses the session pool when enabled.\n\
+6. If brokre_list is empty or exec fails with no saved credential, call brokre_setup to open the local manage UI for the human to add accounts.\n\
+7. Passwords are injected locally and never returned through MCP.\n\
+8. Use brokre_audit_list to review past operations (metadata only). Use brokre_audit_verify to check log integrity.";
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct ListRequest {
@@ -42,15 +52,62 @@ pub struct ExecRequest {
     pub args: Vec<String>,
 }
 
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct ExecElevatedRequest {
+    /// Saved SSH alias from brokre_list (profile ssh).
+    pub alias: String,
+    /// Shell command to run with elevated privileges on the remote host.
+    pub command: String,
+    /// `sudo` — run via sudo; `sudo_login` — sudo -i login environment; `su` — su - <user> -c.
+    #[serde(default = "default_elevated_mode")]
+    pub mode: String,
+    /// Target user for `su` mode (default root). Ignored for sudo modes.
+    #[serde(default)]
+    pub user: Option<String>,
+    /// `reuse` (default) — reuse elevated PTY session; `new` — fresh session; `close` — end session.
+    #[serde(default = "default_session_policy")]
+    pub session: String,
+}
+
+fn default_elevated_mode() -> String {
+    "sudo".into()
+}
+
+fn default_session_policy() -> String {
+    "reuse".into()
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct AuditListRequest {
+    #[serde(default)]
+    pub profile: Option<String>,
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub action: Option<String>,
+    #[serde(default)]
+    pub source: Option<String>,
+    #[serde(default)]
+    pub since: Option<String>,
+    #[serde(default)]
+    pub until: Option<String>,
+    #[serde(default)]
+    pub limit: Option<usize>,
+    #[serde(default)]
+    pub offset: Option<usize>,
+}
+
 #[derive(Clone)]
 pub struct BrokreMcp {
     manage: Arc<Mutex<Option<ManageServer>>>,
+    sessions: Arc<Mutex<ElevatedSessionPool>>,
 }
 
 impl BrokreMcp {
-    pub fn new() -> Self {
+    pub fn new(sessions: Arc<Mutex<ElevatedSessionPool>>) -> Self {
         Self {
             manage: Arc::new(Mutex::new(None)),
+            sessions,
         }
     }
 
@@ -146,30 +203,61 @@ impl BrokreMcp {
         &self,
         Parameters(req): Parameters<ExecRequest>,
     ) -> std::result::Result<CallToolResult, McpError> {
-        let exe = std::env::current_exe().map_err(mcp_err)?;
-        let mut cmd = tokio::process::Command::new(exe);
-        cmd.arg(&req.binary);
-        cmd.args(&req.args);
-        cmd.stdout(std::process::Stdio::piped());
-        cmd.stderr(std::process::Stdio::piped());
-        cmd.stdin(std::process::Stdio::null());
+        if mcp_session_enabled() && req.binary == "ssh" {
+            if let Some((alias, mode, command, user)) =
+                crate::runtime::elevated::ssh_exec_args_to_elevated(&req.args)
+            {
+                let key = SessionKey::new(&alias, mode, user.as_deref());
+                return run_elevated_pool(
+                    self.sessions.clone(),
+                    key,
+                    Some(command),
+                    SessionPolicy::Reuse,
+                )
+                .await;
+            }
+        }
+        run_brokre_cli(&req.binary, &req.args, &[]).await
+    }
 
-        let output = cmd.output().await.map_err(|e| {
-            McpError::internal_error(format!("failed to spawn brokre exec: {e}"), None)
-        })?;
+    #[tool(
+        description = "Run a command on a saved SSH host with elevated privileges (sudo, sudo -i environment, or su). \
+Reuses a persistent elevated session by default (session=reuse) so sudo password is not re-prompted every call. \
+session=new starts fresh; session=close ends the session. BROKRE_MCP_SESSION=0 disables session reuse."
+    )]
+    async fn brokre_exec_elevated(
+        &self,
+        Parameters(req): Parameters<ExecElevatedRequest>,
+    ) -> std::result::Result<CallToolResult, McpError> {
+        let mode = crate::runtime::elevated::ElevatedMode::parse(&req.mode).map_err(mcp_err)?;
+        let policy = SessionPolicy::parse(&req.session).map_err(mcp_err)?;
+        let key = SessionKey::new(&req.alias, mode, req.user.as_deref());
 
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        let code = output.status.code().unwrap_or(-1);
+        if mcp_session_enabled() {
+            let cmd = if policy == SessionPolicy::Close {
+                None
+            } else {
+                Some(req.command.clone())
+            };
+            return run_elevated_pool(self.sessions.clone(), key, cmd, policy).await;
+        }
 
-        let body = serde_json::json!({
-            "exit_code": code,
-            "stdout": stdout,
-            "stderr": stderr,
-        });
-        Ok(CallToolResult::success(vec![Content::text(
-            serde_json::to_string_pretty(&body).unwrap_or_else(|_| body.to_string()),
-        )]))
+        let args = crate::runtime::elevated::build_ssh_argv(
+            &req.alias,
+            mode,
+            &req.command,
+            req.user.as_deref(),
+        )
+        .map_err(mcp_err)?;
+        run_brokre_cli(
+            "ssh",
+            &args,
+            &[
+                ("BROKRE_MCP_EXEC", "1"),
+                ("BROKRE_MCP_ELEVATED", mode.mcp_env_value()),
+            ],
+        )
+        .await
     }
 
     #[tool(
@@ -183,6 +271,40 @@ impl BrokreMcp {
              After saving, use brokre_list and brokre_exec."
                 .to_string(),
         )]))
+    }
+
+    #[tool(
+        description = "List audit log events (metadata only — command args are redacted). Filter by profile, alias, action, or source (cli/mcp/manage)."
+    )]
+    fn brokre_audit_list(
+        &self,
+        Parameters(req): Parameters<AuditListRequest>,
+    ) -> std::result::Result<CallToolResult, McpError> {
+        let query = AuditQuery {
+            profile: req.profile,
+            name: req.name,
+            action: req.action,
+            source: req.source,
+            since: req.since,
+            until: req.until,
+            limit: req.limit.unwrap_or(crate::audit::query::DEFAULT_LIMIT),
+            offset: req.offset.unwrap_or(0),
+            newest_first: true,
+        };
+        let result = list(query).map_err(mcp_err)?;
+        let text = serde_json::to_string_pretty(&result).map_err(mcp_err)?;
+        Ok(CallToolResult::success(vec![Content::text(text)]))
+    }
+
+    #[tool(
+        description = "Verify the tamper-evident audit log HMAC chain. Returns event count and time range on success."
+    )]
+    fn brokre_audit_verify(&self) -> std::result::Result<CallToolResult, McpError> {
+        let path = audit_path();
+        let key = get_or_init_audit_hmac_key().map_err(mcp_err)?;
+        let stats = verify_with_stats(&path, &key).map_err(mcp_err)?;
+        let text = serde_json::to_string_pretty(&stats).map_err(mcp_err)?;
+        Ok(CallToolResult::success(vec![Content::text(text)]))
     }
 }
 
@@ -200,8 +322,84 @@ fn mcp_err(e: impl std::fmt::Display) -> McpError {
     McpError::internal_error(e.to_string(), None)
 }
 
+async fn run_brokre_cli(
+    binary: &str,
+    args: &[String],
+    extra_env: &[(&str, &str)],
+) -> std::result::Result<CallToolResult, McpError> {
+    let exe = std::env::current_exe().map_err(mcp_err)?;
+    let mut cmd = tokio::process::Command::new(exe);
+    cmd.env("BROKRE_MCP_EXEC", "1");
+    for (k, v) in extra_env {
+        cmd.env(k, v);
+    }
+    cmd.arg(binary);
+    cmd.args(args);
+    cmd.stdout(std::process::Stdio::piped());
+    cmd.stderr(std::process::Stdio::piped());
+    cmd.stdin(std::process::Stdio::null());
+
+    let output = cmd
+        .output()
+        .await
+        .map_err(|e| McpError::internal_error(format!("failed to spawn brokre exec: {e}"), None))?;
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let code = output.status.code().unwrap_or(-1);
+
+    let body = serde_json::json!({
+        "exit_code": code,
+        "stdout": stdout,
+        "stderr": stderr,
+    });
+    Ok(CallToolResult::success(vec![Content::text(
+        serde_json::to_string_pretty(&body).unwrap_or_else(|_| body.to_string()),
+    )]))
+}
+
+async fn run_elevated_pool(
+    sessions: Arc<Mutex<ElevatedSessionPool>>,
+    key: SessionKey,
+    command: Option<String>,
+    policy: SessionPolicy,
+) -> std::result::Result<CallToolResult, McpError> {
+    let result = tokio::task::spawn_blocking(move || {
+        let mut pool = sessions
+            .lock()
+            .map_err(|_| BrokreError::Runtime("session pool lock poisoned".into()))?;
+        pool.run(key, command.as_deref(), policy)
+    })
+    .await
+    .map_err(|e| McpError::internal_error(format!("session task: {e}"), None))?
+    .map_err(mcp_err)?;
+    Ok(session_result_to_call_tool(result))
+}
+
+fn session_result_to_call_tool(r: RunResult) -> CallToolResult {
+    let body = serde_json::json!({
+        "exit_code": r.exit_code,
+        "stdout": r.stdout,
+        "stderr": r.stderr,
+        "session_reused": r.session_reused,
+        "session_idle_expires_at": r.idle_expires_at,
+    });
+    CallToolResult::success(vec![Content::text(
+        serde_json::to_string_pretty(&body).unwrap_or_else(|_| body.to_string()),
+    )])
+}
+
 pub async fn run_mcp_server() -> std::result::Result<(), BrokreError> {
-    let service = BrokreMcp::new();
+    let sessions = Arc::new(Mutex::new(ElevatedSessionPool::from_env()));
+    let sweeper = sessions.clone();
+    thread::spawn(move || loop {
+        thread::sleep(Duration::from_secs(60));
+        if let Ok(mut pool) = sweeper.lock() {
+            pool.sweep_idle();
+        }
+    });
+
+    let service = BrokreMcp::new(sessions);
     service.auto_open_setup_if_needed()?;
 
     let running = service

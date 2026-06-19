@@ -12,12 +12,28 @@ use std::thread;
 use uuid::Uuid;
 
 /// True when the CLI must run without a PTY (pipe-safe).
-pub fn should_use_pipe_mode(profile: &str, stdin_is_pipe: bool) -> bool {
+///
+/// `remote_trailing` is the remote command slice (argv after the connection target)
+/// when known — used by MCP to pick PTY only for `sudo` / `su` one-shots.
+pub fn should_use_pipe_mode(
+    profile: &str,
+    stdin_is_pipe: bool,
+    remote_trailing: Option<&[String]>,
+) -> bool {
     let bin = profile.rsplit('/').next().unwrap_or(profile).to_ascii_lowercase();
     if matches!(bin.as_str(), "scp" | "sftp") {
         return true;
     }
-    stdin_is_pipe && bin == "ssh"
+    if bin == "ssh" {
+        if std::env::var_os("BROKRE_MCP_EXEC").is_some() {
+            // MCP: keep pipe/ASKPASS for normal remote commands (binary-safe);
+            // switch to PTY only when the remote command needs a TTY.
+            return !remote_trailing
+                .is_some_and(crate::runtime::ssh_identity::remote_command_needs_tty);
+        }
+        return stdin_is_pipe;
+    }
+    false
 }
 
 /// Run OpenSSH with `SSH_ASKPASS` for vault injection and optional stdin pipe forwarding.
@@ -126,10 +142,32 @@ mod tests {
 
     #[test]
     fn pipe_mode_for_scp_and_piped_ssh() {
-        assert!(should_use_pipe_mode("scp", false));
-        assert!(should_use_pipe_mode("sftp", false));
-        assert!(should_use_pipe_mode("ssh", true));
-        assert!(!should_use_pipe_mode("ssh", false));
-        assert!(!should_use_pipe_mode("mysql", true));
+        assert!(should_use_pipe_mode("scp", false, None));
+        assert!(should_use_pipe_mode("sftp", false, None));
+        assert!(should_use_pipe_mode("ssh", true, None));
+        assert!(!should_use_pipe_mode("ssh", false, None));
+        assert!(!should_use_pipe_mode("mysql", true, None));
+    }
+
+    #[test]
+    fn mcp_exec_pipe_mode_for_normal_remote_command() {
+        std::env::set_var("BROKRE_MCP_EXEC", "1");
+        assert!(should_use_pipe_mode(
+            "ssh",
+            true,
+            Some(&["uptime".into()]),
+        ));
+        std::env::remove_var("BROKRE_MCP_EXEC");
+    }
+
+    #[test]
+    fn mcp_exec_pty_mode_for_sudo_remote_command() {
+        std::env::set_var("BROKRE_MCP_EXEC", "1");
+        assert!(!should_use_pipe_mode(
+            "ssh",
+            true,
+            Some(&["sudo".into(), "whoami".into()]),
+        ));
+        std::env::remove_var("BROKRE_MCP_EXEC");
     }
 }

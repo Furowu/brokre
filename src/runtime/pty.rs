@@ -228,6 +228,7 @@ pub fn run(
         .unwrap_or(binary)
         .to_ascii_lowercase();
     let track_ssh_post_auth = matches!(bin_base.as_str(), "ssh" | "scp" | "sftp");
+    let expect_su_elevation = std::env::var_os("BROKRE_MCP_ELEVATED").is_some_and(|v| v == "su");
 
     // ---- thread A: PTY -> stdout + optional prompt scanner ----
     let patterns: Vec<Regex> = prompt_patterns.to_vec();
@@ -277,6 +278,32 @@ pub fn run(
                         {
                             'prompt_scan: for re in &patterns {
                                 if re.is_match(&window) {
+                                    let is_sudo_prompt = track_ssh_post_auth
+                                        && preset_some
+                                        && crate::runtime::prompts::is_remote_sudo_password_prompt(
+                                            &window,
+                                        );
+                                    let is_su_prompt = track_ssh_post_auth
+                                        && preset_some
+                                        && expect_su_elevation
+                                        && crate::runtime::prompts::is_remote_su_password_prompt(
+                                            &window,
+                                        );
+                                    let is_elevation_prompt = is_sudo_prompt || is_su_prompt;
+                                    // Remote sudo/su runs only after SSH userauth; still wait until
+                                    // the SSH login password is injected when one is expected.
+                                    if is_elevation_prompt {
+                                        let needs_ssh_password = inject_fields_a
+                                            .iter()
+                                            .any(|f| f == "password");
+                                        let ssh_password_done = injected_fields_a
+                                            .lock()
+                                            .map(|g| g.contains("password"))
+                                            .unwrap_or(false);
+                                        if needs_ssh_password && !ssh_password_done {
+                                            continue 'prompt_scan;
+                                        }
+                                    }
                                     // Do not re-arm password capture after we're clearly past
                                     // SSH authentication — later "…password:" lines are usually MOTD.
                                     if !preset_some
@@ -295,7 +322,10 @@ pub fn run(
                                                 .lock()
                                                 .map(|g| g.contains(&field))
                                                 .unwrap_or(true);
-                                            if !already {
+                                            let allow_elevation_reinject = already
+                                                && field == "password"
+                                                && is_elevation_prompt;
+                                            if !already || allow_elevation_reinject {
                                                 if let Ok(mut pf) = pending_field_a.lock() {
                                                     *pf = Some(field);
                                                 }

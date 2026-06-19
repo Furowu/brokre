@@ -20,9 +20,9 @@ brokre 围绕一条原则构建：**密钥远离 AI 可达范围，且不出现�
 | **父进程不持明文**（Unix） | 已保存密码在短生命周期 `brokre --internal-injector` 子进程中解密，一次性写入 PTY 后子进程退出 |
 | **AI 无法 `reveal`** | `brokre reveal` 需真实 TTY + 主口令；Web UI 不提供，**MCP 不暴露** |
 | **静态保险库** | 每字段 AES-256-GCM；DEK 分别包装给 `exec`（Linux 用 OS keyring；macOS 默认 `~/.brokre/.master_kek`）与可选 Argon2id reveal 口令 |
-| **MCP 边界** | MCP 仅暴露元数据（`brokre_list`）与执行（`brokre_exec`）— 无密码、会话 token、`reveal` |
-| **管理界面** | 仅绑定 `127.0.0.1`；密码**只写**；会话 token 在终端打印，不返回给 AI |
-| **审计** | HMAC 链式 JSONL；`brokre audit verify` 检测篡改 |
+| **MCP 边界** | MCP 暴露元数据（`brokre_list`）、执行（`brokre_exec`）与只读审计（`brokre_audit_list`、`brokre_audit_verify`）— 无密码、会话 token、`reveal` |
+| **管理界面** | 仅绑定 `127.0.0.1`；密码**只写**；含审计日志页；会话 token 在终端打印，不返回给 AI |
+| **审计** | HMAC 链式 JSONL（`~/.brokre/audit/audit.log`）；`brokre audit list` 查询历史（仅元数据）；`brokre audit verify` 检测篡改 |
 | **OS 加固** | 禁用 core dump、ptrace 检测（Linux）、可选 `mlockall` — 见 [docs/HARDENING.md](docs/HARDENING.md) |
 
 完整威胁模型：[SECURITY.md](SECURITY.md)、[THREAT_MODEL.md](THREAT_MODEL.md)。
@@ -109,8 +109,11 @@ claude mcp add --scope project brokre -- npx -y brokre@latest
 | MCP 工具 | 用途 |
 |----------|------|
 | `brokre_list` | 已保存别名（仅元数据 — profile、name、host） |
-| `brokre_exec` | 运行**任意**已保存 CLI 别名（`binary` + `args`） |
+| `brokre_exec` | 运行**任意**已保存 CLI 别名（`binary` + `args`）；`ssh` + `sudo`/`su` 时自动复用 elevated 会话 |
+| `brokre_exec_elevated` | 远端提权执行（`alias` + `command` + `mode`）；默认 `session=reuse` 复用后台 shell（10 分钟空闲销毁） |
 | `brokre_setup` | 在浏览器打开 manage UI，由人类添加凭据 |
+| `brokre_audit_list` | 查询审计历史（仅元数据 — 参数已脱敏） |
+| `brokre_audit_verify` | 验证防篡改审计链 |
 
 首次连接且**保险库为空**时，brokre 会在浏览器打开 **manage**（`http://127.0.0.1:56777/?t=…`）。会话 token 留在本机 — 不返回给 AI。设置 `BROKRE_MCP_NO_AUTO_OPEN=1` 可禁用自动打开。
 
@@ -174,6 +177,15 @@ brokre list --json
 brokre reveal mysql prod-db --field password
 brokre rm ssh prod-bastion
 ```
+
+### 审计日志（仅元数据）
+
+```bash
+brokre audit list --profile ssh --action exec --json
+brokre audit verify --json
+```
+
+事件保存在 `~/.brokre/audit/audit.log`（HMAC 链式）。命令参数统一脱敏为 `<REDACTED>`。新事件含 `source` 字段（`cli`、`mcp` 或 `manage`）。manage UI **审计日志** 页与 MCP `brokre_audit_list` 暴露相同元数据。
 
 ### 管理界面安全
 

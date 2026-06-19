@@ -12,6 +12,9 @@ use std::collections::HashMap;
 use std::fs;
 use std::sync::OnceLock;
 
+const REMOTE_SUDO_PASSWORD_PROMPT: &str = r"\[sudo\] password for [^:]+:\s*$";
+const REMOTE_SU_PASSWORD_PROMPT: &str = r"(?:^|\r?\n)Password:\s*$";
+
 /// Return the compiled prompt patterns for the given CLI binary name.
 /// Falls back to a generic set if nothing more specific is configured.
 pub fn patterns_for(binary: &str) -> Vec<Regex> {
@@ -41,6 +44,26 @@ pub fn patterns_for(binary: &str) -> Vec<Regex> {
     out
 }
 
+/// True when PTY output ends with a remote `sudo` password prompt (post-SSH-auth).
+pub fn is_remote_sudo_password_prompt(buf: &[u8]) -> bool {
+    remote_sudo_password_prompt_regex().is_match(buf)
+}
+
+/// True when PTY output ends with `su`'s `Password:` prompt (elevated MCP path only).
+pub fn is_remote_su_password_prompt(buf: &[u8]) -> bool {
+    remote_su_password_prompt_regex().is_match(buf)
+}
+
+fn remote_sudo_password_prompt_regex() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| compile(REMOTE_SUDO_PASSWORD_PROMPT).expect("sudo prompt regex"))
+}
+
+fn remote_su_password_prompt_regex() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| compile(REMOTE_SU_PASSWORD_PROMPT).expect("su prompt regex"))
+}
+
 fn compile(pattern: &str) -> Result<Regex, regex::Error> {
     RegexBuilder::new(pattern).case_insensitive(true).build()
 }
@@ -51,6 +74,7 @@ fn builtin_patterns(binary: &str) -> &'static [&'static str] {
             r"[Pp]assword:\s*$",
             r"[Pp]assphrase[^:]*:\s*$",
             r"\(yes/no(?:/\[fingerprint\])?\)\?\s*$",
+            REMOTE_SUDO_PASSWORD_PROMPT,
         ],
         "mysql" | "mariadb" => &[r"Enter password:\s*$"],
         "psql" | "postgres" => &[r"Password for user [^:]+:\s*$", r"Password:\s*$"],
@@ -124,6 +148,25 @@ mod tests {
         assert!(pats
             .iter()
             .any(|p| { p.is_match(b"Passphrase for /Users/alice/.ssh/id_ed25519: ") }));
+    }
+
+    #[test]
+    fn ssh_remote_sudo_prompt_matches() {
+        let pats = patterns_for("ssh");
+        assert!(pats
+            .iter()
+            .any(|p| p.is_match(b"[sudo] password for deploy: ")));
+        assert!(is_remote_sudo_password_prompt(
+            b"Last login: Mon May 18 08:41:12 2026\n[sudo] password for deploy: "
+        ));
+    }
+
+    #[test]
+    fn su_password_prompt_matches_elevated_path() {
+        assert!(is_remote_su_password_prompt(b"Password: "));
+        assert!(!is_remote_su_password_prompt(
+            b"Configure your account password: "
+        ));
     }
 
     #[test]

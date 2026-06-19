@@ -14,7 +14,8 @@ use tracing_subscriber::FmtSubscriber;
 ///   brokre list                    # show saved aliases (metadata only).
 ///   brokre rm ssh prod-bastion     # delete (requires passphrase or YES).
 ///   brokre reveal ssh prod-bastion # show plaintext (TTY + passphrase required).
-///   brokre audit verify            # verify the tamper-evident audit log.
+///   brokre audit list                # query audit history (metadata only).
+///   brokre audit verify                # verify the tamper-evident audit log.
 #[derive(Parser)]
 #[command(name = "brokre", version, about, long_about = None)]
 #[command(disable_help_subcommand = true)]
@@ -71,7 +72,32 @@ enum Commands {
 
 #[derive(Subcommand)]
 enum AuditCmd {
-    Verify,
+    /// List audit events (metadata only — args are redacted).
+    List {
+        #[arg(short, long)]
+        profile: Option<String>,
+        #[arg(short, long)]
+        name: Option<String>,
+        #[arg(short, long)]
+        action: Option<String>,
+        #[arg(short, long)]
+        source: Option<String>,
+        #[arg(long)]
+        since: Option<String>,
+        #[arg(long)]
+        until: Option<String>,
+        #[arg(short, long, default_value_t = 50)]
+        limit: usize,
+        #[arg(short, long, default_value_t = 0)]
+        offset: usize,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Verify the tamper-evident audit log chain.
+    Verify {
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 fn main() {
@@ -121,7 +147,28 @@ fn main() {
             field,
         }) => cli::reveal::run(profile, name, field),
         Some(Commands::Audit { action }) => match action {
-            AuditCmd::Verify => cli::audit::run_verify(),
+            AuditCmd::List {
+                profile,
+                name,
+                action,
+                source,
+                since,
+                until,
+                limit,
+                offset,
+                json,
+            } => cli::audit::run_list(cli::audit::ListOptions {
+                profile,
+                name,
+                action,
+                source,
+                since,
+                until,
+                limit,
+                offset,
+                json,
+            }),
+            AuditCmd::Verify { json } => cli::audit::run_verify(json),
         },
         Some(Commands::Manage { onboard, open }) => cli::manage::run(onboard, open),
         Some(Commands::Mcp) => cli::mcp::run(),
@@ -181,7 +228,8 @@ fn print_usage() {
     eprintln!("  brokre list [--profile P] [--json]  list saved aliases");
     eprintln!("  brokre rm <profile> <alias>         delete an alias");
     eprintln!("  brokre reveal <profile> <alias>     show stored plaintext (TTY + passphrase)");
-    eprintln!("  brokre audit verify                 verify tamper-evident log");
+    eprintln!("  brokre audit list [--profile P] [--json]  query audit history");
+    eprintln!("  brokre audit verify [--json]            verify tamper-evident log");
     eprintln!("  brokre manage [--onboard] [--open]    local credential manager (web UI)");
     eprintln!("  brokre mcp                          MCP server for Cursor / Claude Code");
     eprintln!();

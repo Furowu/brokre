@@ -20,9 +20,9 @@ brokre is built around one rule: **secrets stay out of the AI's reach and out of
 | **Parent never holds plaintext** (Unix) | Saved passwords decrypt in a short-lived `brokre --internal-injector` child, written once to the PTY, then the child exits |
 | **AI cannot `reveal`** | `brokre reveal` requires a real TTY + master passphrase; unavailable in the web UI and **not exposed via MCP** |
 | **Vault at rest** | Per-field AES-256-GCM; DEK wrapped with OS keyring (Linux) or `~/.brokre/.master_kek` (macOS) + optional Argon2id reveal passphrase |
-| **MCP boundary** | MCP exposes metadata (`brokre_list`) and exec (`brokre_exec`) only — no passwords, session tokens, or `reveal` |
-| **Manage UI** | Binds `127.0.0.1` only; passwords are **write-only**; session token printed in your terminal, never returned to AI |
-| **Audit** | HMAC-chained JSONL; `brokre audit verify` detects tampering |
+| **Audit** | HMAC-chained JSONL at `~/.brokre/audit/audit.log`; `brokre audit list` queries history (metadata only); `brokre audit verify` detects tampering |
+| **MCP boundary** | MCP exposes metadata (`brokre_list`), exec (`brokre_exec`), and read-only audit (`brokre_audit_list`, `brokre_audit_verify`) — no passwords, session tokens, or `reveal` |
+| **Manage UI** | Binds `127.0.0.1` only; passwords are **write-only**; audit log tab for history; session token printed in your terminal, never returned to AI |
 | **OS hardening** | Core dumps disabled, ptrace checks (Linux), optional `mlockall` — see [docs/HARDENING.md](docs/HARDENING.md) |
 
 Full threat model: [SECURITY.md](SECURITY.md), [THREAT_MODEL.md](THREAT_MODEL.md).
@@ -109,8 +109,11 @@ Use `npx -y brokre@latest` so both the npm launcher and binary stay current. On 
 | MCP tool | Purpose |
 |----------|---------|
 | `brokre_list` | Saved aliases (metadata only — profile, name, host) |
-| `brokre_exec` | Run **any** saved CLI alias (`binary` + `args`) |
+| `brokre_exec` | Run **any** saved CLI alias (`binary` + `args`); `ssh` + `sudo`/`su` auto-reuses elevated session |
+| `brokre_exec_elevated` | Remote privileged command (`alias`, `command`, `mode`); default `session=reuse` (10 min idle timeout) |
 | `brokre_setup` | Open manage UI in browser for the human to add creds |
+| `brokre_audit_list` | Query audit history (metadata only — args redacted) |
+| `brokre_audit_verify` | Verify tamper-evident audit log chain |
 
 On first connect with an **empty vault**, brokre opens **manage** in your browser (`http://127.0.0.1:56777/?t=…`). Session tokens stay on localhost — never returned to the AI. Set `BROKRE_MCP_NO_AUTO_OPEN=1` to disable auto-open.
 
@@ -174,6 +177,15 @@ brokre list --json
 brokre reveal mysql prod-db --field password
 brokre rm ssh prod-bastion
 ```
+
+### Audit log (metadata only)
+
+```bash
+brokre audit list --profile ssh --action exec --json
+brokre audit verify --json
+```
+
+Events are stored at `~/.brokre/audit/audit.log` (HMAC-chained). Command arguments are uniformly redacted as `<REDACTED>`. New events include a `source` field (`cli`, `mcp`, or `manage`). The manage UI **Audit log** tab and MCP `brokre_audit_list` expose the same metadata.
 
 ### Manage UI security
 

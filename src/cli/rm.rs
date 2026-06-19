@@ -22,6 +22,7 @@ fn audit_rm(action: &str, profile: &str, name: &str) {
         injector_pid: None,
         injector_dur_ms: None,
         injector_outcome: None,
+        source: Some("cli".into()),
         hmac_version: None,
         prev_hmac: None,
         hmac: None,

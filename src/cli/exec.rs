@@ -12,7 +12,7 @@
 //! Exit code of the child is propagated verbatim. brokre never invents
 //! its own error code to mask a real connection / auth failure.
 
-use crate::audit::logger::{append, redact_args, AuditEvent};
+use crate::audit::logger::{append, exec_audit_source, redact_args, AuditEvent};
 use crate::runtime::prompts::patterns_for;
 use crate::runtime::pty::PtyCredential;
 use crate::security::secret::SecretString;
@@ -235,6 +235,13 @@ fn exec_saved(
     let args_for_audit = redact_args(&resolved.audit_args());
     let mut argv = resolved.compose_argv(&rec, profile);
     #[cfg(unix)]
+    if is_openssh_profile(profile) && !resolved.trailing.is_empty() {
+        crate::runtime::ssh_identity::insert_force_tty_for_privileged_remote(
+            &mut argv,
+            &resolved.trailing,
+        );
+    }
+    #[cfg(unix)]
     let _key_guard = if is_openssh_profile(profile) {
         crate::runtime::ssh_identity::insert_mux_options(&mut argv);
         match crate::runtime::ssh_identity::materialize_identity(&rec)? {
@@ -251,7 +258,17 @@ fn exec_saved(
     let patterns = patterns_for(profile);
     let start = Instant::now();
     #[cfg(unix)]
-    let result = if crate::runtime::pipe_exec::should_use_pipe_mode(profile, crate::security::tty::stdin_is_pipe()) {
+    let remote_trailing = if is_openssh_profile(profile) && !resolved.trailing.is_empty() {
+        Some(resolved.trailing.as_slice())
+    } else {
+        None
+    };
+    #[cfg(unix)]
+    let result = if crate::runtime::pipe_exec::should_use_pipe_mode(
+        profile,
+        crate::security::tty::stdin_is_pipe(),
+        remote_trailing,
+    ) {
         crate::runtime::pipe_exec::run(profile, &argv, rec.id)?
     } else {
         crate::runtime::pty::run(
@@ -291,6 +308,7 @@ fn exec_saved(
         injector_pid: result.injector_pid,
         injector_dur_ms: result.injector_dur_ms,
         injector_outcome: result.injector_outcome.clone(),
+        source: Some(exec_audit_source()),
         hmac_version: None,
         prev_hmac: None,
         hmac: None,
@@ -351,6 +369,7 @@ fn exec_fresh(
         injector_pid: result.injector_pid,
         injector_dur_ms: result.injector_dur_ms,
         injector_outcome: result.injector_outcome.clone(),
+        source: Some(exec_audit_source()),
         hmac_version: None,
         prev_hmac: None,
         hmac: None,

@@ -1,3 +1,4 @@
+mod elevated_session;
 mod server;
 
 pub use server::run_mcp_server;

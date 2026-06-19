@@ -65,8 +65,14 @@
 ## T11: MCP server exposes secrets to AI
 
 - **Attack**: AI calls MCP tools to list passwords, export session tokens, or invoke `reveal`.
-- **Mitigation**: MCP exposes only `brokre_list` (metadata), `brokre_exec` (subprocess with piped I/O), and `brokre_setup` (opens browser; tool response contains no session token). `reveal` and `rm` are not MCP tools. Embedded manage omits tokens from logs; `brokre` npm launcher redacts `?t=` on stderr. Idle manage sessions expire (auth rejected) without killing MCP.
+- **Mitigation**: MCP exposes only `brokre_list` (metadata), `brokre_exec` / `brokre_exec_elevated` (subprocess or in-process elevated PTY with piped I/O), read-only audit tools, and `brokre_setup` (opens browser; tool response contains no session token). `reveal` and `rm` are not MCP tools. Embedded manage omits tokens from logs; `brokre` npm launcher redacts `?t=` on stderr. Idle manage sessions expire (auth rejected) without killing MCP.
 - **Residual risk**: `brokre_exec` stdout/stderr may contain remote command output chosen by the agent; that is intentional. First-time unsaved connections still require human TTY via manage UI, not MCP.
+
+## T12: MCP persistent elevated PTY sessions
+
+- **Attack**: Local malware or a compromised `brokre mcp` process reuses an open root shell; attacker reads PTY output or injects commands between AI invocations.
+- **Mitigation**: Sessions live only inside the MCP process (never returned to the agent). Password injection still uses short-lived injector children (T1). Default idle timeout 10 minutes, max lifetime 30 minutes, background sweeper, and full pool teardown when MCP exits. `session=close` ends a session early; `BROKRE_MCP_SESSION=0` disables reuse. Each `run` is audit-logged (`mcp/elevated-session/*`).
+- **Residual risk**: A persistent root shell increases blast radius if the local brokre process is compromised while a session is active. Sudo password is still assumed to match the vault `password` field. True interactive TTY programs (`vim`, bare `sudo -i` without a command) remain unsupported over MCP.
 
 ## Future Work
 

@@ -1,9 +1,11 @@
 use crate::audit::logger::{append, AuditEvent};
+use crate::audit::query::{list, verify_with_stats, AuditQuery};
 use crate::manage::auth::{extract_bearer, token_matches};
 use crate::manage::onboard::mark_onboard_complete;
 use crate::manage::profiles::{detect_profile_groups, profile_available_for_create};
 use crate::security::secret::SecretString;
 use crate::utils::errors::BrokreError;
+use crate::utils::paths::audit_path;
 use crate::vault::keychain::get_or_init_audit_hmac_key;
 use crate::runtime::ssh_identity::{
     auth_methods_from_meta, build_ssh_field_meta, build_ssh_secret_fields,
@@ -59,6 +61,7 @@ fn audit_manage(action: &str, profile: &str, name: &str) {
         injector_pid: None,
         injector_dur_ms: None,
         injector_outcome: None,
+        source: Some("manage".into()),
         hmac_version: None,
         prev_hmac: None,
         hmac: None,
@@ -242,6 +245,41 @@ fn percent_decode(s: &str) -> String {
     out
 }
 
+fn parse_query_params(query: &str) -> std::collections::HashMap<String, String> {
+    let mut map = std::collections::HashMap::new();
+    for pair in query.split('&') {
+        if pair.is_empty() {
+            continue;
+        }
+        let (k, v) = match pair.split_once('=') {
+            Some((k, v)) => (k, v),
+            None => (pair, ""),
+        };
+        map.insert(percent_decode(k), percent_decode(v));
+    }
+    map
+}
+
+fn audit_query_from_params(params: &std::collections::HashMap<String, String>) -> AuditQuery {
+    let parse_usize = |key: &str, default: usize| -> usize {
+        params
+            .get(key)
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(default)
+    };
+    AuditQuery {
+        profile: params.get("profile").cloned(),
+        name: params.get("name").cloned(),
+        action: params.get("action").cloned(),
+        source: params.get("source").cloned(),
+        since: params.get("since").cloned(),
+        until: params.get("until").cloned(),
+        limit: parse_usize("limit", crate::audit::query::DEFAULT_LIMIT),
+        offset: parse_usize("offset", 0),
+        newest_first: true,
+    }
+}
+
 /// Parse `/api/credentials/{profile}/{name}` or `.../{name}/password|meta`.
 /// Only the first `/` separates profile from name so aliases may contain `/`.
 fn parse_credential_path(path: &str) -> Option<(String, String, Option<&'static str>)> {
@@ -269,9 +307,12 @@ pub fn handle_request(state: Arc<ManageState>, mut req: Request) {
     state.touch();
     let method = req.method().clone();
     let url = req.url().to_string();
-    let path = url.split('?').next().unwrap_or(&url).to_string();
+    let (path, query) = match url.split_once('?') {
+        Some((p, q)) => (p.to_string(), Some(q.to_string())),
+        None => (url, None),
+    };
 
-    let response = dispatch(state, &mut req, &method, &path);
+    let response = dispatch(state, &mut req, &method, &path, query.as_deref());
     let _ = req.respond(response);
 }
 
@@ -280,6 +321,7 @@ fn dispatch(
     req: &mut Request,
     method: &tiny_http::Method,
     path: &str,
+    query: Option<&str>,
 ) -> HttpResponse {
     // GET / allows token in query for initial HTML load.
     if *method == tiny_http::Method::Get && path == "/" {
@@ -447,6 +489,28 @@ fn dispatch(
             return error_response(StatusCode(500), "failed to mark onboard complete");
         }
         empty_response(StatusCode(204))
+    } else if *method == tiny_http::Method::Get && path == "/api/audit" {
+        let params = parse_query_params(query.unwrap_or(""));
+        let q = audit_query_from_params(&params);
+        match list(q) {
+            Ok(result) => match serde_json::to_string(&result) {
+                Ok(body) => json_response(StatusCode(200), &body),
+                Err(e) => error_response(StatusCode(500), &e.to_string()),
+            },
+            Err(e) => error_response(StatusCode(500), &e.to_string()),
+        }
+    } else if *method == tiny_http::Method::Get && path == "/api/audit/verify" {
+        let key = match get_or_init_audit_hmac_key() {
+            Ok(k) => k,
+            Err(e) => return error_response(StatusCode(500), &e.to_string()),
+        };
+        match verify_with_stats(&audit_path(), &key) {
+            Ok(stats) => match serde_json::to_string(&stats) {
+                Ok(body) => json_response(StatusCode(200), &body),
+                Err(e) => error_response(StatusCode(500), &e.to_string()),
+            },
+            Err(e) => error_response(StatusCode(500), &e.to_string()),
+        }
     } else if let Some((profile, name, suffix)) = parse_credential_path(path) {
         handle_credential_route(state, req, method, &profile, &name, suffix)
     } else {
@@ -901,5 +965,54 @@ mod tests {
             crate::vault::service::infer_host("psql", &args).as_deref(),
             Some("db.local")
         );
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn audit_list_without_token_is_unauthorized() {
+        with_temp_home(|| {
+            let server = run_manage_server(false).unwrap();
+            let (status, _) =
+                http_request(server.port, "GET", "/api/audit", None, None);
+            assert_eq!(status, 401);
+        });
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn audit_list_with_token_returns_json() {
+        with_temp_home(|| {
+            let server = run_manage_server(false).unwrap();
+            let (status, body) = http_request(
+                server.port,
+                "GET",
+                "/api/audit?limit=10",
+                Some(&server.token),
+                None,
+            );
+            assert_eq!(status, 200);
+            let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
+            assert!(parsed.get("total_matched").is_some());
+            assert!(parsed.get("events").is_some());
+        });
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn audit_verify_with_token_ok_on_empty_log() {
+        with_temp_home(|| {
+            let server = run_manage_server(false).unwrap();
+            let (status, body) = http_request(
+                server.port,
+                "GET",
+                "/api/audit/verify",
+                Some(&server.token),
+                None,
+            );
+            assert_eq!(status, 200);
+            let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
+            assert_eq!(parsed["ok"], true);
+            assert_eq!(parsed["count"], 0);
+        });
     }
 }
