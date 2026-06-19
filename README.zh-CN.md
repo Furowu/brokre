@@ -20,7 +20,7 @@ brokre 围绕一条原则构建：**密钥远离 AI 可达范围，且不出现�
 | **父进程不持明文**（Unix） | 已保存密码在短生命周期 `brokre --internal-injector` 子进程中解密，一次性写入 PTY 后子进程退出 |
 | **AI 无法 `reveal`** | `brokre reveal` 需真实 TTY + 主口令；Web UI 不提供，**MCP 不暴露** |
 | **静态保险库** | 每字段 AES-256-GCM；DEK 分别包装给 `exec`（Linux 用 OS keyring；macOS 默认 `~/.brokre/.master_kek`）与可选 Argon2id reveal 口令 |
-| **MCP 边界** | MCP 暴露元数据（`brokre_list`）、执行（`brokre_exec`）与只读审计（`brokre_audit_list`、`brokre_audit_verify`）— 无密码、会话 token、`reveal` |
+| **MCP 边界** | MCP 暴露元数据（`brokre_list`）、执行（`brokre_exec`、`brokre_exec_elevated`）、`brokre_setup` 与只读审计（`brokre_audit_list`、`brokre_audit_verify`）— 无密码、会话 token、`reveal` |
 | **管理界面** | 仅绑定 `127.0.0.1`；密码**只写**；含审计日志页；会话 token 在终端打印，不返回给 AI |
 | **审计** | HMAC 链式 JSONL（`~/.brokre/audit/audit.log`）；`brokre audit list` 查询历史（仅元数据）；`brokre audit verify` 检测篡改 |
 | **OS 加固** | 禁用 core dump、ptrace 检测（Linux）、可选 `mlockall` — 见 [docs/HARDENING.md](docs/HARDENING.md) |
@@ -114,6 +114,46 @@ claude mcp add --scope project brokre -- npx -y brokre@latest
 | `brokre_setup` | 在浏览器打开 manage UI，由人类添加凭据 |
 | `brokre_audit_list` | 查询审计历史（仅元数据 — 参数已脱敏） |
 | `brokre_audit_verify` | 验证防篡改审计链 |
+
+#### MCP elevated 会话（`sudo` / `su`，Unix）
+
+默认在 `brokre mcp` 进程内复用后台 elevated shell（同 `alias` + `mode` + `user` 键），避免每次调用重复输入 sudo 密码。
+
+**`brokre_exec_elevated`**（推荐提权场景）：
+
+```json
+{
+  "alias": "prod",
+  "command": "systemctl status nginx",
+  "mode": "sudo_login",
+  "session": "reuse"
+}
+```
+
+| 字段 | 说明 |
+|------|------|
+| `mode` | `sudo`、`sudo_login`（或 `sudo-i`）、`su` |
+| `session` | `reuse`（默认）、`new`（关闭旧会话并新建）、`close`（结束会话；`command` 传 `""`） |
+| `user` | 仅 `su` 模式，默认 `root` |
+
+启用会话池时，响应除 `exit_code` / `stdout` / `stderr` 外还有 `session_reused`、`session_idle_expires_at`（**滚动空闲窗口参考时间**，每次调用刷新，非固定过期时刻）。会话池路径下 `stderr` 通常为空。
+
+**`brokre_exec`**：`binary=ssh` 且 `args` 含 `sudo`/`su` 时自动走同一会话池（固定 `reuse`，不支持 `session=new|close`）。例：`args=["prod","sudo","whoami"]`。
+
+| 控制项 | 默认 |
+|--------|------|
+| 空闲销毁 | 10 分钟 |
+| 最长存活 | 30 分钟 |
+| 单条命令超时 | 120 秒 |
+
+| 环境变量 | 默认 | 含义 |
+|----------|------|------|
+| `BROKRE_MCP_SESSION` | `1` | `0` 禁用会话池，回退一次性子进程执行 |
+| `BROKRE_MCP_SESSION_IDLE_SECS` | `600` | 空闲销毁秒数 |
+| `BROKRE_MCP_SESSION_MAX_SECS` | `1800` | 最长存活秒数 |
+| `BROKRE_MCP_SESSION_CMD_TIMEOUT` | `120` | 单条远程命令超时 |
+
+仍不支持：无 `command` 的纯交互 `sudo -i` / `vim` / `top`；sudo 密码须与 vault 中 `password` 字段相同。详见 [THREAT_MODEL.md](THREAT_MODEL.md) T12。
 
 首次连接且**保险库为空**时，brokre 会在浏览器打开 **manage**（`http://127.0.0.1:56777/?t=…`）。会话 token 留在本机 — 不返回给 AI。设置 `BROKRE_MCP_NO_AUTO_OPEN=1` 可禁用自动打开。
 

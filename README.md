@@ -21,7 +21,7 @@ brokre is built around one rule: **secrets stay out of the AI's reach and out of
 | **AI cannot `reveal`** | `brokre reveal` requires a real TTY + master passphrase; unavailable in the web UI and **not exposed via MCP** |
 | **Vault at rest** | Per-field AES-256-GCM; DEK wrapped with OS keyring (Linux) or `~/.brokre/.master_kek` (macOS) + optional Argon2id reveal passphrase |
 | **Audit** | HMAC-chained JSONL at `~/.brokre/audit/audit.log`; `brokre audit list` queries history (metadata only); `brokre audit verify` detects tampering |
-| **MCP boundary** | MCP exposes metadata (`brokre_list`), exec (`brokre_exec`), and read-only audit (`brokre_audit_list`, `brokre_audit_verify`) — no passwords, session tokens, or `reveal` |
+| **MCP boundary** | MCP exposes metadata (`brokre_list`), exec (`brokre_exec`, `brokre_exec_elevated`), `brokre_setup`, and read-only audit (`brokre_audit_list`, `brokre_audit_verify`) — no passwords, session tokens, or `reveal` |
 | **Manage UI** | Binds `127.0.0.1` only; passwords are **write-only**; audit log tab for history; session token printed in your terminal, never returned to AI |
 | **OS hardening** | Core dumps disabled, ptrace checks (Linux), optional `mlockall` — see [docs/HARDENING.md](docs/HARDENING.md) |
 
@@ -114,6 +114,46 @@ Use `npx -y brokre@latest` so both the npm launcher and binary stay current. On 
 | `brokre_setup` | Open manage UI in browser for the human to add creds |
 | `brokre_audit_list` | Query audit history (metadata only — args redacted) |
 | `brokre_audit_verify` | Verify tamper-evident audit log chain |
+
+#### MCP elevated sessions (`sudo` / `su`, Unix)
+
+By default, `brokre mcp` reuses a background elevated shell per `(alias, mode, user)` so sudo passwords are not re-prompted on every call.
+
+**`brokre_exec_elevated`** (preferred for privilege escalation):
+
+```json
+{
+  "alias": "prod",
+  "command": "systemctl status nginx",
+  "mode": "sudo_login",
+  "session": "reuse"
+}
+```
+
+| Field | Description |
+|-------|-------------|
+| `mode` | `sudo`, `sudo_login` (or `sudo-i`), `su` |
+| `session` | `reuse` (default), `new` (close old session and open fresh), `close` (end session; pass `command: ""`) |
+| `user` | `su` mode only; default `root` |
+
+When the session pool is enabled, responses include `session_reused` and `session_idle_expires_at` in addition to `exit_code` / `stdout` / `stderr`. `session_idle_expires_at` is a **rolling idle-window hint** refreshed on each call, not a fixed expiry timestamp. `stderr` is usually empty on the pool path.
+
+**`brokre_exec`**: `binary=ssh` with `sudo`/`su` in `args` auto-uses the same pool (always `reuse`; no `session=new|close`). Example: `args=["prod","sudo","whoami"]`.
+
+| Control | Default |
+|---------|---------|
+| Idle teardown | 10 minutes |
+| Max lifetime | 30 minutes |
+| Per-command timeout | 120 seconds |
+
+| Variable | Default | Meaning |
+|----------|---------|---------|
+| `BROKRE_MCP_SESSION` | `1` | `0` disables the pool; falls back to one-shot subprocess exec |
+| `BROKRE_MCP_SESSION_IDLE_SECS` | `600` | Idle timeout (seconds) |
+| `BROKRE_MCP_SESSION_MAX_SECS` | `1800` | Max session lifetime (seconds) |
+| `BROKRE_MCP_SESSION_CMD_TIMEOUT` | `120` | Remote command timeout (seconds) |
+
+Not supported: interactive `sudo -i` without a command, `vim`/`top`, or sudo passwords different from the vault `password` field. See [THREAT_MODEL.md](THREAT_MODEL.md) T12.
 
 On first connect with an **empty vault**, brokre opens **manage** in your browser (`http://127.0.0.1:56777/?t=…`). Session tokens stay on localhost — never returned to the AI. Set `BROKRE_MCP_NO_AUTO_OPEN=1` to disable auto-open.
 

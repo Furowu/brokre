@@ -6,6 +6,7 @@ MCP launcher for [brokre](https://github.com/Furowu/brokre) — a **local creden
 
 - **Node.js 18+** (for `npx`)
 - **No Rust required** — downloads or upgrades a prebuilt `brokre` from [GitHub Releases](https://github.com/Furowu/brokre/releases) into `~/.brokre/bin/` when the local binary is missing or older than the npm package version.
+- **Elevated session pool** (persistent `sudo`/`su` shells): Unix only (`macOS` / `Linux`).
 
 Optional — install the CLI yourself (recommended for production):
 
@@ -94,12 +95,38 @@ Disable auto-open: `BROKRE_MCP_NO_AUTO_OPEN=1`
 | Tool | Purpose |
 |------|---------|
 | `brokre_list` | List saved aliases (metadata only) |
-| `brokre_exec` | Run a saved connection (`binary` + `args`) |
+| `brokre_exec` | Run a saved connection (`binary` + `args`); `ssh` + `sudo`/`su` auto-reuses elevated session |
+| `brokre_exec_elevated` | Remote privileged command (`alias`, `command`, `mode`); default `session=reuse` |
 | `brokre_setup` | Open manage UI in browser for the human |
 | `brokre_audit_list` | Query audit history (metadata only — args redacted) |
 | `brokre_audit_verify` | Verify tamper-evident audit log chain |
 
-**Not exposed:** `reveal`, password export, or session tokens.
+**Not exposed:** `reveal`, password export, or manage session tokens.
+
+### Elevated sessions (`brokre_exec_elevated`)
+
+Runs a command on a saved SSH host with `sudo`, `sudo -i` environment (`sudo_login`), or `su`. By default the MCP server **reuses** a background elevated shell (same `alias` + `mode` + `user`) so sudo is not re-prompted every call.
+
+```json
+{
+  "alias": "prod",
+  "command": "systemctl restart nginx",
+  "mode": "sudo_login",
+  "session": "reuse"
+}
+```
+
+| Field | Values |
+|-------|--------|
+| `mode` | `sudo`, `sudo_login` (aliases: `sudo-i`), `su` |
+| `session` | `reuse` (default), `new`, `close` (use `command: ""`) |
+| `user` | Target user for `su`; default `root` |
+
+**Response** (session pool enabled): `exit_code`, `stdout`, `stderr`, `session_reused`, `session_idle_expires_at`. The expiry field is a rolling idle-window hint, not a fixed deadline. With `BROKRE_MCP_SESSION=0`, only the first three fields are returned (one-shot subprocess).
+
+**`brokre_exec` shortcut:** `binary=ssh`, `args=["prod","sudo","systemctl","status","nginx"]` uses the same pool (always `reuse`; cannot pass `session=new|close`).
+
+**Limits:** idle teardown 10 min, max lifetime 30 min, per-command timeout 120 s (configurable via env below). No interactive `sudo -i` without a command, no `vim`/`top`. Sudo password must match vault `password`.
 
 ## Environment
 
@@ -109,6 +136,10 @@ Disable auto-open: `BROKRE_MCP_NO_AUTO_OPEN=1`
 | `BROKRE_VERSION` | Release version to download (default: npm package version) |
 | `BROKRE_SKIP_AUTO_INSTALL` | Set to `1` to use `PATH` only, no GitHub download |
 | `BROKRE_MCP_NO_AUTO_OPEN` | Set to `1` to skip browser on empty vault |
+| `BROKRE_MCP_SESSION` | Set to `0` to disable elevated session pool (default: enabled on Unix) |
+| `BROKRE_MCP_SESSION_IDLE_SECS` | Idle session teardown (default: `600`) |
+| `BROKRE_MCP_SESSION_MAX_SECS` | Max session lifetime (default: `1800`) |
+| `BROKRE_MCP_SESSION_CMD_TIMEOUT` | Per remote command timeout in seconds (default: `120`) |
 
 ## License
 
