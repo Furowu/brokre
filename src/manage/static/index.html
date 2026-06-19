@@ -63,6 +63,15 @@ textarea{font:inherit;border:1px solid #d1d5db;border-radius:6px;padding:.4rem .
 .audit-table{width:100%;border-collapse:collapse;font-size:.8rem}
 .audit-table th,.audit-table td{border-bottom:1px solid #e5e7eb;padding:.4rem .35rem;text-align:left;vertical-align:top}
 .audit-table th{color:#6b7280;font-weight:600;white-space:nowrap}
+.audit-table .cmd{max-width:200px;word-break:break-word;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:.75rem}
+.audit-table tbody tr.audit-row{cursor:pointer}
+.audit-table tbody tr.audit-row:hover{background:#f9fafb}
+.audit-panel{max-width:560px;max-height:90vh;overflow:auto}
+.audit-dl{display:grid;grid-template-columns:6.5rem 1fr;gap:.4rem .75rem;font-size:.85rem;margin-bottom:.5rem}
+.audit-dl dt{color:#6b7280}
+.audit-dl dd{margin:0;word-break:break-word}
+.audit-cmd-block{font-family:ui-monospace,monospace;font-size:.8rem;background:#f3f4f6;padding:.5rem .6rem;border-radius:4px;white-space:pre-wrap;word-break:break-all;margin-top:.25rem}
+.audit-legacy-note{font-size:.8rem;color:#92400e;background:#fffbeb;border:1px solid #fcd34d;border-radius:4px;padding:.45rem .6rem;margin-bottom:.5rem}
 .audit-banner.hidden{display:none!important}
 .audit-banner.ok{background:#ecfdf5;border:1px solid #6ee7b7;color:#065f46}
 .audit-banner.err{background:#fef2f2;border:1px solid #fecaca;color:#991b1b}
@@ -212,6 +221,17 @@ textarea{font:inherit;border:1px solid #d1d5db;border-radius:6px;padding:.4rem .
   </div>
 </div>
 
+<div class="modal" id="modal-audit">
+  <div class="panel audit-panel">
+    <h3 data-i18n="audit.detail.title">Audit event detail</h3>
+    <div class="audit-legacy-note hidden" id="audit-detail-legacy"></div>
+    <dl class="audit-dl" id="audit-detail-body"></dl>
+    <div class="actions">
+      <button type="button" class="secondary" data-close data-i18n="btn.cancel">Close</button>
+    </div>
+  </div>
+</div>
+
 <script>
 (function(){
   const I18N = {
@@ -306,7 +326,15 @@ textarea{font:inherit;border:1px solid #d1d5db;border-radius:6px;padding:.4rem .
       'audit.col.source': 'Source',
       'audit.col.target': 'Profile / alias',
       'audit.col.exit': 'Exit',
-      'audit.col.ms': 'ms'
+      'audit.col.ms': 'ms',
+      'audit.col.command': 'Command',
+      'audit.detail.title': 'Audit event detail',
+      'audit.detail.command': 'Command',
+      'audit.detail.sid': 'Session ID',
+      'audit.detail.injector': 'Injector',
+      'audit.detail.hardening': 'Hardening',
+      'audit.cmdLegacy': 'Legacy log — command was fully redacted at write time and cannot be recovered.',
+      'audit.clickHint': 'Click a row for full detail'
     },
     zh: {
       title: 'brokre 管理',
@@ -399,7 +427,15 @@ textarea{font:inherit;border:1px solid #d1d5db;border-radius:6px;padding:.4rem .
       'audit.col.source': '来源',
       'audit.col.target': 'Profile / alias',
       'audit.col.exit': '退出码',
-      'audit.col.ms': '耗时 ms'
+      'audit.col.ms': '耗时 ms',
+      'audit.col.command': '命令',
+      'audit.detail.title': '审计明细',
+      'audit.detail.command': '命令',
+      'audit.detail.sid': '会话 ID',
+      'audit.detail.injector': '注入器',
+      'audit.detail.hardening': '加固',
+      'audit.cmdLegacy': '旧版日志 — 写入时命令已全量脱敏，无法还原。',
+      'audit.clickHint': '点击行查看完整明细'
     }
   };
 
@@ -931,6 +967,76 @@ textarea{font:inherit;border:1px solid #d1d5db;border-radius:6px;padding:.4rem .
   });
 
   let currentView = 'credentials';
+  let auditEvents = [];
+
+  function auditArgsAllRedacted(args) {
+    return args && args.length > 0 && args.every(a => a === '<REDACTED>');
+  }
+
+  function formatAuditCommand(args) {
+    if (!args || !args.length) return '-';
+    if (auditArgsAllRedacted(args)) return t('audit.cmdLegacy');
+    return args.join(' ');
+  }
+
+  function truncateText(s, max) {
+    if (!s || s.length <= max) return s;
+    return s.slice(0, max) + '…';
+  }
+
+  function openAuditDetail(index) {
+    const ev = auditEvents[index];
+    if (!ev) return;
+    const legacy = document.getElementById('audit-detail-legacy');
+    const body = document.getElementById('audit-detail-body');
+    const legacyRedacted = auditArgsAllRedacted(ev.args_redacted);
+    legacy.classList.toggle('hidden', !legacyRedacted);
+    if (legacyRedacted) legacy.textContent = t('audit.cmdLegacy');
+
+    const rows = [
+      [t('audit.col.time'), ev.ts || '-'],
+      [t('audit.col.action'), ev.action || '-'],
+      [t('audit.col.source'), ev.source || '-'],
+      [t('audit.col.target'), (ev.profile || '') + '/' + (ev.name || '')],
+      [t('audit.col.exit'), ev.exit == null ? '-' : String(ev.exit)],
+      [t('audit.col.ms'), ev.dur_ms == null ? '-' : String(ev.dur_ms)],
+      [t('audit.detail.sid'), ev.sid || '-'],
+    ];
+    if (ev.injector_outcome) {
+      let inj = ev.injector_outcome;
+      if (ev.injector_pid != null) inj += ' (pid ' + ev.injector_pid + ')';
+      if (ev.injector_dur_ms != null) inj += ', ' + ev.injector_dur_ms + ' ms';
+      rows.push([t('audit.detail.injector'), inj]);
+    }
+    if (ev.hardening) {
+      const h = ev.hardening;
+      const parts = [];
+      if (h.mlock_ok) parts.push('mlock');
+      if (h.core_disabled) parts.push('no-core');
+      if (h.ptrace_denied) parts.push('no-ptrace');
+      if (h.disabled_by_env) parts.push('disabled-by-env');
+      if (h.warnings && h.warnings.length) parts.push('warn:' + h.warnings.join('; '));
+      rows.push([t('audit.detail.hardening'), parts.length ? parts.join(', ') : '-']);
+    }
+
+    let html = '';
+    for (const [label, value] of rows) {
+      html += '<dt>' + esc(label) + '</dt><dd>' + esc(value) + '</dd>';
+    }
+    const cmdText = legacyRedacted
+      ? '<REDACTED> × ' + (ev.args_redacted ? ev.args_redacted.length : 0)
+      : esc((ev.args_redacted || []).join(' '));
+    html += '<dt>' + esc(t('audit.detail.command')) + '</dt>';
+    html += '<dd><div class="audit-cmd-block">' + cmdText + '</div>';
+    if (!legacyRedacted && ev.args_redacted && ev.args_redacted.length > 1) {
+      const argvLines = ev.args_redacted.map((a, i) => '[' + i + '] ' + a).join('\n');
+      html += '<div class="audit-cmd-block muted" style="font-size:.75rem;margin-top:.35rem">' +
+        esc(argvLines) + '</div>';
+    }
+    html += '</dd>';
+    body.innerHTML = html;
+    document.getElementById('modal-audit').classList.add('show');
+  }
 
   function switchView(view) {
     currentView = view;
@@ -963,11 +1069,14 @@ textarea{font:inherit;border:1px solid #d1d5db;border-radius:6px;padding:.4rem .
 
   function renderAuditTable(result) {
     const wrap = document.getElementById('audit-table-wrap');
-    if (!result.events || !result.events.length) {
+    auditEvents = result.events || [];
+    if (!auditEvents.length) {
       wrap.innerHTML = '<div class="empty">' + esc(t('audit.empty')) + '</div>';
       return;
     }
-    let html = '<p class="muted" style="margin-bottom:.5rem">' + esc(t('audit.matched', { n: result.total_matched })) + '</p>';
+    let html = '<p class="muted" style="margin-bottom:.5rem">' +
+      esc(t('audit.matched', { n: result.total_matched })) +
+      ' · <span class="muted">' + esc(t('audit.clickHint')) + '</span></p>';
     html += '<table class="audit-table"><thead><tr>';
     html += '<th>' + esc(t('audit.col.time')) + '</th>';
     html += '<th>' + esc(t('audit.col.action')) + '</th>';
@@ -975,23 +1084,34 @@ textarea{font:inherit;border:1px solid #d1d5db;border-radius:6px;padding:.4rem .
     html += '<th>' + esc(t('audit.col.target')) + '</th>';
     html += '<th>' + esc(t('audit.col.exit')) + '</th>';
     html += '<th>' + esc(t('audit.col.ms')) + '</th>';
+    html += '<th>' + esc(t('audit.col.command')) + '</th>';
     html += '</tr></thead><tbody>';
-    for (const ev of result.events) {
+    auditEvents.forEach((ev, idx) => {
       const target = (ev.profile || '') + '/' + (ev.name || '');
       const exit = ev.exit == null ? '-' : String(ev.exit);
       const ms = ev.dur_ms == null ? '-' : String(ev.dur_ms);
       const src = ev.source || '-';
-      html += '<tr>';
+      const cmdFull = formatAuditCommand(ev.args_redacted);
+      const cmd = truncateText(cmdFull, 56);
+      const legacy = auditArgsAllRedacted(ev.args_redacted);
+      html += '<tr class="audit-row" data-audit-idx="' + idx + '" title="' + esc(t('audit.clickHint')) + '">';
       html += '<td>' + esc(ev.ts) + '</td>';
       html += '<td>' + esc(ev.action) + '</td>';
       html += '<td>' + esc(src) + '</td>';
       html += '<td>' + esc(target) + '</td>';
       html += '<td>' + esc(exit) + '</td>';
       html += '<td>' + esc(ms) + '</td>';
+      html += '<td class="cmd' + (legacy ? ' muted' : '') + '">' + esc(cmd) + '</td>';
       html += '</tr>';
-    }
+    });
     html += '</tbody></table>';
     wrap.innerHTML = html;
+    wrap.querySelectorAll('tr.audit-row').forEach(row => {
+      row.addEventListener('click', () => {
+        const idx = Number(row.getAttribute('data-audit-idx'));
+        openAuditDetail(idx);
+      });
+    });
   }
 
   async function loadAudit() {

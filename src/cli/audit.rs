@@ -46,8 +46,8 @@ pub fn run_list(opts: ListOptions) -> Result<()> {
         opts.offset
     );
     println!(
-        "{:<24} {:<16} {:<8} {:<16} {:<6} {:<6} {:<8}",
-        "TIME", "ACTION", "SOURCE", "PROFILE/NAME", "EXIT", "MS", "SID"
+        "{:<24} {:<16} {:<8} {:<16} {:<6} {:<6} {}",
+        "TIME", "ACTION", "SOURCE", "PROFILE/NAME", "EXIT", "MS", "COMMAND"
     );
     for ev in &result.events {
         let profile_name = format!("{}/{}", ev.profile, ev.name);
@@ -57,14 +57,14 @@ pub fn run_list(opts: ListOptions) -> Result<()> {
             .map(|d| d.to_string())
             .unwrap_or_else(|| "-".into());
         let source = ev.source.as_deref().unwrap_or("-");
-        let sid_short = if ev.sid.len() > 8 {
-            &ev.sid[..8]
+        let cmd = if ev.args_redacted.is_empty() {
+            "-".to_string()
         } else {
-            &ev.sid
+            ev.args_redacted.join(" ")
         };
         println!(
-            "{:<24} {:<16} {:<8} {:<16} {:<6} {:<6} {:<8}",
-            ev.ts, ev.action, source, profile_name, exit, dur, sid_short
+            "{:<24} {:<16} {:<8} {:<16} {:<6} {:<6} {}",
+            ev.ts, ev.action, source, profile_name, exit, dur, cmd
         );
     }
     Ok(())

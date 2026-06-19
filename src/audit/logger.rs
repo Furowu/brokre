@@ -2,6 +2,7 @@ use crate::security::hardening::HardeningReport;
 use crate::utils::errors::{BrokreError, Result};
 use crate::utils::mask::redact;
 use crate::utils::paths::audit_path;
+use fs4::fs_std::FileExt;
 use hmac::{Hmac, Mac};
 use serde::{Deserialize, Serialize};
 use sha2::Sha256;
@@ -143,6 +144,24 @@ fn compute_hmac(event: &AuditEvent, key: &[u8; 32]) -> String {
     }
 }
 
+/// Parse one or more JSON audit events from a single log line.
+/// Tolerates legacy corruption where concurrent appends merged two records.
+pub fn events_from_line(line: &str) -> Vec<AuditEvent> {
+    let trimmed = line.trim();
+    if trimmed.is_empty() {
+        return Vec::new();
+    }
+    let mut events = Vec::new();
+    let mut stream = serde_json::Deserializer::from_str(trimmed).into_iter::<AuditEvent>();
+    while let Some(result) = stream.next() {
+        match result {
+            Ok(ev) => events.push(ev),
+            Err(_) => break,
+        }
+    }
+    events
+}
+
 /// Audit source for CLI exec paths (`mcp` when spawned from MCP).
 pub fn exec_audit_source() -> String {
     if std::env::var_os("BROKRE_MCP_EXEC").is_some() {
@@ -159,26 +178,26 @@ pub fn append(event: &mut AuditEvent, hmac_key: &[u8; 32]) -> Result<()> {
         HMAC_VERSION_V2
     });
     let path = audit_path();
-    let mut prev_hmac = None;
-    if path.exists() {
-        if let Ok(file) = OpenOptions::new().read(true).open(&path) {
-            let reader = BufReader::new(file);
-            if let Some(Ok(last)) = reader.lines().last() {
-                if let Ok(last_ev) = serde_json::from_str::<AuditEvent>(&last) {
-                    prev_hmac = last_ev.hmac;
-                }
-            }
-        }
-    }
-    event.prev_hmac = prev_hmac.clone();
-    event.hmac = Some(compute_hmac(event, hmac_key));
-
-    let line = serde_json::to_string(event).map_err(|e| BrokreError::Audit(e.to_string()))?;
     let mut file = OpenOptions::new()
+        .read(true)
         .append(true)
         .create(true)
         .open(&path)
         .map_err(BrokreError::Io)?;
+    file.lock_exclusive().map_err(BrokreError::Io)?;
+
+    let prev_hmac = {
+        let reader = BufReader::new(&file);
+        reader
+            .lines()
+            .filter_map(|l| l.ok())
+            .last()
+            .and_then(|last| events_from_line(&last).last().and_then(|ev| ev.hmac.clone()))
+    };
+    event.prev_hmac = prev_hmac;
+    event.hmac = Some(compute_hmac(event, hmac_key));
+
+    let line = serde_json::to_string(event).map_err(|e| BrokreError::Audit(e.to_string()))?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -186,6 +205,7 @@ pub fn append(event: &mut AuditEvent, hmac_key: &[u8; 32]) -> Result<()> {
     }
     writeln!(file, "{}", line).map_err(BrokreError::Io)?;
     file.sync_all().map_err(BrokreError::Io)?;
+    let _ = file.unlock();
     Ok(())
 }
 
@@ -198,16 +218,23 @@ pub fn verify_chain(path: &Path, hmac_key: &[u8; 32]) -> Result<()> {
     let mut prev_hmac: Option<String> = None;
     for line in reader.lines() {
         let line = line.map_err(BrokreError::Io)?;
-        let event: AuditEvent =
-            serde_json::from_str(&line).map_err(|e| BrokreError::Audit(e.to_string()))?;
-        if event.prev_hmac != prev_hmac {
-            return Err(BrokreError::Audit("chain broken: prev_hmac mismatch".into()));
+        if line.trim().is_empty() {
+            continue;
         }
-        let expected = compute_hmac(&event, hmac_key);
-        if event.hmac.as_ref() != Some(&expected) {
-            return Err(BrokreError::Audit("chain broken: hmac mismatch".into()));
+        let events = events_from_line(&line);
+        if events.is_empty() {
+            return Err(BrokreError::Audit("invalid audit line".into()));
         }
-        prev_hmac = event.hmac;
+        for event in events {
+            if event.prev_hmac != prev_hmac {
+                return Err(BrokreError::Audit("chain broken: prev_hmac mismatch".into()));
+            }
+            let expected = compute_hmac(&event, hmac_key);
+            if event.hmac.as_ref() != Some(&expected) {
+                return Err(BrokreError::Audit("chain broken: hmac mismatch".into()));
+            }
+            prev_hmac = event.hmac;
+        }
     }
     Ok(())
 }
@@ -290,5 +317,21 @@ mod tests {
         let tmp = NamedTempFile::new().unwrap();
         std::fs::write(tmp.path(), tampered).unwrap();
         assert!(verify_chain(tmp.path(), &key).is_err());
+    }
+
+    #[test]
+    fn events_from_line_parses_concatenated_records() {
+        let key = [1u8; 32];
+        let mut a = sample_event("exec", "a");
+        a.hmac_version = Some(HMAC_VERSION_V2);
+        a.hmac = Some(compute_hmac(&a, &key));
+        let mut b = sample_event("exec", "b");
+        b.hmac_version = Some(HMAC_VERSION_V2);
+        b.hmac = Some(compute_hmac(&b, &key));
+        let line = format!("{}{}", serde_json::to_string(&a).unwrap(), serde_json::to_string(&b).unwrap());
+        let parsed = events_from_line(&line);
+        assert_eq!(parsed.len(), 2);
+        assert_eq!(parsed[0].name, "a");
+        assert_eq!(parsed[1].name, "b");
     }
 }

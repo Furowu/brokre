@@ -90,7 +90,12 @@ pub fn build_persistent_shell_remote_argv(
     mode: ElevatedMode,
     su_user: Option<&str>,
 ) -> Vec<String> {
-    let inner = format!("export PS1={}; exec bash -i", READY);
+    // Echo READY explicitly: remote .bashrc / TERM=dumb can override PS1 so the marker
+    // never appears in PTY output if we only export PS1 before exec bash -i.
+    let inner = format!(
+        "echo {ready}; export PS1={ready}; exec bash --norc --noprofile -i",
+        ready = READY,
+    );
     let quoted = shell_single_quote_escape(&inner);
     match mode {
         ElevatedMode::Sudo => vec![
@@ -368,8 +373,10 @@ mod tests {
     }
 
     #[test]
-    fn persistent_bootstrap_includes_ready_marker() {
+    fn persistent_bootstrap_echoes_ready_marker() {
         let argv = build_persistent_shell_remote_argv(ElevatedMode::SudoLogin, None);
-        assert!(argv.iter().any(|a| a.contains("__BROKRE_READY__")));
+        let joined = argv.join(" ");
+        assert!(joined.contains("echo __BROKRE_READY__"));
+        assert!(joined.contains("--norc --noprofile"));
     }
 }

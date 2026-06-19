@@ -47,7 +47,7 @@
 ## T8: Secret leakage via audit log
 
 - **Attack**: Audit log accidentally contains plaintext secrets.
-- **Mitigation**: All CLI arguments written to the audit log are replaced with `<REDACTED>` (uniform redaction, not heuristic). `reveal` never logs field values; `rm` logs `rm/success` or `rm/denied` only.
+- **Mitigation**: Audit argv preserves command structure; values after password flags (`-p`, `--password`, …), PEM material, and env password vars are replaced with `<REDACTED>`. Vault passwords are injected via PTY and are not part of argv. `reveal` never logs field values; `rm` logs `rm/success` or `rm/denied` only.
 - **Residual risk**: Metadata (`profile`, `name`, `host_alias`) remains visible by design.
 
 ## T9: Cross-platform downgrade

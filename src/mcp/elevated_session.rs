@@ -35,8 +35,7 @@ mod imp {
     use crate::runtime::pty_session::PtySession;
     use crate::runtime::session_markers::READY;
     use crate::runtime::ssh_identity::{
-        insert_force_tty_for_privileged_remote, insert_identity_arg, insert_mux_options,
-        materialize_identity,
+        insert_force_tty_for_privileged_remote, insert_identity_arg, materialize_identity,
     };
     use crate::utils::errors::{BrokreError, Result};
     use crate::vault::keychain::get_or_init_audit_hmac_key;
@@ -245,7 +244,7 @@ fn open_session(
     bootstrap_timeout: Duration,
 ) -> Result<PtySession> {
     let mut argv = compose_ssh_bootstrap_argv(rec, key.mode, Some(&key.su_user));
-    insert_mux_options(&mut argv);
+    // Do not mux here: this SSH child stays open for the life of the elevated PTY session.
     insert_force_tty_for_privileged_remote(&mut argv, &["sudo".into()]);
     let _key_guard = match materialize_identity(rec)? {
         Some(guard) => {

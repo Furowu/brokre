@@ -1,4 +1,4 @@
-use crate::audit::logger::{verify_chain, AuditEvent};
+use crate::audit::logger::{events_from_line, verify_chain, AuditEvent};
 use crate::security::hardening::HardeningReport;
 use crate::utils::errors::{BrokreError, Result};
 use crate::utils::paths::audit_path;
@@ -117,9 +117,11 @@ fn read_all_events(path: &Path) -> Result<Vec<AuditEvent>> {
         if line.trim().is_empty() {
             continue;
         }
-        let event: AuditEvent =
-            serde_json::from_str(&line).map_err(|e| BrokreError::Audit(e.to_string()))?;
-        out.push(event);
+        let events = events_from_line(&line);
+        if events.is_empty() {
+            return Err(BrokreError::Audit("invalid audit line".into()));
+        }
+        out.extend(events);
     }
     Ok(out)
 }

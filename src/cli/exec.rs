@@ -232,8 +232,8 @@ fn exec_saved(
     profile: &str,
 ) -> Result<()> {
     // Compose final argv: saved_args for same-profile replay; cross-profile borrows password only.
-    let args_for_audit = redact_args(&resolved.audit_args());
     let mut argv = resolved.compose_argv(&rec, profile);
+    let args_for_audit = redact_args(&argv);
     #[cfg(unix)]
     if is_openssh_profile(profile) && !resolved.trailing.is_empty() {
         crate::runtime::ssh_identity::insert_force_tty_for_privileged_remote(

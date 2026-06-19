@@ -17,6 +17,13 @@ use std::os::unix::io::RawFd;
 
 use uuid::Uuid;
 
+fn tail_snapshot(s: String, max: usize) -> String {
+    if s.len() <= max {
+        return s;
+    }
+    s[s.len().saturating_sub(max)..].to_string()
+}
+
 fn field_for_prompt(window: &[u8], available: &[String]) -> Option<String> {
     if available.is_empty() {
         return None;
@@ -290,8 +297,9 @@ impl PtySession {
             thread::sleep(Duration::from_millis(50));
         }
         Err(BrokreError::Runtime(format!(
-            "pty session timed out waiting for {:?}",
-            needle
+            "pty session timed out waiting for {:?}; tail: {:?}",
+            needle,
+            tail_snapshot(self.output_snapshot(), 800)
         )))
     }
 
