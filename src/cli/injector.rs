@@ -191,7 +191,7 @@ fn parent_pid_of(pid: u32) -> Option<u32> {
     if rc <= 0 {
         return None;
     }
-    Some(info.pbi_ppid as u32)
+    Some(info.pbi_ppid)
 }
 
 #[cfg(all(unix, target_os = "linux"))]

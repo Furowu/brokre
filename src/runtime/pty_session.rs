@@ -153,21 +153,18 @@ impl PtySession {
                         .ok()
                         .and_then(|mut g| g.take())
                         .unwrap_or_else(|| "password".into());
-                    match crate::runtime::injector_child::spawn_injector_child(
+                    if let Ok((0, _, _, _)) = crate::runtime::injector_child::spawn_injector_child(
                         record_id,
                         master_raw_fd,
                         &field,
                     ) {
-                        Ok((code, _, _, _)) if code == 0 => {
-                            if let Ok(mut g) = injected_fields_inj.lock() {
-                                g.insert(field);
-                            }
-                            let n = inject_done_count_inj.fetch_add(1, Ordering::AcqRel) + 1;
-                            if n >= inject_fields_inj.len() {
-                                inject_completed_inj.store(true, Ordering::Release);
-                            }
+                        if let Ok(mut g) = injected_fields_inj.lock() {
+                            g.insert(field);
                         }
-                        _ => {}
+                        let n = inject_done_count_inj.fetch_add(1, Ordering::AcqRel) + 1;
+                        if n >= inject_fields_inj.len() {
+                            inject_completed_inj.store(true, Ordering::Release);
+                        }
                     }
                 }
 

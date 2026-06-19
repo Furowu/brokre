@@ -253,10 +253,12 @@ fn has_tty_request_flag(argv: &[String]) -> bool {
         if a == "-t" || a == "-tt" {
             return true;
         }
-        if a.len() >= 2 && a.starts_with('-') && !a.starts_with("--") {
-            if a[1..].chars().any(|c| c == 't') {
-                return true;
-            }
+        if a.len() >= 2
+            && a.starts_with('-')
+            && !a.starts_with("--")
+            && a[1..].chars().any(|c| c == 't')
+        {
+            return true;
         }
         if a == "-o" && i + 1 < end {
             let v = argv[i + 1].to_ascii_lowercase();
