@@ -1,23 +1,9 @@
 //! In-process persistent elevated PTY sessions for MCP (Unix).
 
-use crate::audit::logger::{append, redact_args, AuditEvent};
-use crate::runtime::elevated::{
-    compose_ssh_bootstrap_argv, ElevatedMode, SessionKey, SessionPolicy,
-};
-use crate::runtime::pty_session::PtySession;
-use crate::runtime::session_markers::READY;
-use crate::runtime::ssh_identity::{
-    insert_force_tty_for_privileged_remote, insert_identity_arg, insert_mux_options,
-    materialize_identity,
-};
+#[cfg(not(unix))]
+use crate::runtime::elevated::{SessionKey, SessionPolicy};
+#[cfg(not(unix))]
 use crate::utils::errors::{BrokreError, Result};
-use crate::vault::keychain::get_or_init_audit_hmac_key;
-use crate::vault::model::SecretRecord;
-use crate::vault::store::VaultStore;
-use chrono::{Duration as ChronoDuration, Utc};
-use std::collections::HashMap;
-use std::time::{Duration, Instant};
-use uuid::Uuid;
 
 pub struct RunResult {
     pub exit_code: i32,
@@ -27,21 +13,55 @@ pub struct RunResult {
     pub idle_expires_at: String,
 }
 
-struct SessionEntry {
-    pty: PtySession,
-    created_at: Instant,
-    last_active: Instant,
+pub fn mcp_session_enabled() -> bool {
+    #[cfg(not(unix))]
+    {
+        return false;
+    }
+    #[cfg(unix)]
+    std::env::var("BROKRE_MCP_SESSION")
+        .ok()
+        .map(|v| v != "0" && !v.eq_ignore_ascii_case("false"))
+        .unwrap_or(true)
 }
 
-pub struct ElevatedSessionPool {
-    sessions: HashMap<SessionKey, SessionEntry>,
-    idle_limit: Duration,
-    max_lifetime: Duration,
-    cmd_timeout: Duration,
-    bootstrap_timeout: Duration,
-}
+#[cfg(unix)]
+mod imp {
+    use super::RunResult;
+    use crate::audit::logger::{append, redact_args, AuditEvent};
+    use crate::runtime::elevated::{
+        compose_ssh_bootstrap_argv, ElevatedMode, SessionKey, SessionPolicy,
+    };
+    use crate::runtime::pty_session::PtySession;
+    use crate::runtime::session_markers::READY;
+    use crate::runtime::ssh_identity::{
+        insert_force_tty_for_privileged_remote, insert_identity_arg, insert_mux_options,
+        materialize_identity,
+    };
+    use crate::utils::errors::{BrokreError, Result};
+    use crate::vault::keychain::get_or_init_audit_hmac_key;
+    use crate::vault::model::SecretRecord;
+    use crate::vault::store::VaultStore;
+    use chrono::{Duration as ChronoDuration, Utc};
+    use std::collections::HashMap;
+    use std::time::{Duration, Instant};
+    use uuid::Uuid;
 
-impl ElevatedSessionPool {
+    struct SessionEntry {
+        pty: PtySession,
+        created_at: Instant,
+        last_active: Instant,
+    }
+
+    pub struct ElevatedSessionPool {
+        sessions: HashMap<SessionKey, SessionEntry>,
+        idle_limit: Duration,
+        max_lifetime: Duration,
+        cmd_timeout: Duration,
+        bootstrap_timeout: Duration,
+    }
+
+    impl ElevatedSessionPool {
     pub fn from_env() -> Self {
         Self {
             sessions: HashMap::new(),
@@ -186,15 +206,15 @@ impl ElevatedSessionPool {
             idle_expires_at: idle_expires_iso(self.idle_limit),
         })
     }
-}
-
-impl Drop for ElevatedSessionPool {
-    fn drop(&mut self) {
-        self.shutdown_all();
     }
-}
 
-fn env_u64(name: &str, default: u64) -> u64 {
+    impl Drop for ElevatedSessionPool {
+        fn drop(&mut self) {
+            self.shutdown_all();
+        }
+    }
+
+    fn env_u64(name: &str, default: u64) -> u64 {
     std::env::var(name)
         .ok()
         .and_then(|v| v.parse().ok())
@@ -283,16 +303,33 @@ fn audit_action(
         hmac: None,
     };
     let _ = append(&mut ev, &audit_key);
+    }
 }
 
-pub fn mcp_session_enabled() -> bool {
-    #[cfg(not(unix))]
-    {
-        return false;
+#[cfg(unix)]
+pub use imp::ElevatedSessionPool;
+
+#[cfg(not(unix))]
+pub struct ElevatedSessionPool;
+
+#[cfg(not(unix))]
+impl ElevatedSessionPool {
+    pub fn from_env() -> Self {
+        Self
     }
-    #[cfg(unix)]
-    std::env::var("BROKRE_MCP_SESSION")
-        .ok()
-        .map(|v| v != "0" && !v.eq_ignore_ascii_case("false"))
-        .unwrap_or(true)
+
+    pub fn sweep_idle(&mut self) {}
+
+    pub fn shutdown_all(&mut self) {}
+
+    pub fn run(
+        &mut self,
+        _key: SessionKey,
+        _command: Option<&str>,
+        _policy: SessionPolicy,
+    ) -> Result<RunResult> {
+        Err(BrokreError::Runtime(
+            "persistent elevated PTY sessions require Unix".into(),
+        ))
+    }
 }
