@@ -152,8 +152,8 @@ pub fn events_from_line(line: &str) -> Vec<AuditEvent> {
         return Vec::new();
     }
     let mut events = Vec::new();
-    let mut stream = serde_json::Deserializer::from_str(trimmed).into_iter::<AuditEvent>();
-    while let Some(result) = stream.next() {
+    let stream = serde_json::Deserializer::from_str(trimmed).into_iter::<AuditEvent>();
+    for result in stream {
         match result {
             Ok(ev) => events.push(ev),
             Err(_) => break,
@@ -190,7 +190,7 @@ pub fn append(event: &mut AuditEvent, hmac_key: &[u8; 32]) -> Result<()> {
         let reader = BufReader::new(&file);
         reader
             .lines()
-            .filter_map(|l| l.ok())
+            .map_while(|l| l.ok())
             .last()
             .and_then(|last| events_from_line(&last).last().and_then(|ev| ev.hmac.clone()))
     };

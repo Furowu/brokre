@@ -46,8 +46,8 @@ pub fn run_list(opts: ListOptions) -> Result<()> {
         opts.offset
     );
     println!(
-        "{:<24} {:<16} {:<8} {:<16} {:<6} {:<6} {}",
-        "TIME", "ACTION", "SOURCE", "PROFILE/NAME", "EXIT", "MS", "COMMAND"
+        "{:<24} {:<16} {:<8} {:<16} {:<6} {:<6} COMMAND",
+        "TIME", "ACTION", "SOURCE", "PROFILE/NAME", "EXIT", "MS"
     );
     for ev in &result.events {
         let profile_name = format!("{}/{}", ev.profile, ev.name);
