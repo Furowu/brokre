@@ -7,12 +7,12 @@
     "url": "https://github.com/Furowu/brokre",
     "source": "github"
   },
-  "version": "0.1.22",
+  "version": "0.1.30",
   "packages": [
     {
       "registryType": "npm",
       "identifier": "brokre",
-      "version": "0.1.22",
+      "version": "0.1.30",
       "transport": {
         "type": "stdio"
       }
