@@ -12,7 +12,9 @@ use std::collections::HashMap;
 use std::fs;
 use std::sync::OnceLock;
 
-const REMOTE_SUDO_PASSWORD_PROMPT: &str = r"\[sudo\] password for [^:]+:\s*$";
+/// Classic OpenSSH `sudo` and Rust `sudo-rs` remote password prompts (post-SSH-auth).
+const REMOTE_SUDO_PASSWORD_PROMPT: &str =
+    r"(?:\[sudo\]\s+password\s+for\s+[^:]+:|\[sudo:[^\]]*\]\s+[Pp]assword:)\s*$";
 const REMOTE_SU_PASSWORD_PROMPT: &str = r"(?:^|\r?\n)Password:\s*$";
 
 /// Return the compiled prompt patterns for the given CLI binary name.
@@ -84,7 +86,7 @@ fn builtin_patterns(binary: &str) -> &'static [&'static str] {
         "docker" | "podman" => &[r"Password:\s*$"],
         "clickhouse-client" => &[r"Password for user[^:]*:\s*$", r"Password:\s*$"],
         "kubectl" => &[r"Please enter password:\s*$"],
-        "sudo" => &[r"\[sudo\] password for [^:]+:\s*$"],
+        "sudo" => &[REMOTE_SUDO_PASSWORD_PROMPT],
         "su" => &[r"Password:\s*$"],
         // Generic catch-all
         _ => &[r"[Pp]assword[^:]*:\s*$", r"[Pp]assphrase[^:]*:\s*$"],
@@ -158,6 +160,12 @@ mod tests {
             .any(|p| p.is_match(b"[sudo] password for deploy: ")));
         assert!(is_remote_sudo_password_prompt(
             b"Last login: Mon May 18 08:41:12 2026\n[sudo] password for deploy: "
+        ));
+        assert!(pats.iter().any(|p| {
+            p.is_match(b"[sudo: authenticate] Password: ")
+        }));
+        assert!(is_remote_sudo_password_prompt(
+            b"rowu3@host:~$ sudo -i\n[sudo: authenticate] Password: "
         ));
     }
 
