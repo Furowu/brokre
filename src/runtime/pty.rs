@@ -19,7 +19,6 @@ use std::time::{Duration, Instant};
 #[cfg(unix)]
 use std::os::unix::io::RawFd;
 
-#[cfg(unix)]
 use uuid::Uuid;
 
 /// How to satisfy a password prompt for the wrapped CLI.

@@ -10,6 +10,31 @@
 
 由 [Techinone](https://www.tio.tech)（成都同创合一科技有限公司）开发维护。
 
+## 0.2.3 新特性 — 堡垒机助力集群管理
+
+**0.2.3** 进一步强化 brokre 作为**多主机 / 集群场景的堡垒代理**：一台笔记本、一个 MCP 会话，即可操作多台内网目标 — 无需把 vault 密码复制进 AI 上下文，也无需在跳板机上散落明文凭据。
+
+| 优势 | 实际效果 |
+|------|----------|
+| **统一控制面** | 注册堡垒 SSH 别名（`b150`），从远端 brokre 同步内网别名，用 `brokre list` / MCP `brokre_list` 驱动整个集群 |
+| **智能路由** | `b150::db`、`b150::app-01`、多跳 `b1::b2::inner` — 路由分隔符 `::`；直连不可达时 AI 自动选择 `access=via_b150` |
+| **密钥留在堡垒** | 路由执行在跳板机调用 `~/.brokre/bin/brokre`；笔记本只缓存元数据并做人机门控，不持有内网主机密码 |
+| **人机门控 + Agent 友好** | 堡垒出站需解锁（TTY、`/bastion-auth` 或 MCP URL elicitation）；门控鉴权不受 manage UI 空闲过期影响，长时 MCP 任务可继续解锁 |
+| **集群安全默认** | 毫秒级可达性探测与并发上限；默认列表隐藏不可达本地别名；环路检测与审计 `route`/`bastion` 字段 |
+| **跨路由提权** | `brokre_exec_elevated` 及 `sudo`/`sudo -i` 路径支持经堡垒执行，含会话复用与 PTY 加固 |
+
+K8s / 数据库 / 批处理集群经单一入口主机访问的典型流程：
+
+```bash
+brokre bastion enable b150
+brokre bastion sync b150 --json          # 拉取内网别名目录
+brokre bastion unlock
+brokre list --json                       # b150::db、b150::worker-01 …
+brokre ssh b150::db "systemctl status"   # MCP：brokre_exec 路由别名
+```
+
+完整配置见下文 [跨网段列表继承](#跨网段列表继承堡垒代理) 与 [堡垒代理](#堡垒代理跨网段--内网入口)。
+
 ## CLI 安全防护（核心）
 
 brokre 围绕一条原则构建：**密钥远离 AI 可达范围，且不出现在可观测的进程状态中。**

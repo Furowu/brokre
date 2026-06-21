@@ -10,6 +10,31 @@
 
 Developed by [Techinone](https://www.tio.tech) (成都同创合一科技有限公司).
 
+## What's New in 0.2.3 — Bastion for cluster management
+
+**0.2.3** strengthens brokre as a **bastion broker for multi-host / cluster operations**: one laptop, one MCP session, many inner targets — without copying vault passwords into AI context or scattering secrets across jump hosts.
+
+| Advantage | What it means in practice |
+|-----------|----------------------------|
+| **Single control plane** | Register a bastion SSH alias (`b150`), sync inner aliases from remote brokre, and drive the whole cluster from `brokre list` / MCP `brokre_list` |
+| **Smart routing** | `b150::db`, `b150::app-01`, multi-hop `b1::b2::inner` — route separator `::`; AI picks `access=via_b150` when direct LAN paths are down |
+| **Secrets stay on the bastion** | Routed exec runs `~/.brokre/bin/brokre` on the jump host; laptop holds metadata and session gate, not inner-host passwords |
+| **Human gate, agent-friendly** | Bastion outbound requires unlock (TTY, `/bastion-auth`, or MCP URL elicitation); gate auth survives manage UI idle expiry so long MCP runs keep working |
+| **Cluster-safe defaults** | Reachability probes with ms timeouts and concurrency caps; unreachable local aliases hidden from default list; loop detection and audit `route`/`bastion` fields |
+| **Privileged ops over routes** | `brokre_exec_elevated` and `sudo`/`sudo -i` paths work through bastions with session reuse and PTY hardening |
+
+Typical flow for a K8s / DB / batch cluster behind one entry host:
+
+```bash
+brokre bastion enable b150
+brokre bastion sync b150 --json          # pull inner alias catalog
+brokre bastion unlock
+brokre list --json                       # b150::db, b150::worker-01, …
+brokre ssh b150::db "systemctl status"   # MCP: brokre_exec with routed alias
+```
+
+See [Cross-network list inheritance](#cross-network-list-inheritance-bastion-broker) and [Bastion proxy](#bastion-proxy-cross-network--intranet-entry) below for setup details.
+
 ## CLI security (core)
 
 brokre is built around one rule: **secrets stay out of the AI's reach and out of observable process state.**
