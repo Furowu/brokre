@@ -44,10 +44,11 @@ portable-pty = "0.8"
 crossterm = "0.27"
 signal-hook = { version = "0.3", features = ["iterator"] }
 tiny_http = "0.12"
+url = "2.5"
 
-rmcp = { version = "1.7", features = ["server", "macros", "transport-io"] }
+rmcp = { version = "1.7", features = ["server", "macros", "transport-io", "elicitation"] }
 schemars = "0.8"
-tokio = { version = "1", features = ["rt", "macros", "process", "io-std"] }
+tokio = { version = "1", features = ["rt", "macros", "process", "io-std", "time"] }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
