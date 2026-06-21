@@ -54,7 +54,7 @@ pub fn process_alive(_pid: u32) -> bool {
     false
 }
 
-fn probe_manage(port: u16, token: &str) -> bool {
+pub fn probe_manage(port: u16, token: &str) -> bool {
     let addr: SocketAddr = format!("127.0.0.1:{port}")
         .parse()
         .unwrap_or_else(|_| "127.0.0.1:0".parse().unwrap());

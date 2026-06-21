@@ -10,9 +10,10 @@ use crate::bastion::key::{key_is_set, verify_bastion_key};
 use crate::bastion::registry::{is_registered_bastion, list_bastions};
 use crate::bastion::route::ROUTE_SEP;
 use crate::bastion::session::{gate_required, is_unlocked, unlock_session};
-use crate::manage::instance::find_running_instance;
 use crate::manage::open_browser;
-use crate::manage::server::{run_manage_server_with, IdleBehavior, ManageServer, ManageServerOptions};
+use crate::manage::server::{
+    refresh_live_manage, run_manage_server_with, IdleBehavior, ManageServer, ManageServerOptions,
+};
 use crate::security::prompt::prompt_passphrase;
 use crate::security::tty::{stdin_is_real_tty, stdout_is_real_tty};
 use crate::utils::errors::{BrokreError, Result};
@@ -36,10 +37,7 @@ pub fn poll_timeout() -> Duration {
 }
 
 fn auto_open_enabled() -> bool {
-    std::env::var("BROKRE_BASTION_NO_AUTO_OPEN")
-        .ok()
-        .as_deref()
-        != Some("1")
+    std::env::var("BROKRE_BASTION_NO_AUTO_OPEN").ok().as_deref() != Some("1")
 }
 
 fn audit_bastion(action: &str, source: &str) {
@@ -98,10 +96,94 @@ pub fn needs_unlock_for_list(probe: bool, include_bastions: bool) -> bool {
     gate_required() && !is_unlocked() && list_touches_bastion_outbound(probe, include_bastions)
 }
 
-pub fn bastion_auth_url(server: &ManageServer, elicitation_id: &str) -> String {
-    format!(
-        "http://127.0.0.1:{}/bastion-auth?t={}&elicitation_id={}",
-        server.port, server.token, elicitation_id
+/// Context shown on the bastion auth page so the user knows who requested unlock.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct BastionAuthContext {
+    pub elicitation_id: String,
+    /// `mcp` or `cli`.
+    pub channel: Option<String>,
+    /// MCP tool name (e.g. `brokre_list`) when applicable.
+    pub tool: Option<String>,
+    /// Human-readable MCP client label (e.g. `Cursor`).
+    pub client: Option<String>,
+    pub client_version: Option<String>,
+}
+
+impl BastionAuthContext {
+    pub fn cli(elicitation_id: String) -> Self {
+        Self {
+            elicitation_id,
+            channel: Some("cli".into()),
+            tool: None,
+            client: Some("brokre CLI".into()),
+            client_version: None,
+        }
+    }
+
+    pub fn mcp_from_env(elicitation_id: String) -> Self {
+        let client = std::env::var("BROKRE_MCP_CLIENT")
+            .ok()
+            .filter(|s| !s.is_empty());
+        let client_version = std::env::var("BROKRE_MCP_CLIENT_VERSION")
+            .ok()
+            .filter(|s| !s.is_empty());
+        let tool = std::env::var("BROKRE_MCP_TOOL")
+            .ok()
+            .filter(|s| !s.is_empty());
+        Self {
+            elicitation_id,
+            channel: Some("mcp".into()),
+            tool,
+            client,
+            client_version,
+        }
+    }
+}
+
+pub fn bastion_auth_url(server: &ManageServer, ctx: &BastionAuthContext) -> String {
+    let server = crate::manage::refresh_live_manage(None)
+        .or_else(|| crate::manage::refresh_live_manage(Some(server)))
+        .unwrap_or_else(|| server.clone());
+    let mut url = url::Url::parse(&format!("http://127.0.0.1:{}/bastion-auth", server.port))
+        .expect("valid bastion auth base url");
+    {
+        let mut pairs = url.query_pairs_mut();
+        pairs.append_pair("t", &server.token);
+        pairs.append_pair("elicitation_id", &ctx.elicitation_id);
+        if let Some(channel) = &ctx.channel {
+            pairs.append_pair("channel", channel);
+        }
+        if let Some(tool) = &ctx.tool {
+            pairs.append_pair("tool", tool);
+        }
+        if let Some(client) = &ctx.client {
+            pairs.append_pair("client", client);
+        }
+        if let Some(version) = &ctx.client_version {
+            pairs.append_pair("client_version", version);
+        }
+    }
+    url.to_string()
+}
+
+pub fn refresh_manage_for_gate(stale: Option<&ManageServer>) -> Result<ManageServer> {
+    refresh_live_manage(stale).ok_or_else(|| {
+        BrokreError::Runtime(
+            "brokre manage server not running — start `brokre manage` or retry the MCP tool".into(),
+        )
+    })
+}
+
+pub fn manage_unreachable(err: &BrokreError) -> bool {
+    matches!(
+        err,
+        BrokreError::Io(e)
+            if matches!(
+                e.kind(),
+                std::io::ErrorKind::ConnectionRefused
+                    | std::io::ErrorKind::ConnectionReset
+                    | std::io::ErrorKind::NotFound
+            )
     )
 }
 
@@ -128,7 +210,8 @@ pub fn ensure_outbound_unlocked() -> Result<()> {
 fn ensure_cli_unlock() -> Result<()> {
     if !stdin_is_real_tty() || !stdout_is_real_tty() {
         return Err(BrokreError::Cli(
-            "bastion outbound access locked — run from a terminal or `brokre bastion unlock`".into(),
+            "bastion outbound access locked — run from a terminal or `brokre bastion unlock`"
+                .into(),
         ));
     }
     unlock_via_tty_prompt()
@@ -175,12 +258,8 @@ pub fn unlock_via_tty_prompt() -> Result<()> {
 }
 
 fn ensure_manage_for_auth() -> Result<ManageServer> {
-    if let Some(rec) = find_running_instance() {
-        return Ok(ManageServer {
-            port: rec.port,
-            token: rec.token.clone(),
-            url: rec.url(),
-        });
+    if let Some(server) = refresh_live_manage(None) {
+        return Ok(server);
     }
     run_manage_server_with(ManageServerOptions {
         onboard: false,
@@ -198,20 +277,25 @@ pub fn unlock_via_browser_poll(source: &str) -> Result<()> {
     if is_unlocked() {
         return Ok(());
     }
-    let server = ensure_manage_for_auth()?;
+    let mut server = ensure_manage_for_auth()?;
     let elicitation_id = Uuid::new_v4().to_string();
-    let url = bastion_auth_url(&server, &elicitation_id);
+    let ctx = if source == "mcp" {
+        BastionAuthContext::mcp_from_env(elicitation_id)
+    } else {
+        BastionAuthContext::cli(elicitation_id)
+    };
+    let url = bastion_auth_url(&server, &ctx);
     eprintln!("brokre: bastion locked — opening auth page in browser…");
     let url_clone = url.clone();
     thread::spawn(move || {
         thread::sleep(Duration::from_millis(200));
         let _ = open_browser(&url_clone);
     });
-    poll_until_unlocked_sync(&server, poll_timeout(), source)
+    poll_until_unlocked_sync(&mut server, poll_timeout(), source)
 }
 
 pub fn poll_until_unlocked_sync(
-    server: &ManageServer,
+    server: &mut ManageServer,
     timeout: Duration,
     source: &str,
 ) -> Result<()> {
@@ -221,9 +305,16 @@ pub fn poll_until_unlocked_sync(
             audit_bastion("bastion/unlock", source);
             return Ok(());
         }
-        if fetch_unlocked_status(server.port, &server.token)? {
-            audit_bastion("bastion/unlock", source);
-            return Ok(());
+        match fetch_unlocked_status(server.port, &server.token) {
+            Ok(true) => {
+                audit_bastion("bastion/unlock", source);
+                return Ok(());
+            }
+            Ok(false) => {}
+            Err(e) if manage_unreachable(&e) => {
+                *server = refresh_manage_for_gate(Some(server))?;
+            }
+            Err(e) => return Err(e),
         }
         thread::sleep(Duration::from_millis(500));
     }
@@ -243,9 +334,7 @@ pub fn fetch_unlocked_status(port: u16, token: &str) -> Result<bool> {
     let body = resp.split("\r\n\r\n").nth(1).unwrap_or(&resp);
     let v: serde_json::Value =
         serde_json::from_str(body).map_err(|e| BrokreError::Runtime(e.to_string()))?;
-    Ok(v.get("unlocked")
-        .and_then(|u| u.as_bool())
-        .unwrap_or(false))
+    Ok(v.get("unlocked").and_then(|u| u.as_bool()).unwrap_or(false))
 }
 
 #[cfg(test)]
@@ -276,15 +365,69 @@ mod tests {
     }
 
     #[test]
+    fn bastion_auth_url_includes_caller_context() {
+        let saved = std::env::var_os("HOME");
+        let tmp = tempfile::tempdir().unwrap();
+        std::env::set_var("HOME", tmp.path());
+        let server = ManageServer {
+            port: 12345,
+            token: "tok".into(),
+            url: "http://127.0.0.1:12345/?t=tok".into(),
+        };
+        let ctx = BastionAuthContext {
+            elicitation_id: "e1".into(),
+            channel: Some("mcp".into()),
+            tool: Some("brokre_list".into()),
+            client: Some("Cursor".into()),
+            client_version: Some("1.0".into()),
+        };
+        let url = bastion_auth_url(&server, &ctx);
+        match saved {
+            Some(v) => std::env::set_var("HOME", v),
+            None => std::env::remove_var("HOME"),
+        }
+        assert!(url.contains("t=tok"));
+        assert!(url.contains("elicitation_id=e1"));
+        assert!(url.contains("channel=mcp"));
+        assert!(url.contains("tool=brokre_list"));
+        assert!(url.contains("client=Cursor"));
+        assert!(url.contains("client_version=1.0"));
+    }
+
+    #[test]
+    fn mcp_auth_context_reads_child_process_env() {
+        with_env_vars(
+            &[
+                ("BROKRE_MCP_CLIENT", Some("Cursor")),
+                ("BROKRE_MCP_CLIENT_VERSION", Some("1.2.3")),
+                ("BROKRE_MCP_TOOL", Some("brokre_exec")),
+            ],
+            || {
+                let ctx = BastionAuthContext::mcp_from_env("e1".into());
+                assert_eq!(ctx.channel.as_deref(), Some("mcp"));
+                assert_eq!(ctx.client.as_deref(), Some("Cursor"));
+                assert_eq!(ctx.client_version.as_deref(), Some("1.2.3"));
+                assert_eq!(ctx.tool.as_deref(), Some("brokre_exec"));
+            },
+        );
+    }
+
+    #[test]
     fn invocation_from_mcp_detects_server_and_exec_child() {
         with_env_vars(&[("BROKRE_MCP", None), ("BROKRE_MCP_EXEC", None)], || {
             assert!(!invocation_from_mcp());
         });
-        with_env_vars(&[("BROKRE_MCP", Some("1")), ("BROKRE_MCP_EXEC", None)], || {
-            assert!(invocation_from_mcp());
-        });
-        with_env_vars(&[("BROKRE_MCP", None), ("BROKRE_MCP_EXEC", Some("1"))], || {
-            assert!(invocation_from_mcp());
-        });
+        with_env_vars(
+            &[("BROKRE_MCP", Some("1")), ("BROKRE_MCP_EXEC", None)],
+            || {
+                assert!(invocation_from_mcp());
+            },
+        );
+        with_env_vars(
+            &[("BROKRE_MCP", None), ("BROKRE_MCP_EXEC", Some("1"))],
+            || {
+                assert!(invocation_from_mcp());
+            },
+        );
     }
 }

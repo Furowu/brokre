@@ -2,7 +2,8 @@
 
 use crate::bastion::gate::{
     bastion_auth_url, exec_touches_bastion_outbound, fetch_unlocked_status,
-    list_touches_bastion_outbound, poll_timeout,
+    list_touches_bastion_outbound, manage_unreachable, poll_timeout, refresh_manage_for_gate,
+    BastionAuthContext,
 };
 use crate::bastion::session::{gate_required, is_unlocked, load_session};
 use crate::manage::open_browser;
@@ -37,10 +38,7 @@ impl BastionGateInfo {
     }
 
     pub fn for_exec(profile: &str, args: &[String], unlocked_during_call: bool) -> Self {
-        Self::build(
-            gate_applies_for_exec(profile, args),
-            unlocked_during_call,
-        )
+        Self::build(gate_applies_for_exec(profile, args), unlocked_during_call)
     }
 
     fn build(applies: bool, unlocked_during_call: bool) -> Self {
@@ -83,17 +81,60 @@ pub fn needs_unlock_for_list(probe: bool, include_bastions: bool) -> bool {
     crate::bastion::gate::needs_unlock_for_list(probe, include_bastions)
 }
 
+/// Build auth-page context from the MCP peer initialize info and tool name.
+pub fn auth_context_from_peer(
+    peer: &Peer<RoleServer>,
+    tool: &str,
+    elicitation_id: String,
+) -> BastionAuthContext {
+    let (client, client_version) = peer
+        .peer_info()
+        .map(|info| {
+            let impl_ = &info.client_info;
+            let label = impl_
+                .title
+                .as_deref()
+                .filter(|s| !s.is_empty())
+                .unwrap_or(impl_.name.as_str())
+                .to_string();
+            (Some(label), Some(impl_.version.clone()))
+        })
+        .unwrap_or((None, None));
+    BastionAuthContext {
+        elicitation_id,
+        channel: Some("mcp".into()),
+        tool: Some(tool.into()),
+        client,
+        client_version,
+    }
+}
+
+fn elicitation_message(ctx: &BastionAuthContext) -> String {
+    let client = ctx.client.as_deref().unwrap_or("your MCP client");
+    format!("Unlock bastion access in your browser to continue in {client}.")
+}
+
 /// Ensure bastion outbound access is unlocked. Returns `true` when the human unlocked during this call.
 pub async fn ensure_bastion_unlocked(
     server: &ManageServer,
     peer: &Peer<RoleServer>,
+    tool: &str,
 ) -> std::result::Result<bool, McpError> {
     if !gate_required() || is_unlocked() {
         return Ok(false);
     }
 
+    let mut server = refresh_manage_for_gate(None)
+        .or_else(|_| refresh_manage_for_gate(Some(server)))
+        .map_err(|e| McpError::internal_error(format!("manage server unavailable: {e}"), None))?;
+
     let elicitation_id = Uuid::new_v4().to_string();
-    let url = bastion_auth_url(server, &elicitation_id);
+    let ctx = auth_context_from_peer(peer, tool, elicitation_id);
+    let url = bastion_auth_url(&server, &ctx);
+    eprintln!(
+        "brokre mcp: bastion auth on http://127.0.0.1:{}/bastion-auth (manage.json registry)",
+        server.port
+    );
 
     let modes = peer.supported_elicitation_modes();
     if modes.contains(&ElicitationMode::Url) {
@@ -101,9 +142,9 @@ pub async fn ensure_bastion_unlocked(
             .map_err(|e| McpError::internal_error(format!("bastion auth url: {e}"), None))?;
         match peer
             .elicit_url_with_timeout(
-                "Unlock bastion access in your browser to continue this MCP tool call.",
+                elicitation_message(&ctx),
                 parsed,
-                &elicitation_id,
+                &ctx.elicitation_id,
                 Some(poll_timeout()),
             )
             .await
@@ -132,12 +173,12 @@ pub async fn ensure_bastion_unlocked(
         let _ = open_browser(&url_clone);
     });
 
-    poll_until_unlocked_async(server, poll_timeout()).await?;
+    poll_until_unlocked_async(&mut server, poll_timeout()).await?;
     Ok(true)
 }
 
 async fn poll_until_unlocked_async(
-    server: &ManageServer,
+    server: &mut ManageServer,
     timeout: Duration,
 ) -> std::result::Result<(), McpError> {
     let started = std::time::Instant::now();
@@ -145,10 +186,17 @@ async fn poll_until_unlocked_async(
         if is_unlocked() {
             return Ok(());
         }
-        if fetch_unlocked_status(server.port, &server.token)
-            .map_err(|e| McpError::internal_error(e.to_string(), None))?
-        {
-            return Ok(());
+        match fetch_unlocked_status(server.port, &server.token) {
+            Ok(true) => return Ok(()),
+            Ok(false) => {}
+            Err(e) if manage_unreachable(&e) => {
+                *server = refresh_manage_for_gate(Some(server)).map_err(|e| {
+                    McpError::internal_error(format!("manage server unavailable: {e}"), None)
+                })?;
+            }
+            Err(e) => {
+                return Err(McpError::internal_error(e.to_string(), None));
+            }
         }
         tokio::time::sleep(Duration::from_millis(500)).await;
     }

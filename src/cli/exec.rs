@@ -26,8 +26,8 @@ use crate::vault::keychain::get_or_init_audit_hmac_key;
 use crate::vault::keychain::get_or_init_master_kek;
 use crate::vault::model::SecretRecord;
 use crate::vault::service::{
-    auto_save, connection_token_index, infer_host, rewrite_scp_remote_spec, save_with_reveal_prompt,
-    scp_remote_host_token, suggest_name,
+    auto_save, connection_token_index, infer_host, rewrite_scp_remote_spec,
+    save_with_reveal_prompt, scp_remote_host_token, suggest_name,
 };
 use crate::vault::store::VaultStore;
 use chrono::Utc;
@@ -289,6 +289,10 @@ fn exec_saved(
             &mut argv,
             &resolved.trailing,
         );
+        crate::runtime::ssh_identity::insert_force_tty_for_routed_interactive(
+            &mut argv,
+            &resolved.trailing,
+        );
     }
     #[cfg(unix)]
     let _key_guard = if is_openssh_profile(profile) {
@@ -313,6 +317,65 @@ fn exec_saved(
         None
     };
     #[cfg(unix)]
+    let user_trailing =
+        crate::runtime::ssh_identity::routed_bastion_user_trailing(&resolved.trailing)
+            .unwrap_or(resolved.trailing.as_slice());
+    #[cfg(unix)]
+    let interactive_elevated =
+        crate::runtime::ssh_identity::remote_command_needs_tty(user_trailing)
+            && user_trailing
+                .windows(2)
+                .any(|w| w[0] == "sudo" && w[1] == "-i");
+    #[cfg(unix)]
+    let is_bastion_outer_hop =
+        crate::runtime::ssh_identity::is_routed_bastion_trailing(&resolved.trailing);
+    #[cfg(unix)]
+    let routed_inner_passive = std::env::var_os("BROKRE_ROUTED_INNER").is_some();
+    #[cfg(unix)]
+    let inner_route = if is_bastion_outer_hop {
+        crate::runtime::ssh_identity::routed_bastion_inner_alias(&resolved.trailing).and_then(
+            |inner_name| {
+                let routed_name = format!("{}::{}", rec.name, inner_name);
+                lookup_profiles(profile).into_iter().find_map(|lp| {
+                    store
+                        .get(lp, &routed_name)
+                        .ok()
+                        .flatten()
+                        .or_else(|| store.get(lp, inner_name).ok().flatten())
+                        .map(|r| {
+                            let hint = r
+                                .host_alias
+                                .clone()
+                                .or_else(|| {
+                                    crate::runtime::ssh_identity::openssh_connection_target(
+                                        &r.saved_args,
+                                    )
+                                })
+                                .unwrap_or_else(|| inner_name.to_string());
+                            (r.id, hint)
+                        })
+                })
+            },
+        )
+    } else {
+        None
+    };
+    #[cfg(unix)]
+    let inner_vault_record = inner_route.as_ref().map(|(id, _)| *id);
+    #[cfg(unix)]
+    let inner_host_hint = inner_route.map(|(_, host)| host);
+    #[cfg(unix)]
+    let pty_options = crate::runtime::pty::PtyRunOptions {
+        bastion_outer_hop: is_bastion_outer_hop,
+        defer_stdin_forward: interactive_elevated && !is_bastion_outer_hop && !routed_inner_passive,
+        inner_vault_record,
+        inner_host_hint,
+        inject_disabled: false,
+        passive_inner_ssh: routed_inner_passive,
+    };
+    #[cfg(unix)]
+    let exec_cred = PtyCredential::VaultRecord(rec.id);
+    #[cfg(unix)]
     let result = if crate::runtime::pipe_exec::should_use_pipe_mode(
         profile,
         crate::security::tty::stdin_is_pipe(),
@@ -320,12 +383,7 @@ fn exec_saved(
     ) {
         crate::runtime::pipe_exec::run(profile, &argv, rec.id)?
     } else {
-        crate::runtime::pty::run(
-            profile,
-            &argv,
-            PtyCredential::VaultRecord(rec.id),
-            &patterns,
-        )?
+        crate::runtime::pty::run(profile, &argv, exec_cred, &patterns, pty_options)?
     };
     #[cfg(not(unix))]
     let result = {
@@ -339,6 +397,7 @@ fn exec_saved(
             &argv,
             PtyCredential::Secret(password),
             &patterns,
+            crate::runtime::pty::PtyRunOptions::default(),
         )?
     };
     let dur = start.elapsed().as_millis() as u64;
@@ -404,7 +463,13 @@ fn exec_fresh(
 
     let patterns = patterns_for(&profile);
     let start = Instant::now();
-    let result = crate::runtime::pty::run(&binary, &args, PtyCredential::None, &patterns)?;
+    let result = crate::runtime::pty::run(
+        &binary,
+        &args,
+        PtyCredential::None,
+        &patterns,
+        crate::runtime::pty::PtyRunOptions::default(),
+    )?;
     let dur = start.elapsed().as_millis() as u64;
     // Audit
     let mut ev = AuditEvent {
@@ -663,10 +728,7 @@ mod tests {
                 .expect("scp should borrow ssh record by host");
             assert_eq!(
                 resolved.compose_argv(&rec, "scp"),
-                vec![
-                    "/etc/hosts".to_string(),
-                    "root@10.0.0.1:/tmp/x".to_string()
-                ]
+                vec!["/etc/hosts".to_string(), "root@10.0.0.1:/tmp/x".to_string()]
             );
         });
     }
@@ -713,11 +775,7 @@ mod tests {
             rec.saved_args = vec!["deploy@10.0.0.1".into()];
             store.insert(rec).unwrap();
 
-            let args = vec![
-                "-v".into(),
-                "prod".into(),
-                "hostname".into(),
-            ];
+            let args = vec!["-v".into(), "prod".into(), "hostname".into()];
             let (rec, resolved) = resolve_record(&store, "ssh", &args)
                 .unwrap()
                 .expect("alias should resolve");

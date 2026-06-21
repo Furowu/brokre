@@ -59,7 +59,7 @@
 ## T10: Local manage web UI
 
 - **Attack**: Malicious site or AI agent calls `http://127.0.0.1:<port>/reveal` or CSRF-writes credentials.
-- **Mitigation**: No reveal/export endpoint; passwords never appear in HTTP responses. Server binds loopback only. Write APIs require `Authorization: Bearer <session_token>`. Delete/rotate require reveal passphrase verification; literal `YES` is accepted only when `reveal_protected == false` (auto-saved records). Bastion key setup/rotation uses `POST /api/bastion/set-key` (write auth only; Argon2id verifier, clears active unlock session). Embedded MCP manage omits session tokens from stderr; idle timeout marks the session expired (auth rejected). Standalone `brokre manage` prints the full URL only to a human terminal.
+- **Mitigation**: No reveal/export endpoint; passwords never appear in HTTP responses. Server binds loopback only. Write APIs require `Authorization: Bearer <session_token>`. Delete/rotate require reveal passphrase verification; literal `YES` is accepted only when `reveal_protected == false` (auto-saved records). Bastion key setup/rotation uses `POST /api/bastion/set-key` (write auth only; Argon2id verifier, clears active unlock session). Embedded MCP manage omits session tokens from stderr; idle timeout marks the Manage UI session expired (general auth rejected). Bastion gate unlock/status may still use the same token after idle expiry, but a successful bastion unlock does not revive the general Manage API session. Standalone `brokre manage` prints the full URL only to a human terminal.
 - **Residual risk**: Browser extensions or local malware on the same host can attempt localhost requests while `brokre manage` is running and the session is active. `brokre reveal` remains TTY-gated (T2) and is not exposed via HTTP.
 
 ## T11: MCP server exposes secrets to AI
@@ -83,7 +83,7 @@
 ## T14: Bastion unlock bypass / session forgery
 
 - **Attack**: Malware writes a fake `~/.brokre/run/bastion_session.json` or calls unlock APIs without knowing the bastion key.
-- **Mitigation**: Session file mode 0600; only manage `POST /api/bastion/unlock` or `POST /api/bastion/set-key` (Bearer write auth + Argon2id verifier) or TTY `brokre bastion unlock` / `brokre bastion set-key` create or rotate keys and sessions. MCP uses URL-mode elicitation (sensitive key never in MCP client) or localhost browser + status polling. Unlock/deny/set-key events are audit-logged (HMAC v4 with `bastion` field).
+- **Mitigation**: Session file mode 0600; only manage `POST /api/bastion/unlock` (Bearer session token + Argon2id verifier), `POST /api/bastion/set-key` (Bearer write auth + Argon2id verifier), or TTY `brokre bastion unlock` / `brokre bastion set-key` create or rotate keys and sessions. MCP uses URL-mode elicitation (sensitive key never in MCP client) or localhost browser + status polling. Gate unlock/status remain available after embedded manage idle expiry so MCP/CLI unlock flows keep working, but they do not re-enable general Manage API auth. Unlock/deny/set-key events are audit-logged (HMAC v4 with `bastion` field).
 - **Residual risk**: Root on the laptop can still patch brokre or replace the binary; bastion gate is a human intent latch, not anti-root.
 
 ## Future Work

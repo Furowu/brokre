@@ -188,6 +188,7 @@ Runs a command on a saved SSH host with `sudo`, `sudo -i` environment (`sudo_log
 | `BROKRE_MCP_SESSION_IDLE_SECS` | Idle session teardown (default: `600`) |
 | `BROKRE_MCP_SESSION_MAX_SECS` | Max session lifetime (default: `1800`) |
 | `BROKRE_MCP_SESSION_CMD_TIMEOUT` | Per remote command timeout in seconds (default: `120`) |
+| `BROKRE_BASTION_NO_AUTO_OPEN` | Set to `1` to skip browser on bastion gate unlock (non-TTY) |
 
 ## License
 

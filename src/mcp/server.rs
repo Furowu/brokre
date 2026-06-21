@@ -9,7 +9,8 @@ use crate::bastion::mcp_gate::{
     ensure_bastion_unlocked, needs_unlock_for_exec, needs_unlock_for_list, BastionGateInfo,
 };
 use crate::manage::{
-    open_browser, run_manage_server_with, IdleBehavior, ManageServer, ManageServerOptions,
+    open_browser, refresh_live_manage, run_manage_server_with, IdleBehavior, ManageServer,
+    ManageServerOptions,
 };
 use crate::mcp::elevated_session::{mcp_session_enabled, ElevatedSessionPool, RunResult};
 use crate::runtime::elevated::{SessionKey, SessionPolicy};
@@ -17,12 +18,15 @@ use crate::utils::errors::BrokreError;
 use crate::utils::paths::audit_path;
 use crate::vault::keychain::get_or_init_audit_hmac_key;
 use crate::vault::store::VaultStore;
+use rmcp::transport::stdio;
 use rmcp::{
     handler::server::wrapper::Parameters,
-    model::{CallToolResult, Content, Implementation, ProtocolVersion, ServerCapabilities, ServerInfo},
-    schemars, tool, tool_handler, tool_router, ErrorData as McpError, Peer, ServerHandler, ServiceExt,
+    model::{
+        CallToolResult, Content, Implementation, ProtocolVersion, ServerCapabilities, ServerInfo,
+    },
+    schemars, tool, tool_handler, tool_router, ErrorData as McpError, Peer, ServerHandler,
+    ServiceExt,
 };
-use rmcp::transport::stdio;
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
@@ -144,11 +148,20 @@ impl BrokreMcp {
             .lock()
             .map_err(|_| BrokreError::Runtime("manage server lock poisoned".into()))?;
         if let Some(ref s) = *guard {
-            return Ok(ManageServer {
-                port: s.port,
-                token: s.token.clone(),
-                url: s.url.clone(),
-            });
+            if let Some(live) = refresh_live_manage(None).or_else(|| refresh_live_manage(Some(s))) {
+                if live.port != s.port || live.token != s.token {
+                    eprintln!(
+                        "brokre mcp: manage server moved to port {} (was {})",
+                        live.port, s.port
+                    );
+                }
+                *guard = Some(live.clone());
+                return Ok(live);
+            }
+            *guard = None;
+        } else if let Some(live) = refresh_live_manage(None) {
+            *guard = Some(live.clone());
+            return Ok(live);
         }
         let server = run_manage_server_with(ManageServerOptions {
             onboard,
@@ -216,7 +229,7 @@ impl BrokreMcp {
         let mut unlocked_during_call = false;
         if needs_unlock_for_list(effective.probe, effective.include_bastions) {
             let server = self.ensure_manage_server().map_err(mcp_err)?;
-            unlocked_during_call = ensure_bastion_unlocked(&server, &peer).await?;
+            unlocked_during_call = ensure_bastion_unlocked(&server, &peer, "brokre_list").await?;
         }
         let store = VaultStore::open().map_err(mcp_err)?;
         let mut records = store.list().map_err(mcp_err)?;
@@ -248,10 +261,11 @@ Supports bastion routes like b150::db. Response includes `bastion_gate` unlock m
         Parameters(req): Parameters<ExecRequest>,
         peer: Peer<rmcp::RoleServer>,
     ) -> std::result::Result<CallToolResult, McpError> {
+        let source_env = mcp_source_env(&peer, "brokre_exec");
         let mut unlocked_during_call = false;
         if needs_unlock_for_exec(&req.binary, &req.args) {
             let server = self.ensure_manage_server().map_err(mcp_err)?;
-            unlocked_during_call = ensure_bastion_unlocked(&server, &peer).await?;
+            unlocked_during_call = ensure_bastion_unlocked(&server, &peer, "brokre_exec").await?;
         }
         let gate = BastionGateInfo::for_exec(&req.binary, &req.args, unlocked_during_call);
         if mcp_session_enabled() && req.binary == "ssh" {
@@ -271,7 +285,7 @@ Supports bastion routes like b150::db. Response includes `bastion_gate` unlock m
                 }
             }
         }
-        run_brokre_cli(&req.binary, &req.args, &[], gate).await
+        run_brokre_cli(&req.binary, &req.args, &source_env, gate).await
     }
 
     #[tool(
@@ -286,10 +300,12 @@ Reuses a persistent elevated shell by default. BROKRE_MCP_SESSION=0 disables reu
         Parameters(req): Parameters<ExecElevatedRequest>,
         peer: Peer<rmcp::RoleServer>,
     ) -> std::result::Result<CallToolResult, McpError> {
+        let source_env = mcp_source_env(&peer, "brokre_exec_elevated");
         let mut unlocked_during_call = false;
         if needs_unlock_for_exec("ssh", std::slice::from_ref(&req.alias)) {
             let server = self.ensure_manage_server().map_err(mcp_err)?;
-            unlocked_during_call = ensure_bastion_unlocked(&server, &peer).await?;
+            unlocked_during_call =
+                ensure_bastion_unlocked(&server, &peer, "brokre_exec_elevated").await?;
         }
         let gate = BastionGateInfo::for_exec("ssh", &[req.alias.clone()], unlocked_during_call);
         let mode = crate::runtime::elevated::ElevatedMode::parse(&req.mode).map_err(mcp_err)?;
@@ -306,14 +322,15 @@ Reuses a persistent elevated shell by default. BROKRE_MCP_SESSION=0 disables reu
                 req.user.as_deref(),
             )
             .map_err(mcp_err)?;
-            let args = crate::bastion::route::build_routed_local_argv("ssh", &route, &trailing[1..]);
+            let args =
+                crate::bastion::route::build_routed_local_argv("ssh", &route, &trailing[1..]);
             return run_brokre_cli(
                 "ssh",
                 &args,
-                &[
-                    ("BROKRE_MCP_EXEC", "1"),
-                    ("BROKRE_MCP_ELEVATED", mode.mcp_env_value()),
-                ],
+                &with_extra_env(
+                    &source_env,
+                    &[("BROKRE_MCP_ELEVATED", mode.mcp_env_value())],
+                ),
                 gate,
             )
             .await;
@@ -340,10 +357,10 @@ Reuses a persistent elevated shell by default. BROKRE_MCP_SESSION=0 disables reu
         run_brokre_cli(
             "ssh",
             &args,
-            &[
-                ("BROKRE_MCP_EXEC", "1"),
-                ("BROKRE_MCP_ELEVATED", mode.mcp_env_value()),
-            ],
+            &with_extra_env(
+                &source_env,
+                &[("BROKRE_MCP_ELEVATED", mode.mcp_env_value())],
+            ),
             gate,
         )
         .await
@@ -418,10 +435,43 @@ fn text_json_result(body: &serde_json::Value) -> CallToolResult {
     )])
 }
 
+fn mcp_source_env(peer: &Peer<rmcp::RoleServer>, tool: &str) -> Vec<(String, String)> {
+    let mut env = vec![
+        ("BROKRE_MCP_TOOL".to_string(), tool.to_string()),
+        ("BROKRE_MCP_CLIENT".to_string(), "MCP client".to_string()),
+    ];
+    if let Some(info) = peer.peer_info() {
+        let impl_ = &info.client_info;
+        let client = impl_
+            .title
+            .as_deref()
+            .filter(|s| !s.is_empty())
+            .unwrap_or(impl_.name.as_str());
+        env[1].1 = client.to_string();
+        if !impl_.version.is_empty() {
+            env.push((
+                "BROKRE_MCP_CLIENT_VERSION".to_string(),
+                impl_.version.clone(),
+            ));
+        }
+    }
+    env
+}
+
+fn with_extra_env(base: &[(String, String)], extra: &[(&str, &str)]) -> Vec<(String, String)> {
+    let mut env = base.to_vec();
+    env.extend(
+        extra
+            .iter()
+            .map(|(k, v)| ((*k).to_string(), (*v).to_string())),
+    );
+    env
+}
+
 async fn run_brokre_cli(
     binary: &str,
     args: &[String],
-    extra_env: &[(&str, &str)],
+    extra_env: &[(String, String)],
     gate: BastionGateInfo,
 ) -> std::result::Result<CallToolResult, McpError> {
     let exe = std::env::current_exe().map_err(mcp_err)?;

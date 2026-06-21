@@ -60,7 +60,8 @@ pub fn normalize_private_key_pem(raw: &str) -> String {
 
 pub fn validate_private_key_pem(pem: &str) -> bool {
     let t = normalize_private_key_pem(pem);
-    (t.contains("BEGIN OPENSSH PRIVATE KEY") || t.contains("BEGIN RSA PRIVATE KEY")
+    (t.contains("BEGIN OPENSSH PRIVATE KEY")
+        || t.contains("BEGIN RSA PRIVATE KEY")
         || t.contains("BEGIN EC PRIVATE KEY")
         || t.contains("BEGIN PRIVATE KEY")
         || t.contains("BEGIN DSA PRIVATE KEY"))
@@ -71,8 +72,27 @@ pub fn validate_private_key_pem(pem: &str) -> bool {
 fn openssh_short_takes_value(ch: char) -> bool {
     matches!(
         ch,
-        'b' | 'c' | 'D' | 'E' | 'e' | 'F' | 'I' | 'i' | 'J' | 'L' | 'l' | 'm' | 'O' | 'o' | 'p'
-            | 'P' | 'R' | 'S' | 'W' | 'w' | 'B' | 's'
+        'b' | 'c'
+            | 'D'
+            | 'E'
+            | 'e'
+            | 'F'
+            | 'I'
+            | 'i'
+            | 'J'
+            | 'L'
+            | 'l'
+            | 'm'
+            | 'O'
+            | 'o'
+            | 'p'
+            | 'P'
+            | 'R'
+            | 'S'
+            | 'W'
+            | 'w'
+            | 'B'
+            | 's'
     )
 }
 
@@ -172,8 +192,80 @@ pub fn insert_mux_options(argv: &mut Vec<String>) {
     }
 }
 
-/// True when a remote command (argv after the connection target) needs a TTY (`sudo` / `su`).
-pub fn remote_command_needs_tty(trailing: &[String]) -> bool {
+/// True when argv after the connection target is a bastion-routed remote brokre exec.
+pub fn is_routed_bastion_trailing(trailing: &[String]) -> bool {
+    trailing
+        .first()
+        .is_some_and(|s| crate::utils::paths::remote_shell_token_passthrough(s))
+}
+
+/// Connection target alias in `bastion::inner` routed argv (`[token, ssh, (-tt)?, inner, …]`).
+pub fn routed_bastion_inner_alias(trailing: &[String]) -> Option<&str> {
+    if !is_routed_bastion_trailing(trailing) {
+        return None;
+    }
+    let mut i = 1usize;
+    if trailing.get(i).map(String::as_str) != Some("ssh") {
+        return None;
+    }
+    i += 1;
+    if matches!(
+        trailing.get(i).map(String::as_str),
+        Some("-t") | Some("-tt")
+    ) {
+        i += 1;
+    }
+    let inner = trailing.get(i)?;
+    if inner.starts_with('-') {
+        return None;
+    }
+    Some(inner.as_str())
+}
+
+/// Skip `[token, ssh, (-tt)?, inner]` and return the user command suffix.
+pub fn routed_bastion_user_trailing(trailing: &[String]) -> Option<&[String]> {
+    if !is_routed_bastion_trailing(trailing) {
+        return None;
+    }
+    let mut i = 1usize;
+    if trailing.get(i).map(String::as_str) != Some("ssh") {
+        return None;
+    }
+    i += 1;
+    if matches!(
+        trailing.get(i).map(String::as_str),
+        Some("-t") | Some("-tt")
+    ) {
+        i += 1;
+    }
+    let Some(inner) = trailing.get(i) else {
+        return None;
+    };
+    if inner.starts_with('-') {
+        return None;
+    }
+    i += 1;
+    Some(&trailing[i..])
+}
+
+/// Interactive `brokre ssh bastion::inner` (no user command after the inner alias).
+pub fn is_routed_interactive_trailing(trailing: &[String]) -> bool {
+    routed_bastion_user_trailing(trailing).is_some_and(|user| user.is_empty())
+}
+
+/// Prepend `-tt` before the connection target for interactive bastion routes.
+pub fn insert_force_tty_for_routed_interactive(argv: &mut Vec<String>, trailing: &[String]) {
+    if !is_routed_interactive_trailing(trailing) {
+        return;
+    }
+    if has_tty_request_flag(argv) || has_disable_tty_flag(argv) {
+        return;
+    }
+    let pos = connection_target_index(argv);
+    argv.insert(pos, "-tt".into());
+}
+
+fn user_remote_command_needs_tty(trailing: &[String]) -> bool {
     if trailing.is_empty() {
         return false;
     }
@@ -188,6 +280,26 @@ pub fn remote_command_needs_tty(trailing: &[String]) -> bool {
         return script_invokes_privilege_escalation(script);
     }
     false
+}
+
+/// True when a remote command (argv after the connection target) needs a TTY (`sudo` / `su`).
+pub fn remote_command_needs_tty(trailing: &[String]) -> bool {
+    if let Some(user) = routed_bastion_user_trailing(trailing) {
+        return user_remote_command_needs_tty(user);
+    }
+    user_remote_command_needs_tty(trailing)
+}
+
+/// Prepend `-tt` before the connection target when the remote command uses `sudo` / `su`.
+pub fn insert_force_tty_for_privileged_remote(argv: &mut Vec<String>, trailing: &[String]) {
+    if !remote_command_needs_tty(trailing) {
+        return;
+    }
+    if has_tty_request_flag(argv) || has_disable_tty_flag(argv) {
+        return;
+    }
+    let pos = connection_target_index(argv);
+    argv.insert(pos, "-tt".into());
 }
 
 fn shell_script_from_argv(trailing: &[String]) -> Option<&str> {
@@ -212,16 +324,7 @@ fn script_invokes_privilege_escalation(script: &str) -> bool {
         return true;
     }
     [
-        " sudo ",
-        " su ",
-        ";sudo",
-        "&&sudo",
-        "||sudo",
-        "|sudo",
-        ";su",
-        "&&su",
-        "||su",
-        "|su",
+        " sudo ", " su ", ";sudo", "&&sudo", "||sudo", "|sudo", ";su", "&&su", "||su", "|su",
     ]
     .iter()
     .any(|needle| s.contains(needle))
@@ -274,18 +377,6 @@ fn has_tty_request_flag(argv: &[String]) -> bool {
         i += 1;
     }
     false
-}
-
-/// Prepend `-tt` before the connection target when the remote command uses `sudo` / `su`.
-pub fn insert_force_tty_for_privileged_remote(argv: &mut Vec<String>, trailing: &[String]) {
-    if !remote_command_needs_tty(trailing) {
-        return;
-    }
-    if has_tty_request_flag(argv) || has_disable_tty_flag(argv) {
-        return;
-    }
-    let pos = connection_target_index(argv);
-    argv.insert(pos, "-tt".into());
 }
 
 /// Insert `-i <keyfile>` after leading flags, before the connection target.
@@ -396,7 +487,8 @@ pub fn build_ssh_secret_fields(
             fields.insert("password".into(), pw);
         }
         "key" => {
-            let key = private_key.ok_or_else(|| BrokreError::Vault("private_key is required".into()))?;
+            let key =
+                private_key.ok_or_else(|| BrokreError::Vault("private_key is required".into()))?;
             if key.is_empty() {
                 return Err(BrokreError::Vault("private_key is required".into()));
             }
@@ -410,10 +502,13 @@ pub fn build_ssh_secret_fields(
             }
         }
         "key_and_password" => {
-            let key = private_key.ok_or_else(|| BrokreError::Vault("private_key is required".into()))?;
+            let key =
+                private_key.ok_or_else(|| BrokreError::Vault("private_key is required".into()))?;
             let pw = password.ok_or_else(|| BrokreError::Vault("password is required".into()))?;
             if key.is_empty() || pw.is_empty() {
-                return Err(BrokreError::Vault("private_key and password are required".into()));
+                return Err(BrokreError::Vault(
+                    "private_key and password are required".into(),
+                ));
             }
             let normalized = normalize_private_key_pem(key.expose());
             if !validate_private_key_pem(&normalized) {
@@ -446,7 +541,8 @@ mod tests {
 
     #[test]
     fn normalizes_literal_backslash_n_pem() {
-        let one_line = "-----BEGIN OPENSSH PRIVATE KEY-----\\nabc\\n-----END OPENSSH PRIVATE KEY-----\\n";
+        let one_line =
+            "-----BEGIN OPENSSH PRIVATE KEY-----\\nabc\\n-----END OPENSSH PRIVATE KEY-----\\n";
         let norm = normalize_private_key_pem(one_line);
         assert_eq!(norm.lines().count(), 3);
         assert!(norm.ends_with('\n'));
@@ -468,11 +564,7 @@ mod tests {
 
     #[test]
     fn insert_identity_after_port_flag() {
-        let mut argv = vec![
-            "-p".into(),
-            "9000".into(),
-            "root@10.0.0.1".into(),
-        ];
+        let mut argv = vec!["-p".into(), "9000".into(), "root@10.0.0.1".into()];
         insert_identity_arg(&mut argv, std::path::Path::new("/tmp/k"));
         assert_eq!(
             argv,
@@ -502,9 +594,25 @@ mod tests {
     }
 
     #[test]
+    fn remote_command_needs_tty_for_routed_sudo() {
+        let token = crate::utils::paths::remote_brokre_shell_token().to_string();
+        assert!(remote_command_needs_tty(&[
+            token,
+            "ssh".into(),
+            "lan07".into(),
+            "sudo".into(),
+            "-i".into(),
+        ]));
+    }
+
+    #[test]
     fn remote_command_needs_tty_for_sudo_and_su() {
         assert!(remote_command_needs_tty(&["sudo".into(), "whoami".into()]));
-        assert!(remote_command_needs_tty(&["su".into(), "-".into(), "root".into()]));
+        assert!(remote_command_needs_tty(&[
+            "su".into(),
+            "-".into(),
+            "root".into()
+        ]));
         assert!(!remote_command_needs_tty(&["uptime".into()]));
         assert!(!remote_command_needs_tty(&[]));
         assert!(remote_command_needs_tty(&[
@@ -525,6 +633,35 @@ mod tests {
     }
 
     #[test]
+    fn insert_force_tty_for_routed_interactive_before_target() {
+        let token = crate::utils::paths::remote_brokre_shell_token().to_string();
+        let mut argv = vec![
+            "-v".into(),
+            "bastion@10.0.0.1".into(),
+            token.clone(),
+            "ssh".into(),
+            "-tt".into(),
+            "db".into(),
+        ];
+        insert_force_tty_for_routed_interactive(
+            &mut argv,
+            &[token, "ssh".into(), "-tt".into(), "db".into()],
+        );
+        assert_eq!(
+            argv,
+            vec![
+                "-v".to_string(),
+                "-tt".to_string(),
+                "bastion@10.0.0.1".to_string(),
+                crate::utils::paths::remote_brokre_shell_token().to_string(),
+                "ssh".to_string(),
+                "-tt".to_string(),
+                "db".to_string(),
+            ]
+        );
+    }
+
+    #[test]
     fn insert_force_tty_before_target() {
         let mut argv = vec![
             "-v".into(),
@@ -532,10 +669,7 @@ mod tests {
             "sudo".into(),
             "whoami".into(),
         ];
-        insert_force_tty_for_privileged_remote(
-            &mut argv,
-            &["sudo".into(), "whoami".into()],
-        );
+        insert_force_tty_for_privileged_remote(&mut argv, &["sudo".into(), "whoami".into()]);
         assert_eq!(
             argv,
             vec!["-v", "-tt", "deploy@10.0.0.1", "sudo", "whoami"]
@@ -553,10 +687,7 @@ mod tests {
             "sudo".into(),
             "whoami".into(),
         ];
-        insert_force_tty_for_privileged_remote(
-            &mut argv,
-            &["sudo".into(), "whoami".into()],
-        );
+        insert_force_tty_for_privileged_remote(&mut argv, &["sudo".into(), "whoami".into()]);
         assert_eq!(
             argv,
             vec!["-tt", "deploy@10.0.0.1", "sudo", "whoami"]

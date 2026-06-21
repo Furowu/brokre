@@ -3,13 +3,13 @@ use crate::audit::query::{list, verify_with_stats, AuditQuery};
 use crate::manage::auth::{extract_bearer, token_matches};
 use crate::manage::onboard::mark_onboard_complete;
 use crate::manage::profiles::{detect_profile_groups, profile_available_for_create};
+use crate::runtime::ssh_identity::{
+    auth_methods_from_meta, build_ssh_field_meta, build_ssh_secret_fields,
+};
 use crate::security::secret::SecretString;
 use crate::utils::errors::BrokreError;
 use crate::utils::paths::audit_path;
 use crate::vault::keychain::get_or_init_audit_hmac_key;
-use crate::runtime::ssh_identity::{
-    auth_methods_from_meta, build_ssh_field_meta, build_ssh_secret_fields,
-};
 use crate::vault::service::{
     build_saved_args, command_template, create_credential, create_credential_with_fields,
     rotate_password, verify_reveal_auth,
@@ -17,8 +17,8 @@ use crate::vault::service::{
 use crate::vault::store::VaultStore;
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
-use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use tiny_http::{Header, Request, Response, StatusCode};
 use uuid::Uuid;
@@ -105,7 +105,13 @@ type HttpResponse = Response<std::io::Cursor<Vec<u8>>>;
 fn json_response(status: StatusCode, body: &str) -> HttpResponse {
     Response::from_string(body)
         .with_status_code(status)
-        .with_header(Header::from_bytes(&b"Content-Type"[..], &b"application/json; charset=utf-8"[..]).unwrap())
+        .with_header(
+            Header::from_bytes(
+                &b"Content-Type"[..],
+                &b"application/json; charset=utf-8"[..],
+            )
+            .unwrap(),
+        )
 }
 
 fn error_response(status: StatusCode, msg: &str) -> HttpResponse {
@@ -125,16 +131,15 @@ fn check_auth(state: &ManageState, req: &Request) -> bool {
     if state.session_expired.load(Ordering::Acquire) {
         return false;
     }
-    let query_token = req
-        .url()
-        .split('?')
-        .nth(1)
-        .and_then(|q| {
-            q.split('&').find_map(|pair| {
-                let (k, v) = pair.split_once('=')?;
-                if k == "t" { Some(v) } else { None }
-            })
-        });
+    token_matches(&state.token, session_token_from_request(req).as_deref())
+}
+
+/// Bastion unlock/status: valid session token only — survives manage idle expiry.
+fn check_bastion_gate_auth(state: &ManageState, req: &Request) -> bool {
+    token_matches(&state.token, session_token_from_request(req).as_deref())
+}
+
+fn session_token_from_request(req: &Request) -> Option<String> {
     let bearer = extract_bearer(req.headers().iter().find_map(|h| {
         if h.field.equiv("Authorization") {
             Some(h.value.as_str())
@@ -142,7 +147,19 @@ fn check_auth(state: &ManageState, req: &Request) -> bool {
             None
         }
     }));
-    token_matches(&state.token, bearer) || token_matches(&state.token, query_token)
+    if bearer.is_some() {
+        return bearer.map(str::to_string);
+    }
+    req.url().split('?').nth(1).and_then(|q| {
+        q.split('&').find_map(|pair| {
+            let (k, v) = pair.split_once('=')?;
+            if k == "t" {
+                Some(v.to_string())
+            } else {
+                None
+            }
+        })
+    })
 }
 
 fn check_write_auth(state: &ManageState, req: &Request) -> bool {
@@ -262,7 +279,9 @@ fn percent_decode(s: &str) -> String {
     let mut i = 0;
     while i < bytes.len() {
         if bytes[i] == b'%' && i + 2 < bytes.len() {
-            if let Ok(v) = u8::from_str_radix(std::str::from_utf8(&bytes[i + 1..i + 3]).unwrap_or(""), 16) {
+            if let Ok(v) =
+                u8::from_str_radix(std::str::from_utf8(&bytes[i + 1..i + 3]).unwrap_or(""), 16)
+            {
                 out.push(v as char);
                 i += 3;
                 continue;
@@ -313,7 +332,9 @@ fn audit_query_from_params(params: &std::collections::HashMap<String, String>) -
 /// Parse `/api/credentials/{profile}/{name}` or `.../{name}/password|meta`.
 /// Only the first `/` separates profile from name so aliases may contain `/`.
 fn parse_credential_path(path: &str) -> Option<(String, String, Option<&'static str>)> {
-    let rest = path.strip_prefix("/api/credentials/")?.trim_end_matches('/');
+    let rest = path
+        .strip_prefix("/api/credentials/")?
+        .trim_end_matches('/');
     if rest.is_empty() {
         return None;
     }
@@ -375,11 +396,6 @@ fn handle_bastion_routes(
         });
     }
 
-    if *method == tiny_http::Method::Get && path == "/api/bastion/status" {
-        let body = bastion_status_json().to_string();
-        return Some(json_response(StatusCode(200), &body));
-    }
-
     if let Some(alias) = parse_bastion_sync_path(path) {
         if *method != tiny_http::Method::Get {
             return Some(error_response(StatusCode(405), "method not allowed"));
@@ -396,10 +412,6 @@ fn handle_bastion_routes(
                 Err(e) => error_response(StatusCode(400), &e.to_string()),
             },
         );
-    }
-
-    if *method == tiny_http::Method::Post && path == "/api/bastion/unlock" {
-        return Some(handle_bastion_unlock(state, req));
     }
 
     if *method == tiny_http::Method::Post && path == "/api/bastion/lock" {
@@ -436,16 +448,18 @@ fn handle_bastion_routes(
         if parsed.alias.trim().is_empty() {
             return Some(error_response(StatusCode(400), "alias is required"));
         }
-        return Some(match crate::bastion::registry::enable_bastion(parsed.alias.trim()) {
-            Ok(entry) => {
-                audit_bastion_manage("bastion/enable", &entry.alias);
-                match serde_json::to_string(&entry) {
-                    Ok(resp) => json_response(StatusCode(201), &resp),
-                    Err(e) => error_response(StatusCode(500), &e.to_string()),
+        return Some(
+            match crate::bastion::registry::enable_bastion(parsed.alias.trim()) {
+                Ok(entry) => {
+                    audit_bastion_manage("bastion/enable", &entry.alias);
+                    match serde_json::to_string(&entry) {
+                        Ok(resp) => json_response(StatusCode(201), &resp),
+                        Err(e) => error_response(StatusCode(500), &e.to_string()),
+                    }
                 }
-            }
-            Err(e) => error_response(StatusCode(400), &e.to_string()),
-        });
+                Err(e) => error_response(StatusCode(400), &e.to_string()),
+            },
+        );
     }
 
     if *method == tiny_http::Method::Post && path == "/api/bastion/disable" {
@@ -517,11 +531,7 @@ fn handle_bastion_routes(
     None
 }
 
-fn handle_bastion_unlock(state: &Arc<ManageState>, req: &mut Request) -> HttpResponse {
-    if !check_write_auth(state, req) {
-        audit_bastion_manage("bastion/denied", "-");
-        return unauthorized();
-    }
+fn handle_bastion_unlock(req: &mut Request) -> HttpResponse {
     let body = match read_body(req) {
         Ok(b) => b,
         Err(e) => return error_response(StatusCode(400), &e.to_string()),
@@ -591,28 +601,37 @@ fn dispatch(
             .with_header(
                 Header::from_bytes(&b"Content-Type"[..], &b"text/html; charset=utf-8"[..]).unwrap(),
             )
-            .with_header(
-                Header::from_bytes(&b"Cache-Control"[..], &b"no-store"[..]).unwrap(),
-            )
+            .with_header(Header::from_bytes(&b"Cache-Control"[..], &b"no-store"[..]).unwrap())
             .with_header(
                 Header::from_bytes(&b"X-Content-Type-Options"[..], &b"nosniff"[..]).unwrap(),
             );
     }
 
     if *method == tiny_http::Method::Get && path == "/bastion-auth" {
-        if !check_auth(&state, req) {
-            return unauthorized();
-        }
         return Response::from_string(BASTION_AUTH_HTML)
             .with_header(
                 Header::from_bytes(&b"Content-Type"[..], &b"text/html; charset=utf-8"[..]).unwrap(),
             )
-            .with_header(
-                Header::from_bytes(&b"Cache-Control"[..], &b"no-store"[..]).unwrap(),
-            )
+            .with_header(Header::from_bytes(&b"Cache-Control"[..], &b"no-store"[..]).unwrap())
             .with_header(
                 Header::from_bytes(&b"X-Content-Type-Options"[..], &b"nosniff"[..]).unwrap(),
             );
+    }
+
+    if *method == tiny_http::Method::Get && path == "/api/bastion/status" {
+        if !check_bastion_gate_auth(&state, req) {
+            return unauthorized();
+        }
+        let body = bastion_status_json().to_string();
+        return json_response(StatusCode(200), &body);
+    }
+
+    if *method == tiny_http::Method::Post && path == "/api/bastion/unlock" {
+        if !check_bastion_gate_auth(&state, req) {
+            audit_bastion_manage("bastion/denied", "-");
+            return unauthorized();
+        }
+        return handle_bastion_unlock(req);
     }
 
     if path.starts_with("/api/") && !check_auth(&state, req) {
@@ -657,9 +676,10 @@ fn dispatch(
         if parsed.port == Some(0) {
             return error_response(StatusCode(400), "port must be 1-65535");
         }
-        if let Err(msg) =
-            crate::manage::profiles::validate_user_for_profile(&parsed.profile, parsed.user.as_deref())
-        {
+        if let Err(msg) = crate::manage::profiles::validate_user_for_profile(
+            &parsed.profile,
+            parsed.user.as_deref(),
+        ) {
             return error_response(StatusCode(400), msg);
         }
         if !profile_available_for_create(&parsed.profile) {
@@ -689,7 +709,10 @@ fn dispatch(
         };
         let create_result = if is_ssh_profile(&parsed.profile) {
             let auth_type = parsed.auth_type.as_deref().unwrap_or("password");
-            let password = parsed.password.filter(|s| !s.is_empty()).map(SecretString::new);
+            let password = parsed
+                .password
+                .filter(|s| !s.is_empty())
+                .map(SecretString::new);
             let private_key = parsed
                 .private_key
                 .filter(|s| !s.is_empty())
@@ -702,18 +725,14 @@ fn dispatch(
                 .key_passphrase
                 .filter(|s| !s.is_empty())
                 .map(SecretString::new);
-            let fields = match build_ssh_secret_fields(
-                auth_type,
-                password,
-                private_key,
-                key_passphrase,
-            ) {
-                Ok(f) => f,
-                Err(e) => {
-                    audit_manage("manage/denied", &parsed.profile, &parsed.name);
-                    return error_response(StatusCode(400), &e.to_string());
-                }
-            };
+            let fields =
+                match build_ssh_secret_fields(auth_type, password, private_key, key_passphrase) {
+                    Ok(f) => f,
+                    Err(e) => {
+                        audit_manage("manage/denied", &parsed.profile, &parsed.name);
+                        return error_response(StatusCode(400), &e.to_string());
+                    }
+                };
             let meta = build_ssh_field_meta(auth_type, has_key_passphrase);
             create_credential_with_fields(
                 &store,
@@ -916,13 +935,16 @@ fn handle_credential_route(
 
 #[cfg(test)]
 mod tests {
-    use crate::manage::server::run_manage_server;
+    use crate::manage::server::{
+        run_manage_server, run_manage_server_with_state, ManageServerOptions,
+    };
     use crate::security::secret::SecretString;
     use crate::vault::service::create_credential;
     use crate::vault::store::VaultStore;
     use std::env;
     use std::io::{Read, Write};
     use std::net::TcpStream;
+    use std::sync::atomic::Ordering;
     use std::time::Duration;
 
     fn with_temp_home<F: FnOnce()>(f: F) {
@@ -951,11 +973,10 @@ mod tests {
     ) -> (u16, String) {
         let mut stream =
             TcpStream::connect(format!("127.0.0.1:{}", port)).expect("connect localhost");
-        stream
-            .set_read_timeout(Some(Duration::from_secs(10)))
-            .ok();
+        stream.set_read_timeout(Some(Duration::from_secs(10))).ok();
         let payload = body.unwrap_or("");
-        let mut req = format!("{method} {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n");
+        let mut req =
+            format!("{method} {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n");
         if let Some(t) = token {
             req.push_str(&format!("Authorization: Bearer {t}\r\n"));
         }
@@ -996,8 +1017,13 @@ mod tests {
             .unwrap();
 
             let server = run_manage_server(false).unwrap();
-            let (status, body) =
-                http_request(server.port, "GET", "/api/credentials", Some(&server.token), None);
+            let (status, body) = http_request(
+                server.port,
+                "GET",
+                "/api/credentials",
+                Some(&server.token),
+                None,
+            );
             assert_eq!(status, 200);
             assert!(!body.contains("secret123"));
             assert!(!body.contains("\"password\":"));
@@ -1011,13 +1037,8 @@ mod tests {
         with_temp_home(|| {
             let server = run_manage_server(false).unwrap();
             let body = r#"{"profile":"ssh","name":"x","host":"h","password":"p"}"#;
-            let (status, _) = http_request(
-                server.port,
-                "POST",
-                "/api/credentials",
-                None,
-                Some(body),
-            );
+            let (status, _) =
+                http_request(server.port, "POST", "/api/credentials", None, Some(body));
             assert_eq!(status, 401);
         });
     }
@@ -1102,8 +1123,13 @@ mod tests {
     fn profiles_endpoint_lists_groups() {
         with_temp_home(|| {
             let server = run_manage_server(false).unwrap();
-            let (status, body) =
-                http_request(server.port, "GET", "/api/profiles", Some(&server.token), None);
+            let (status, body) = http_request(
+                server.port,
+                "GET",
+                "/api/profiles",
+                Some(&server.token),
+                None,
+            );
             assert_eq!(status, 200);
             let groups: Vec<crate::manage::profiles::ProfileGroupInfo> =
                 serde_json::from_str(&body).unwrap();
@@ -1211,10 +1237,7 @@ mod tests {
             assert_eq!(status, 201);
             let store = VaultStore::open().unwrap();
             let rec = store.get("ssh", "bastion").unwrap().unwrap();
-            assert_eq!(
-                rec.saved_args,
-                vec!["-p", "9000", "root@10.0.0.1"]
-            );
+            assert_eq!(rec.saved_args, vec!["-p", "9000", "root@10.0.0.1"]);
             assert_eq!(rec.host_alias.as_deref(), Some("10.0.0.1:9000"));
         });
     }
@@ -1235,7 +1258,10 @@ mod tests {
             assert_eq!(status, 201);
             let store = VaultStore::open().unwrap();
             let rec = store.get("mysql", "qdb").unwrap().unwrap();
-            assert!(rec.saved_args.windows(2).any(|w| w == ["-e", "SHOW TABLES"]));
+            assert!(rec
+                .saved_args
+                .windows(2)
+                .any(|w| w == ["-e", "SHOW TABLES"]));
         });
     }
 
@@ -1253,8 +1279,7 @@ mod tests {
     fn audit_list_without_token_is_unauthorized() {
         with_temp_home(|| {
             let server = run_manage_server(false).unwrap();
-            let (status, _) =
-                http_request(server.port, "GET", "/api/audit", None, None);
+            let (status, _) = http_request(server.port, "GET", "/api/audit", None, None);
             assert_eq!(status, 401);
         });
     }
@@ -1326,8 +1351,13 @@ mod tests {
             assert_eq!(status, 201);
             assert!(body.contains("b150"));
 
-            let (status, body) =
-                http_request(server.port, "GET", "/api/bastion", Some(&server.token), None);
+            let (status, body) = http_request(
+                server.port,
+                "GET",
+                "/api/bastion",
+                Some(&server.token),
+                None,
+            );
             assert_eq!(status, 200);
             let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
             assert_eq!(parsed["bastions"].as_array().unwrap().len(), 1);
@@ -1340,6 +1370,24 @@ mod tests {
                 Some(r#"{"alias":"b150"}"#),
             );
             assert_eq!(status, 204);
+        });
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn bastion_auth_page_always_serves_html() {
+        with_temp_home(|| {
+            let server = run_manage_server(false).unwrap();
+            let (status, body) = http_request(server.port, "GET", "/bastion-auth", None, None);
+            assert_eq!(status, 200);
+            assert!(body.contains("brokre bastion unlock"));
+            assert!(body.contains(r#"id="source-box""#));
+            assert!(!body.contains(r#"{"error":"unauthorized"}"#));
+
+            let path = format!("/bastion-auth?t={}", server.token);
+            let (status, body) = http_request(server.port, "GET", &path, None, None);
+            assert_eq!(status, 200);
+            assert!(body.contains("brokre bastion unlock"));
         });
     }
 
@@ -1407,6 +1455,54 @@ mod tests {
             assert_eq!(status, 200);
             let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
             assert_eq!(parsed["unlocked"], false);
+        });
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn bastion_unlock_does_not_revive_expired_manage_session() {
+        with_temp_home(|| {
+            let (server, state) =
+                run_manage_server_with_state(ManageServerOptions::default()).unwrap();
+            let (status, _) = http_request(
+                server.port,
+                "POST",
+                "/api/bastion/set-key",
+                Some(&server.token),
+                Some(r#"{"passphrase":"test-key","confirm":"test-key"}"#),
+            );
+            assert_eq!(status, 200);
+
+            state.session_expired.store(true, Ordering::Release);
+
+            let (status, _) = http_request(
+                server.port,
+                "POST",
+                "/api/bastion/unlock",
+                Some(&server.token),
+                Some(r#"{"passphrase":"test-key"}"#),
+            );
+            assert_eq!(status, 200);
+
+            let (status, body) = http_request(
+                server.port,
+                "GET",
+                "/api/bastion/status",
+                Some(&server.token),
+                None,
+            );
+            assert_eq!(status, 200);
+            let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
+            assert_eq!(parsed["unlocked"], true);
+
+            let (status, _) = http_request(
+                server.port,
+                "GET",
+                "/api/credentials",
+                Some(&server.token),
+                None,
+            );
+            assert_eq!(status, 401);
         });
     }
 

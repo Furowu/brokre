@@ -1,11 +1,15 @@
-use crate::bastion::route::{extend_bastion_path, visited_bastions, BASTION_PATH_ENV};
+use crate::bastion::route::{extend_bastion_path, shell_join, visited_bastions, BASTION_PATH_ENV};
 use crate::bastion::session::ensure_gate_for_outbound;
 use crate::utils::errors::{BrokreError, Result};
+use crate::utils::paths::remote_brokre_shell_token;
 use std::process::{Command, Stdio};
 use std::time::Instant;
 
 /// Run a remote brokre command on a bastion via local `brokre ssh <alias> <remote_cmd...>`.
-pub fn run_on_bastion(bastion_alias: &str, remote_args: &[String]) -> Result<(i32, String, String)> {
+pub fn run_on_bastion(
+    bastion_alias: &str,
+    remote_args: &[String],
+) -> Result<(i32, String, String)> {
     ensure_gate_for_outbound()?;
 
     let visited = visited_bastions();
@@ -34,13 +38,10 @@ pub fn run_on_bastion(bastion_alias: &str, remote_args: &[String]) -> Result<(i3
 }
 
 pub fn run_remote_list_json_probe(bastion_alias: &str) -> Result<String> {
-    let remote = vec![
-        "brokre".into(),
-        "list".into(),
-        "--json".into(),
-        "--probe".into(),
-        "--no-bastion-discovery".into(),
-    ];
+    let remote = vec![format!(
+        "{} list --json --probe --no-bastion-discovery",
+        remote_brokre_shell_token()
+    )];
     let (code, stdout, stderr) = run_on_bastion(bastion_alias, &remote)?;
     if code != 0 {
         return Err(BrokreError::Runtime(format!(
@@ -57,12 +58,13 @@ pub fn run_remote_exec(
     trailing: &[String],
 ) -> Result<(i32, String, String, u64)> {
     let started = Instant::now();
-    let mut remote = vec![
-        "brokre".into(),
-        profile.into(),
-        inner.into(),
+    let mut parts = vec![
+        remote_brokre_shell_token().to_string(),
+        profile.to_string(),
+        inner.to_string(),
     ];
-    remote.extend(trailing.iter().cloned());
+    parts.extend(trailing.iter().cloned());
+    let remote = vec![shell_join(&parts)];
     let (code, stdout, stderr) = run_on_bastion(bastion_alias, &remote)?;
     Ok((code, stdout, stderr, started.elapsed().as_millis() as u64))
 }

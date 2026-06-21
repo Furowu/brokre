@@ -19,10 +19,28 @@ pub const MANAGE_PORTS_PREFERRED: &[u16] = &[
 const MANAGE_PORT_RANGE_START: u16 = 56777;
 const MANAGE_PORT_RANGE_END: u16 = 56877;
 
+#[derive(Clone)]
 pub struct ManageServer {
     pub port: u16,
     pub token: String,
     pub url: String,
+}
+
+/// Prefer the registered `manage.json` instance; fall back to a reachable `stale` hint.
+pub fn refresh_live_manage(stale: Option<&ManageServer>) -> Option<ManageServer> {
+    if let Some(rec) = crate::manage::instance::find_running_instance() {
+        return Some(ManageServer {
+            port: rec.port,
+            token: rec.token.clone(),
+            url: rec.url(),
+        });
+    }
+    if let Some(s) = stale {
+        if crate::manage::instance::probe_manage(s.port, &s.token) {
+            return Some(s.clone());
+        }
+    }
+    None
 }
 
 /// What to do when the manage UI has been idle too long.
@@ -56,11 +74,24 @@ pub fn run_manage_server(onboard: bool) -> Result<ManageServer> {
 }
 
 pub fn run_manage_server_with(options: ManageServerOptions) -> Result<ManageServer> {
+    Ok(run_manage_server_inner(options)?.0)
+}
+
+#[cfg(test)]
+pub(crate) fn run_manage_server_with_state(
+    options: ManageServerOptions,
+) -> Result<(ManageServer, Arc<ManageState>)> {
+    run_manage_server_inner(options)
+}
+
+fn run_manage_server_inner(
+    options: ManageServerOptions,
+) -> Result<(ManageServer, Arc<ManageState>)> {
     let token = generate_session_token();
     let listener = bind_localhost_listener()?;
     let port = listener.local_addr().map_err(BrokreError::Io)?.port();
-    let server = Server::from_listener(listener, None)
-        .map_err(|e| BrokreError::Runtime(e.to_string()))?;
+    let server =
+        Server::from_listener(listener, None).map_err(|e| BrokreError::Runtime(e.to_string()))?;
 
     let state = Arc::new(ManageState {
         token: token.clone(),
@@ -97,23 +128,21 @@ pub fn run_manage_server_with(options: ManageServerOptions) -> Result<ManageServ
 
     let idle_behavior = options.idle_behavior;
     let state_idle = state.clone();
-    thread::spawn(move || {
-        loop {
-            thread::sleep(Duration::from_secs(30));
-            if state_idle.idle_secs() >= IDLE_LIMIT_SECS {
-                match idle_behavior {
-                    IdleBehavior::ExitProcess => {
-                        eprintln!("brokre manage: idle timeout — shutting down");
-                        unregister_instance();
-                        std::process::exit(0);
-                    }
-                    IdleBehavior::LogOnly => {
-                        state_idle.session_expired.store(true, Ordering::Release);
-                        eprintln!(
+    thread::spawn(move || loop {
+        thread::sleep(Duration::from_secs(30));
+        if state_idle.idle_secs() >= IDLE_LIMIT_SECS {
+            match idle_behavior {
+                IdleBehavior::ExitProcess => {
+                    eprintln!("brokre manage: idle timeout — shutting down");
+                    unregister_instance();
+                    std::process::exit(0);
+                }
+                IdleBehavior::LogOnly => {
+                    state_idle.session_expired.store(true, Ordering::Release);
+                    eprintln!(
                             "brokre manage: idle timeout — session expired (embedded server no longer accepts auth)"
                         );
-                        break;
-                    }
+                    break;
                 }
             }
         }
@@ -123,7 +152,7 @@ pub fn run_manage_server_with(options: ManageServerOptions) -> Result<ManageServ
 
     register_instance(port, &token)?;
 
-    Ok(ManageServer { port, token, url })
+    Ok((ManageServer { port, token, url }, state))
 }
 
 fn bind_localhost_listener() -> Result<TcpListener> {
@@ -132,8 +161,7 @@ fn bind_localhost_listener() -> Result<TcpListener> {
             if *port != MANAGE_PORTS_PREFERRED[0] {
                 eprintln!(
                     "brokre manage: port {} in use — using {}",
-                    MANAGE_PORTS_PREFERRED[0],
-                    port
+                    MANAGE_PORTS_PREFERRED[0], port
                 );
             }
             return Ok(listener);

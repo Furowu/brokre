@@ -1,4 +1,5 @@
 use crate::bastion::registry::is_registered_bastion;
+use crate::runtime::ssh_identity::remote_command_needs_tty;
 use crate::utils::errors::{BrokreError, Result};
 use serde::{Deserialize, Serialize};
 
@@ -107,9 +108,16 @@ pub fn extend_bastion_path(current: &[String], next: &str) -> String {
 /// Shell-escape args into a single remote command string.
 pub fn shell_join(args: &[String]) -> String {
     args.iter()
-        .map(|a| shell_escape(a))
+        .map(|a| shell_escape_arg(a))
         .collect::<Vec<_>>()
         .join(" ")
+}
+
+fn shell_escape_arg(s: &str) -> String {
+    if crate::utils::paths::remote_shell_token_passthrough(s) {
+        return s.to_string();
+    }
+    shell_escape(s)
 }
 
 pub fn shell_escape(s: &str) -> String {
@@ -130,10 +138,19 @@ pub fn build_routed_local_argv(
     route: &BastionRoute,
     trailing: &[String],
 ) -> Vec<String> {
-    let inner_exec: Vec<String> = std::iter::once("brokre".to_string())
+    let remote_brokre = crate::utils::paths::remote_brokre_shell_token().to_string();
+    let after_binary: Vec<String> = if trailing.is_empty() || remote_command_needs_tty(trailing) {
+        let mut v = vec!["-tt".into(), route.inner.clone()];
+        v.extend(trailing.iter().cloned());
+        v
+    } else {
+        std::iter::once(route.inner.clone())
+            .chain(trailing.iter().cloned())
+            .collect()
+    };
+    let inner_exec: Vec<String> = std::iter::once(remote_brokre.clone())
         .chain(std::iter::once(binary.to_string()))
-        .chain(std::iter::once(route.inner.clone()))
-        .chain(trailing.iter().cloned())
+        .chain(after_binary)
         .collect();
 
     match route.hops.len() {
@@ -146,7 +163,7 @@ pub fn build_routed_local_argv(
             let mut wrapped = inner_exec;
             for hop in route.hops.iter().skip(1).rev() {
                 let inner = shell_join(&wrapped);
-                wrapped = vec!["brokre".into(), "ssh".into(), hop.clone(), inner];
+                wrapped = vec![remote_brokre.clone(), "ssh".into(), hop.clone(), inner];
             }
             let mut args = vec![route.hops[0].clone()];
             args.push(shell_join(&wrapped));
@@ -166,6 +183,64 @@ mod tests {
     }
 
     #[test]
+    fn shell_join_preserves_remote_brokre_home_expansion() {
+        let args = vec![
+            crate::utils::paths::remote_brokre_shell_token().to_string(),
+            "ssh".into(),
+            "db".into(),
+        ];
+        let joined = shell_join(&args);
+        assert!(joined.starts_with(
+            "BROKRE_SOFT_MEMLOCK=1 BROKRE_ALLOW_FILE_KEYCHAIN=1 BROKRE_ROUTED_INNER=1 $HOME/.brokre/bin/brokre ssh db"
+        ));
+        assert!(!joined.contains("'$HOME"));
+        assert!(!joined.contains("'BROKRE_SOFT_MEMLOCK"));
+        assert!(!joined.contains("'BROKRE_ALLOW_FILE_KEYCHAIN"));
+    }
+
+    #[test]
+    fn build_single_hop_interactive_argv() {
+        let route = BastionRoute {
+            hops: vec!["b150".into()],
+            inner: "db".into(),
+            addr: "b150::db".into(),
+        };
+        let args = build_routed_local_argv("ssh", &route, &[]);
+        assert_eq!(
+            args,
+            vec![
+                "b150",
+                crate::utils::paths::remote_brokre_shell_token(),
+                "ssh",
+                "-tt",
+                "db",
+            ]
+        );
+    }
+
+    #[test]
+    fn build_single_hop_sudo_argv() {
+        let route = BastionRoute {
+            hops: vec!["b150".into()],
+            inner: "db".into(),
+            addr: "b150::db".into(),
+        };
+        let args = build_routed_local_argv("ssh", &route, &["sudo".into(), "-i".into()]);
+        assert_eq!(
+            args,
+            vec![
+                "b150",
+                crate::utils::paths::remote_brokre_shell_token(),
+                "ssh",
+                "-tt",
+                "db",
+                "sudo",
+                "-i",
+            ]
+        );
+    }
+
+    #[test]
     fn build_single_hop_argv() {
         let route = BastionRoute {
             hops: vec!["b150".into()],
@@ -175,7 +250,14 @@ mod tests {
         let args = build_routed_local_argv("ssh", &route, &["uname".into(), "-a".into()]);
         assert_eq!(
             args,
-            vec!["b150", "brokre", "ssh", "db", "uname", "-a"]
+            vec![
+                "b150",
+                crate::utils::paths::remote_brokre_shell_token(),
+                "ssh",
+                "db",
+                "uname",
+                "-a"
+            ]
         );
     }
 

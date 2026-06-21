@@ -20,16 +20,23 @@ pub fn should_use_pipe_mode(
     stdin_is_pipe: bool,
     remote_trailing: Option<&[String]>,
 ) -> bool {
-    let bin = profile.rsplit('/').next().unwrap_or(profile).to_ascii_lowercase();
+    let bin = profile
+        .rsplit('/')
+        .next()
+        .unwrap_or(profile)
+        .to_ascii_lowercase();
     if matches!(bin.as_str(), "scp" | "sftp") {
         return true;
     }
     if bin == "ssh" {
+        // Interactive bastion routes need a PTY end-to-end (`ssh -tt hop brokre ssh -tt inner`).
+        if remote_trailing.is_some_and(crate::runtime::ssh_identity::is_routed_interactive_trailing)
+        {
+            return false;
+        }
         // Remote sudo/su always needs a PTY for password injection — even when stdin
         // is a pipe (CI, IDE agents, scripts). MCP sets BROKRE_MCP_EXEC for the same rule.
-        if remote_trailing
-            .is_some_and(crate::runtime::ssh_identity::remote_command_needs_tty)
-        {
+        if remote_trailing.is_some_and(crate::runtime::ssh_identity::remote_command_needs_tty) {
             return false;
         }
         if std::env::var_os("BROKRE_MCP_EXEC").is_some() {
@@ -42,11 +49,7 @@ pub fn should_use_pipe_mode(
 
 /// Run OpenSSH with `SSH_ASKPASS` for vault injection and optional stdin pipe forwarding.
 #[cfg(unix)]
-pub fn run(
-    binary: &str,
-    args: &[String],
-    record_id: Uuid,
-) -> Result<PtyRunResult> {
+pub fn run(binary: &str, args: &[String], record_id: Uuid) -> Result<PtyRunResult> {
     if std::env::var_os("BROKRE_DISABLE_HARDENING").is_some() {
         return Err(BrokreError::Runtime(
             "BROKRE_DISABLE_HARDENING=1 — cannot inject password in pipe mode".into(),
@@ -65,9 +68,8 @@ pub fn run(
     let owner_pid = std::process::id().to_string();
     let stdin_is_pipe = crate::security::tty::stdin_is_pipe();
 
-    let bin = which::which(binary).map_err(|_| {
-        BrokreError::Runtime(format!("{}: command not found", binary))
-    })?;
+    let bin = which::which(binary)
+        .map_err(|_| BrokreError::Runtime(format!("{}: command not found", binary)))?;
     let mut cmd = Command::new(bin);
     for a in args {
         cmd.arg(a);
@@ -156,11 +158,7 @@ mod tests {
     #[test]
     fn mcp_exec_pipe_mode_for_normal_remote_command() {
         std::env::set_var("BROKRE_MCP_EXEC", "1");
-        assert!(should_use_pipe_mode(
-            "ssh",
-            true,
-            Some(&["uptime".into()]),
-        ));
+        assert!(should_use_pipe_mode("ssh", true, Some(&["uptime".into()]),));
         std::env::remove_var("BROKRE_MCP_EXEC");
     }
 

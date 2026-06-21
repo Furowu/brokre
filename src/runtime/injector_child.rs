@@ -10,6 +10,28 @@ use uuid::Uuid;
 
 use crate::security::hardening;
 
+/// Disable PTY echo while injecting so secrets are not reflected to the user terminal.
+#[cfg(unix)]
+fn with_pty_echo_off<T>(fd: libc::c_int, f: impl FnOnce() -> Result<T>) -> Result<T> {
+    unsafe {
+        let mut term: libc::termios = std::mem::zeroed();
+        if libc::tcgetattr(fd, &mut term) != 0 {
+            return f();
+        }
+        let saved = term;
+        term.c_lflag &= !libc::ECHO;
+        let _ = libc::tcsetattr(fd, libc::TCSANOW, &term);
+        let result = f();
+        let _ = libc::tcsetattr(fd, libc::TCSANOW, &saved);
+        result
+    }
+}
+
+#[cfg(not(unix))]
+fn with_pty_echo_off<T>(_fd: libc::c_int, f: impl FnOnce() -> Result<T>) -> Result<T> {
+    f()
+}
+
 /// Spawn injector, write token to child's fd 4, wait for exit.
 pub fn spawn_injector_child(
     record_id: Uuid,
@@ -80,25 +102,28 @@ pub fn spawn_injector_child(
     }
 
     let start = Instant::now();
-    let mut child = cmd
-        .spawn()
-        .map_err(|e| BrokreError::Runtime(format!("injector spawn: {}", e)))?;
-    let cid = child.id();
+    let (status, cid) = with_pty_echo_off(pty_master_raw, || {
+        let mut child = cmd
+            .spawn()
+            .map_err(|e| BrokreError::Runtime(format!("injector spawn: {}", e)))?;
+        let cid = child.id();
 
-    unsafe {
-        libc::close(pty_dup);
-        libc::close(tok_dup);
-    }
+        unsafe {
+            libc::close(pty_dup);
+            libc::close(tok_dup);
+        }
 
-    let token = format!("{}\n", Uuid::new_v4());
-    {
-        let mut w = unsafe { std::fs::File::from_raw_fd(w_tok) };
-        w.write_all(token.as_bytes())
-            .map_err(BrokreError::Io)?;
-        w.flush().map_err(BrokreError::Io)?;
-    }
+        let token = format!("{}\n", Uuid::new_v4());
+        {
+            let mut w = unsafe { std::fs::File::from_raw_fd(w_tok) };
+            w.write_all(token.as_bytes()).map_err(BrokreError::Io)?;
+            w.flush().map_err(BrokreError::Io)?;
+        }
 
-    let status = child.wait().map_err(BrokreError::Io)?;
+        let status = child.wait().map_err(BrokreError::Io)?;
+        Ok((status, cid))
+    })?;
+
     let dur_ms = start.elapsed().as_millis() as u64;
     let code = status.code().unwrap_or(-1);
     let outcome = if code == 0 {

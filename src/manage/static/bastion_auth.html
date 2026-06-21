@@ -16,17 +16,36 @@
     .lang { text-align: right; font-size: .8rem; color: #6b7280; margin-bottom: .5rem; }
     .lang span { cursor: pointer; margin: 0 .2rem; }
     .lang span.on { font-weight: 600; color: #2563eb; }
+    .source {
+      margin: 1rem 0 1.25rem;
+      padding: 0.75rem 0.9rem;
+      border-radius: 6px;
+      background: #f0f4ff;
+      border: 1px solid #dbe4ff;
+      color: #1e3a5f;
+      font-size: 0.9rem;
+    }
+    .source-label { font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.04em; color: #64748b; margin-bottom: 0.35rem; }
+    .source-client { font-weight: 600; font-size: 1rem; }
+    .source-detail { margin-top: 0.25rem; color: #475569; font-size: 0.85rem; }
+    .return-btn { margin-top: 0.75rem; display: none; }
   </style>
 </head>
 <body>
   <div class="lang" id="lang-switch"><span data-lang="en" class="on">EN</span>|<span data-lang="zh">中文</span></div>
   <h1 id="t-title">brokre bastion unlock</h1>
+  <div id="source-box" class="source" hidden>
+    <div class="source-label" id="t-source-label">Request from</div>
+    <div id="source-client" class="source-client"></div>
+    <div id="source-detail" class="source-detail"></div>
+  </div>
   <p id="t-desc">Enter your bastion key to allow outbound SSH through registered bastions. The key never leaves this page except to local brokre for verification.</p>
   <form id="f">
     <label for="key" id="t-label">Bastion key</label>
     <input id="key" type="password" autocomplete="current-password" required />
     <button type="submit" id="t-submit">Unlock</button>
   </form>
+  <button type="button" id="return-btn" class="return-btn" hidden></button>
   <div id="msg"></div>
   <script>
     const I18N = {
@@ -35,11 +54,17 @@
         desc: 'Enter your bastion key to allow outbound SSH through registered bastions. The key never leaves this page except to local brokre for verification.',
         label: 'Bastion key',
         submit: 'Unlock',
-        ok: 'Unlocked. This tab will close automatically in 3 seconds…',
-        okManual: 'Unlocked. You may close this tab and return to the agent.',
+        sourceLabel: 'Request from',
+        sourceDefaultClient: 'Unknown client',
+        sourceMcp: 'MCP tool call',
+        sourceCli: 'CLI',
+        sourceVia: 'via',
+        ok: 'Unlocked. Returning to {client}…',
+        okManual: 'Unlocked. Switch back to {client} to continue.',
+        returnBtn: 'Back to {client}',
         errInvalidKey: 'invalid bastion key',
         errKeyNotConfigured: 'bastion key not configured',
-        errUnauthorized: 'unauthorized',
+        errUnauthorized: 'Session link invalid or expired — close this tab and retry the brokre command to open a fresh unlock page.',
         errNetwork: 'Request failed',
       },
       zh: {
@@ -47,11 +72,17 @@
         desc: '输入堡垒密钥以允许经已注册堡垒的 SSH 出站。密钥仅提交给本机 brokre 校验，不会外传。',
         label: '堡垒密钥',
         submit: '解锁',
-        ok: '已解锁。此页面将在 3 秒后自动关闭…',
-        okManual: '已解锁。请手动关闭此标签页并返回 Agent。',
+        sourceLabel: '调用来源',
+        sourceDefaultClient: '未知应用',
+        sourceMcp: 'MCP 工具调用',
+        sourceCli: '命令行',
+        sourceVia: '通过',
+        ok: '已解锁，正在返回 {client}…',
+        okManual: '已解锁。请切回 {client} 继续操作。',
+        returnBtn: '返回 {client}',
         errInvalidKey: '堡垒密钥错误',
         errKeyNotConfigured: '尚未配置堡垒密钥',
-        errUnauthorized: '未授权',
+        errUnauthorized: '会话链接无效或已过期 — 请关闭此页，重新执行 brokre 命令以打开新的解锁页。',
         errNetwork: '请求失败',
       },
     };
@@ -67,13 +98,40 @@
       return nav.startsWith('zh') ? 'zh' : 'en';
     }
     let lang = detectLang();
-    function tr(key) {
+    function tr(key, vars) {
       const dict = I18N[lang] || I18N.en;
-      return dict[key] || I18N.en[key] || key;
+      let s = dict[key] || I18N.en[key] || key;
+      if (vars) {
+        for (const [k, v] of Object.entries(vars)) {
+          s = s.replaceAll('{' + k + '}', v);
+        }
+      }
+      return s;
     }
     function apiErrorMessage(msg) {
       const k = API_ERROR_KEYS[msg];
       return k ? tr(k) : (msg || tr('errNetwork'));
+    }
+    function clientLabel() {
+      if (client) {
+        return clientVersion ? client + ' ' + clientVersion : client;
+      }
+      return tr('sourceDefaultClient');
+    }
+    function applySource() {
+      const box = document.getElementById('source-box');
+      const hasSource = !!(client || tool || channel);
+      if (!hasSource) {
+        box.hidden = true;
+        return;
+      }
+      box.hidden = false;
+      document.getElementById('source-client').textContent = clientLabel();
+      const detailParts = [];
+      if (tool) detailParts.push(tool);
+      if (channel === 'mcp') detailParts.push(tr('sourceMcp'));
+      else if (channel === 'cli') detailParts.push(tr('sourceCli'));
+      document.getElementById('source-detail').textContent = detailParts.join(' · ');
     }
     function applyLang() {
       document.documentElement.lang = lang === 'zh' ? 'zh-CN' : 'en';
@@ -82,9 +140,15 @@
       document.getElementById('t-desc').textContent = tr('desc');
       document.getElementById('t-label').textContent = tr('label');
       document.getElementById('t-submit').textContent = tr('submit');
+      document.getElementById('t-source-label').textContent = tr('sourceLabel');
       document.querySelectorAll('#lang-switch [data-lang]').forEach(el => {
         el.classList.toggle('on', el.dataset.lang === lang);
       });
+      applySource();
+      const returnBtn = document.getElementById('return-btn');
+      if (!returnBtn.hidden) {
+        returnBtn.textContent = tr('returnBtn', { client: client || tr('sourceDefaultClient') });
+      }
     }
     document.getElementById('lang-switch').addEventListener('click', (ev) => {
       const el = ev.target.closest('[data-lang]');
@@ -99,16 +163,59 @@
         applyLang();
       }
     });
-    applyLang();
 
     const params = new URLSearchParams(location.search);
     const token = params.get('t') || '';
     const elicitationId = params.get('elicitation_id') || '';
+    const channel = params.get('channel') || '';
+    const tool = params.get('tool') || '';
+    const client = params.get('client') || '';
+    const clientVersion = params.get('client_version') || '';
     const msg = document.getElementById('msg');
+    const form = document.getElementById('f');
+    const returnBtn = document.getElementById('return-btn');
+
+    applyLang();
+
+    if (!token) {
+      form.style.display = 'none';
+      msg.textContent = tr('errUnauthorized');
+      msg.className = 'msg err';
+    }
+
+    function tryReturnToApp() {
+      const label = client || tr('sourceDefaultClient');
+      msg.textContent = tr('ok', { client: label });
+      msg.className = 'msg ok';
+      try {
+        if (window.opener && !window.opener.closed) {
+          window.opener.focus();
+        }
+      } catch (_) {}
+      window.close();
+      setTimeout(() => {
+        if (!window.closed) {
+          msg.textContent = tr('okManual', { client: label });
+          returnBtn.hidden = false;
+          returnBtn.textContent = tr('returnBtn', { client: label });
+        }
+      }, 1200);
+    }
+
+    returnBtn.addEventListener('click', () => {
+      try {
+        if (window.opener && !window.opener.closed) {
+          window.opener.focus();
+        }
+      } catch (_) {}
+      window.close();
+    });
+
     document.getElementById('f').addEventListener('submit', async (e) => {
       e.preventDefault();
       msg.textContent = '';
       msg.className = 'msg';
+      returnBtn.hidden = true;
       const passphrase = document.getElementById('key').value;
       try {
         const res = await fetch('/api/bastion/unlock', {
@@ -123,14 +230,7 @@
         if (!res.ok) throw new Error(data.error || res.statusText);
         document.getElementById('f').style.display = 'none';
         document.getElementById('key').value = '';
-        msg.textContent = tr('ok');
-        msg.className = 'msg ok';
-        setTimeout(() => {
-          window.close();
-          if (!window.closed) {
-            msg.textContent = tr('okManual');
-          }
-        }, 3000);
+        tryReturnToApp();
       } catch (err) {
         msg.textContent = apiErrorMessage(err.message || String(err));
         msg.className = 'msg err';

@@ -222,7 +222,7 @@ For **cross-network** access — travel, VPN, public entry points — when direc
 **Prerequisites**
 
 1. Laptop: `brokre bastion enable b150` (`b150` is a saved SSH alias)
-2. Bastion host runs brokre with inner aliases saved (e.g. `db`)
+2. Bastion host runs brokre at `~/.brokre/bin/brokre` (standard install / `npx` path) with inner aliases saved (e.g. `db`)
 
 **Smart list**
 
@@ -256,7 +256,8 @@ brokre bastion sync b150 --json     # fetch alias list from one bastion
 ```
 
 - Route separator **`::`** (`:` is illegal in alias names): `db` (local), `b150::db` (via bastion), `b1::b2::inner` (multi-hop, default depth ≤2).
-- **Gate**: with a bastion key set, any outbound SSH (probe / routed exec / direct registered bastion alias) requires unlock. CLI and MCP share the same gate: TTY prompts for the bastion key; non-TTY opens the local auth page and polls (`BROKRE_BASTION_NO_AUTO_OPEN=1` disables auto-open). MCP additionally supports URL-mode elicitation (Cursor, etc.).
+- **Gate**: with a bastion key set, any outbound SSH (probe / routed exec / direct registered bastion alias) requires unlock. CLI and MCP share the same gate: TTY prompts for the bastion key; non-TTY opens the local auth page and polls (`BROKRE_BASTION_NO_AUTO_OPEN=1` disables auto-open). MCP additionally supports URL-mode elicitation (Cursor, etc.). The `/bastion-auth` page shows the caller (MCP client, tool name, or CLI). Unlock uses the session token in the URL — **not blocked by manage UI idle expiry**; if manage restarts, gate polling re-discovers the live instance via `manage.json`.
+- **Remote brokre**: routed exec invokes `~/.brokre/bin/brokre` on the bastion (with `BROKRE_SOFT_MEMLOCK=1`, `BROKRE_ALLOW_FILE_KEYCHAIN=1`, `BROKRE_ROUTED_INNER=1` for headless Linux). Interactive commands (e.g. `sudo -i`) automatically get `-tt`.
 - **Guardrails**: probe concurrency cap, ms timeouts, short cache, loop detection, audit `route`/`bastion` (HMAC v4).
 - **Manage UI**: `brokre manage` **Bastion** tab — register/disable bastions, Web set-key and unlock/lock, sync remote aliases; non-TTY still auto-opens `/bastion-auth`. Audit tab filters by `bastion`/`source` and shows route fields.
 

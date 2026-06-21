@@ -9,8 +9,8 @@ use crate::utils::errors::{BrokreError, Result};
 use crossterm::terminal;
 use portable_pty::{CommandBuilder, MasterPty, NativePtySystem, PtySize, PtySystem};
 use regex::bytes::Regex;
-use std::io::{Read, Write};
 use std::collections::HashSet;
+use std::io::{Read, Write};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -109,6 +109,127 @@ fn field_for_prompt(window: &[u8], available: &[String]) -> Option<String> {
     None
 }
 
+#[derive(Clone, Default)]
+pub struct PtyRunOptions {
+    /// First hop of `bastion::inner`: inject only this hop's SSH login; inner brokre owns sudo/su.
+    pub bastion_outer_hop: bool,
+    /// Hold local stdin until nested SSH/sudo setup finishes (routed privileged sessions).
+    pub defer_stdin_forward: bool,
+    /// Mac vault record for the routed inner alias — outer injects inner SSH/sudo from local vault.
+    pub inner_vault_record: Option<uuid::Uuid>,
+    /// Host alias / address of the inner target (disambiguate nested SSH login prompts).
+    pub inner_host_hint: Option<String>,
+    /// Inner brokre on bastion (`BROKRE_ROUTED_INNER=1`): PTY pass-through only, no vault inject.
+    pub inject_disabled: bool,
+    /// Inner brokre: Mac outer injects nested SSH login; inner keeps sudo/su inject locally.
+    pub passive_inner_ssh: bool,
+}
+
+/// Whether to arm vault injection for a matched prompt (unit-tested policy).
+pub(crate) fn should_arm_vault_inject(
+    options: &PtyRunOptions,
+    is_elevation_prompt: bool,
+    is_ssh_login_prompt: bool,
+    is_inner_hop_ssh_prompt: bool,
+    field: &str,
+    ssh_login_done: bool,
+    inner_ssh_login_done: bool,
+    elevation_attempts: usize,
+    auth_failed_visible: bool,
+) -> bool {
+    if field != "password" {
+        return false;
+    }
+    if options.bastion_outer_hop {
+        if is_ssh_login_prompt {
+            if is_inner_hop_ssh_prompt {
+                return options.inner_vault_record.is_some() && !inner_ssh_login_done;
+            }
+            // Routed inner hop pending — do not inject bastion cred into a partial/generic prompt.
+            if options.inner_vault_record.is_some() {
+                return false;
+            }
+            if !ssh_login_done {
+                return true;
+            }
+            return false;
+        }
+        if let Some(_) = options.inner_vault_record {
+            if is_elevation_prompt {
+                // Nested sudo/su runs on the bastion-side brokre with local vault inject.
+                return false;
+            }
+        }
+        return false;
+    }
+    if options.passive_inner_ssh && is_ssh_login_prompt {
+        return false;
+    }
+    if is_elevation_prompt {
+        if elevation_attempts == 0 {
+            return true;
+        }
+        return auth_failed_visible && elevation_attempts == 1;
+    }
+    if is_ssh_login_prompt {
+        return !ssh_login_done;
+    }
+    // Generic CLI password prompt (mysql, psql, sh harness, etc.).
+    true
+}
+
+fn sudo_auth_failed_in_window(buf: &[u8]) -> bool {
+    contains_ascii_case_insensitive(buf, b"authentication failed")
+        || contains_ascii_case_insensitive(buf, b"sorry, try again")
+}
+
+/// Brief wait so the remote readline finishes drawing before password bytes are written.
+fn inject_settle_delay(is_elevation: bool, bastion_outer: bool) -> Duration {
+    let base = if is_elevation { 50 } else { 35 };
+    let nested = if bastion_outer && is_elevation { 80 } else { 0 };
+    Duration::from_millis(base + nested)
+}
+
+fn prompt_targets_inner_host(window: &[u8], hint: &str) -> bool {
+    if hint.is_empty() {
+        return false;
+    }
+    let lower = String::from_utf8_lossy(window).to_ascii_lowercase();
+    let hint_l = hint.to_ascii_lowercase();
+    if lower.contains(&hint_l) {
+        return true;
+    }
+    // `dev-host` saved as alias while OpenSSH prints `user@10.0.0.7's password:`.
+    hint_l
+        .split('@')
+        .next_back()
+        .is_some_and(|host| !host.is_empty() && lower.contains(host))
+}
+
+#[cfg(unix)]
+fn pty_master_readable(fd: RawFd, timeout_ms: i32) -> bool {
+    let mut pfd = libc::pollfd {
+        fd,
+        events: libc::POLLIN,
+        revents: 0,
+    };
+    unsafe { libc::poll(&mut pfd, 1, timeout_ms) > 0 && (pfd.revents & libc::POLLIN) != 0 }
+}
+
+/// OpenSSH login password prompt (`user@host's password:`), not sudo/su.
+fn is_ssh_login_password_prompt(buf: &[u8]) -> bool {
+    if crate::runtime::prompts::is_remote_sudo_password_prompt(buf)
+        || crate::runtime::prompts::is_remote_su_password_prompt(buf)
+    {
+        return false;
+    }
+    let lower: Vec<u8> = buf.iter().map(|b| b.to_ascii_lowercase()).collect();
+    lower.windows(11).any(|w| w == b"'s password:")
+        || lower.ends_with(b"password: ")
+        || lower.ends_with(b"password:\r\n")
+        || lower.ends_with(b"password:\n")
+}
+
 #[derive(Default)]
 pub struct PtyRunResult {
     pub exit_code: i32,
@@ -139,6 +260,7 @@ pub fn run(
     args: &[String],
     cred: PtyCredential<'_>,
     prompt_patterns: &[Regex],
+    options: PtyRunOptions,
 ) -> Result<PtyRunResult> {
     let (cols, rows) = terminal::size().unwrap_or((80, 24));
 
@@ -181,7 +303,9 @@ pub fn run(
 
     let stdin_is_tty = crate::security::tty::stdin_is_real_tty();
     let stdin_is_pipe = crate::security::tty::stdin_is_pipe();
-    let _raw_guard = if stdin_is_tty {
+    let preset_inject = !options.inject_disabled && cred.preset_injection();
+    // Raw mode only for interactive capture; vault inject + passive inner hop keep canonical tty.
+    let _raw_guard = if stdin_is_tty && !options.inject_disabled && !preset_inject {
         Some(RawModeGuard::enable())
     } else {
         None
@@ -212,13 +336,26 @@ pub fn run(
     let pending_field: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
     let injected_fields: Arc<Mutex<HashSet<String>>> = Arc::new(Mutex::new(HashSet::new()));
     let inject_done_count: Arc<AtomicUsize> = Arc::new(AtomicUsize::new(0));
+    let elevation_attempts: Arc<AtomicUsize> = Arc::new(AtomicUsize::new(0));
+    let ssh_login_done: Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
+    let inner_ssh_login_done: Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
+    let pending_is_elevation: Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
+    let pending_record_id: Arc<Mutex<Option<Uuid>>> = Arc::new(Mutex::new(None));
+    let suppress_stdout: Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
+    let suppress_until_post_auth: Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
+    let rescan_after_inject: Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
+    let defer_stdin = options.defer_stdin_forward;
+    let bastion_outer_hop = options.bastion_outer_hop;
+    let passive_inner_ssh = options.passive_inner_ssh;
+    let inner_vault_record = options.inner_vault_record;
+    let inner_host_hint = options.inner_host_hint.clone();
 
-    let should_scan = cred.should_scan(stdin_is_tty);
-    let preset_some = cred.preset_injection();
+    let should_scan = !options.inject_disabled && cred.should_scan(stdin_is_tty);
+    let preset_some = preset_inject && !options.inject_disabled;
 
     // Gate stdin -> PTY forwarding so pipe data cannot arrive before password injection.
     let stdin_forward_enabled = Arc::new(AtomicBool::new(
-        stdin_is_tty && !preset_some,
+        stdin_is_tty && !preset_some && !defer_stdin,
     ));
     let stdin_forward_a = stdin_forward_enabled.clone();
 
@@ -242,21 +379,149 @@ pub fn run(
     let inject_fields_a = inject_fields.clone();
     let pending_field_a = pending_field.clone();
     let injected_fields_a = injected_fields.clone();
+    let bastion_outer_a = options.bastion_outer_hop;
+    let passive_inner_ssh_a = passive_inner_ssh;
+    let elevation_attempts_a = elevation_attempts.clone();
+    let ssh_login_done_a = ssh_login_done.clone();
+    let inner_ssh_login_done_a = inner_ssh_login_done.clone();
+    let pending_is_elevation_a = pending_is_elevation.clone();
+    let pending_record_id_a = pending_record_id.clone();
+    let inner_vault_record_a = inner_vault_record;
+    let inner_host_hint_a = inner_host_hint;
+    let suppress_stdout_a = suppress_stdout.clone();
+    let suppress_until_post_auth_a = suppress_until_post_auth.clone();
+    let defer_stdin_a = defer_stdin;
+    let rescan_after_inject_a = rescan_after_inject.clone();
+    #[cfg(unix)]
+    let scanner_pty_fd = master_raw_fd;
 
     let scanner = thread::spawn(move || {
         let mut buf = [0u8; 4096];
         let mut window: Vec<u8> = Vec::with_capacity(2048);
         let stdout = std::io::stdout();
+
+        let arm_prompt_if_needed = |window: &mut Vec<u8>| {
+            if pending_cap_a.load(Ordering::Acquire) || pending_inj_a.load(Ordering::Acquire) {
+                return;
+            }
+            'prompt_scan: for re in &patterns {
+                if re.is_match(window) {
+                    let is_sudo_prompt = track_ssh_post_auth
+                        && (preset_some || (bastion_outer_a && inner_vault_record_a.is_some()))
+                        && crate::runtime::prompts::is_remote_sudo_password_prompt(window);
+                    let is_su_prompt = track_ssh_post_auth
+                        && preset_some
+                        && expect_su_elevation
+                        && crate::runtime::prompts::is_remote_su_password_prompt(window);
+                    let is_elevation_prompt = is_sudo_prompt || is_su_prompt;
+                    let is_ssh_login_prompt = is_ssh_login_password_prompt(window);
+                    let is_inner_hop_ssh = is_ssh_login_prompt
+                        && inner_host_hint_a
+                            .as_deref()
+                            .is_some_and(|h| prompt_targets_inner_host(window, h));
+                    if !preset_some && track_ssh_post_auth && post_auth_a.load(Ordering::Acquire) {
+                        window.clear();
+                        break 'prompt_scan;
+                    }
+                    had_a.store(true, Ordering::Release);
+                    if preset_some {
+                        if inject_fields_a.is_empty() {
+                            // PtyCredential::Secret (in-proc preset) — any matched prompt.
+                            pending_inj_a.store(true, Ordering::Release);
+                            window.clear();
+                            break 'prompt_scan;
+                        }
+                        if let Some(field) = field_for_prompt(window, &inject_fields_a) {
+                            let ssh_done = ssh_login_done_a.load(Ordering::Acquire)
+                                || injected_fields_a
+                                    .lock()
+                                    .map(|g| g.contains(&field))
+                                    .unwrap_or(false);
+                            let inner_ssh_done = inner_ssh_login_done_a.load(Ordering::Acquire);
+                            let elev_attempts = elevation_attempts_a.load(Ordering::Acquire);
+                            let auth_failed = sudo_auth_failed_in_window(window);
+                            let already = injected_fields_a
+                                .lock()
+                                .map(|g| g.contains(&field))
+                                .unwrap_or(true);
+                            let allow_elevation_reinject =
+                                already && field == "password" && is_elevation_prompt;
+                            if should_arm_vault_inject(
+                                &PtyRunOptions {
+                                    bastion_outer_hop: bastion_outer_a,
+                                    defer_stdin_forward: defer_stdin_a,
+                                    inner_vault_record: inner_vault_record_a,
+                                    inner_host_hint: inner_host_hint_a.clone(),
+                                    inject_disabled: false,
+                                    passive_inner_ssh: passive_inner_ssh_a,
+                                },
+                                is_elevation_prompt,
+                                is_ssh_login_prompt,
+                                is_inner_hop_ssh,
+                                &field,
+                                ssh_done,
+                                inner_ssh_done,
+                                elev_attempts,
+                                auth_failed,
+                            ) && (!already || allow_elevation_reinject)
+                            {
+                                let use_inner = bastion_outer_a
+                                    && inner_vault_record_a.is_some()
+                                    && (is_inner_hop_ssh || is_elevation_prompt);
+                                if let Ok(mut rid) = pending_record_id_a.lock() {
+                                    *rid = if use_inner {
+                                        inner_vault_record_a
+                                    } else {
+                                        None
+                                    };
+                                }
+                                pending_is_elevation_a
+                                    .store(is_elevation_prompt, Ordering::Release);
+                                suppress_stdout_a.store(true, Ordering::Release);
+                                if is_ssh_login_prompt {
+                                    suppress_until_post_auth_a.store(true, Ordering::Release);
+                                }
+                                if let Ok(mut pf) = pending_field_a.lock() {
+                                    *pf = Some(field);
+                                }
+                                pending_inj_a.store(true, Ordering::Release);
+                                window.clear();
+                                break 'prompt_scan;
+                            }
+                        }
+                    } else {
+                        pending_cap_a.store(true, Ordering::Release);
+                        let mut g = cap_a.lock().unwrap();
+                        *g = Some(String::new());
+                        window.clear();
+                        break 'prompt_scan;
+                    }
+                    break 'prompt_scan;
+                }
+            }
+        };
+
         loop {
+            if rescan_after_inject_a.swap(false, Ordering::AcqRel) {
+                arm_prompt_if_needed(&mut window);
+            }
+
+            #[cfg(unix)]
+            let data_ready = scanner_pty_fd
+                .map(|fd| pty_master_readable(fd, 50))
+                .unwrap_or(true);
+            #[cfg(not(unix))]
+            let data_ready = true;
+
+            if !data_ready {
+                continue;
+            }
+
             match reader.read(&mut buf) {
                 Ok(0) => break,
                 Ok(n) => {
                     let data = &buf[..n];
-                    {
-                        let mut out = stdout.lock();
-                        let _ = out.write_all(data);
-                        let _ = out.flush();
-                    }
+                    let mut suppress_auth_transition = false;
 
                     if should_scan {
                         window.extend_from_slice(data);
@@ -265,78 +530,35 @@ pub fn run(
                             window.drain(..drop_n);
                         }
 
+                        suppress_auth_transition =
+                            suppress_until_post_auth_a.load(Ordering::Acquire);
+
                         if track_ssh_post_auth
                             && !post_auth_a.load(Ordering::Acquire)
                             && ssh_post_auth_indicated(&window)
                         {
                             post_auth_a.store(true, Ordering::Release);
-                            stdin_forward_a.store(true, Ordering::Release);
-                        }
-
-                        if !pending_cap_a.load(Ordering::Acquire)
-                            && !pending_inj_a.load(Ordering::Acquire)
-                        {
-                            'prompt_scan: for re in &patterns {
-                                if re.is_match(&window) {
-                                    let is_sudo_prompt = track_ssh_post_auth
-                                        && preset_some
-                                        && crate::runtime::prompts::is_remote_sudo_password_prompt(
-                                            &window,
-                                        );
-                                    let is_su_prompt = track_ssh_post_auth
-                                        && preset_some
-                                        && expect_su_elevation
-                                        && crate::runtime::prompts::is_remote_su_password_prompt(
-                                            &window,
-                                        );
-                                    let is_elevation_prompt = is_sudo_prompt || is_su_prompt;
-                                    // Do not re-arm password capture after we're clearly past
-                                    // SSH authentication — later "…password:" lines are usually MOTD.
-                                    if !preset_some
-                                        && track_ssh_post_auth
-                                        && post_auth_a.load(Ordering::Acquire)
-                                    {
-                                        window.clear();
-                                        break 'prompt_scan;
-                                    }
-                                    had_a.store(true, Ordering::Release);
-                                    if preset_some {
-                                        if let Some(field) =
-                                            field_for_prompt(&window, &inject_fields_a)
-                                        {
-                                            let already = injected_fields_a
-                                                .lock()
-                                                .map(|g| g.contains(&field))
-                                                .unwrap_or(true);
-                                            let allow_elevation_reinject = already
-                                                && field == "password"
-                                                && is_elevation_prompt;
-                                            if !already || allow_elevation_reinject {
-                                                if let Ok(mut pf) = pending_field_a.lock() {
-                                                    *pf = Some(field);
-                                                }
-                                                pending_inj_a.store(true, Ordering::Release);
-                                                window.clear();
-                                                break 'prompt_scan;
-                                            }
-                                        }
-                                    } else {
-                                        pending_cap_a.store(true, Ordering::Release);
-                                        let mut g = cap_a.lock().unwrap();
-                                        *g = Some(String::new());
-                                        window.clear();
-                                        break 'prompt_scan;
-                                    }
-                                    // Pattern matched but injection not armed (e.g. stale
-                                    // password prompt after SSH inject) — keep window for
-                                    // elevation re-match when sudo/su prompts arrive.
-                                    break 'prompt_scan;
-                                }
+                            suppress_until_post_auth_a.store(false, Ordering::Release);
+                            if bastion_outer_a {
+                                ssh_login_done_a.store(true, Ordering::Release);
+                            }
+                            if !defer_stdin_a {
+                                stdin_forward_a.store(true, Ordering::Release);
                             }
                         }
+
+                        arm_prompt_if_needed(&mut window);
+                    }
+
+                    let suppress_this_chunk =
+                        suppress_stdout_a.swap(false, Ordering::AcqRel) || suppress_auth_transition;
+                    if !suppress_this_chunk {
+                        let mut out = stdout.lock();
+                        let _ = out.write_all(data);
+                        let _ = out.flush();
                     }
                 }
-                Err(_e) => break,
+                Err(_) => break,
             }
         }
         done_a.store(true, Ordering::Release);
@@ -378,47 +600,84 @@ pub fn run(
     let injected_fields_b = injected_fields.clone();
     let inject_fields_b = inject_fields.clone();
     let inject_done_count_b = inject_done_count.clone();
+    let elevation_attempts_b = elevation_attempts.clone();
+    let ssh_login_done_b = ssh_login_done.clone();
+    let inner_ssh_login_done_b = inner_ssh_login_done.clone();
+    let pending_record_id_b = pending_record_id.clone();
+    let pending_is_elevation_b = pending_is_elevation.clone();
+    let suppress_stdout_b = suppress_stdout.clone();
+    let suppress_until_post_auth_b = suppress_until_post_auth.clone();
+    let bastion_outer_b = bastion_outer_hop;
+    let rescan_after_inject_b = rescan_after_inject.clone();
     let injector = thread::spawn(move || {
         while !done_b.load(Ordering::Acquire) {
             if pending_inj_b.swap(false, Ordering::AcqRel) {
-                thread::sleep(Duration::from_millis(80));
+                let is_elevation = pending_is_elevation_b.load(Ordering::Acquire);
+                thread::sleep(inject_settle_delay(is_elevation, bastion_outer_b));
                 #[cfg(unix)]
-                if let (Some(rid), Some(fd)) = (vault_id, master_raw_fd) {
+                if let Some(fd) = master_raw_fd {
                     let field = pending_field_b
                         .lock()
                         .ok()
                         .and_then(|mut g| g.take())
                         .unwrap_or_else(|| "password".into());
-                    match crate::runtime::injector_child::spawn_injector_child(
-                        rid, fd, &field,
-                    ) {
-                        Ok((code, dur, pid, out)) => {
-                            if let Ok(mut g) = meta_for_thread.lock() {
-                                *g = Some((pid.unwrap_or(0), dur, out.clone()));
+                    let rid = pending_record_id_b
+                        .lock()
+                        .ok()
+                        .and_then(|mut g| g.take())
+                        .or(vault_id);
+                    if let Some(rid) = rid {
+                        match crate::runtime::injector_child::spawn_injector_child(rid, fd, &field)
+                        {
+                            Ok((code, dur, pid, out)) => {
+                                if let Ok(mut g) = meta_for_thread.lock() {
+                                    *g = Some((pid.unwrap_or(0), dur, out.clone()));
+                                }
+                                if code == 0 {
+                                    if let Ok(mut g) = injected_fields_b.lock() {
+                                        g.insert(field.clone());
+                                    }
+                                    if is_elevation {
+                                        elevation_attempts_b.fetch_add(1, Ordering::AcqRel);
+                                    } else if ssh_login_done_b.load(Ordering::Acquire) {
+                                        inner_ssh_login_done_b.store(true, Ordering::Release);
+                                    } else {
+                                        ssh_login_done_b.store(true, Ordering::Release);
+                                    }
+                                    if !is_elevation {
+                                        let suppress_until = suppress_until_post_auth_b.clone();
+                                        thread::spawn(move || {
+                                            thread::sleep(Duration::from_millis(250));
+                                            suppress_until.store(false, Ordering::Release);
+                                        });
+                                    }
+                                    thread::sleep(Duration::from_millis(if is_elevation {
+                                        45
+                                    } else {
+                                        35
+                                    }));
+                                    suppress_stdout_b.store(false, Ordering::Release);
+                                    rescan_after_inject_b.store(true, Ordering::Release);
+                                    let n = inject_done_count_b.fetch_add(1, Ordering::AcqRel) + 1;
+                                    if n >= inject_fields_b.len() {
+                                        inject_completed_b.store(true, Ordering::Release);
+                                    }
+                                    stdin_forward_b.store(true, Ordering::Release);
+                                } else {
+                                    let _ = std::io::stderr().write_all(
+                                        format!("brokre: injector exited {} ({})\n", code, out)
+                                            .as_bytes(),
+                                    );
+                                }
                             }
-                            if code == 0 {
-                                if let Ok(mut g) = injected_fields_b.lock() {
-                                    g.insert(field.clone());
-                                }
-                                let n =
-                                    inject_done_count_b.fetch_add(1, Ordering::AcqRel) + 1;
-                                if n >= inject_fields_b.len() {
-                                    inject_completed_b.store(true, Ordering::Release);
-                                }
-                                stdin_forward_b.store(true, Ordering::Release);
-                            } else {
+                            Err(e) => {
                                 let _ = std::io::stderr().write_all(
-                                    format!("brokre: injector exited {} ({})\n", code, out)
-                                        .as_bytes(),
+                                    format!("brokre: injector failed: {}\n", e).as_bytes(),
                                 );
                             }
                         }
-                        Err(e) => {
-                            let _ = std::io::stderr()
-                                .write_all(format!("brokre: injector failed: {}\n", e).as_bytes());
-                        }
+                        continue;
                     }
-                    continue;
                 }
 
                 #[cfg(any(not(unix), feature = "in_proc_inject"))]
@@ -438,37 +697,39 @@ pub fn run(
     const STDIN_CHANNEL_CAP: usize = 8;
     let pipe_eof = Arc::new(AtomicBool::new(false));
     let pipe_eof_sent = Arc::new(AtomicBool::new(false));
-    let stdin_rx: Option<std::sync::mpsc::Receiver<Vec<u8>>> =
-        if stdin_is_tty || stdin_is_pipe {
-            let (tx, rx) = std::sync::mpsc::sync_channel::<Vec<u8>>(STDIN_CHANNEL_CAP);
-            let pipe_eof_reader = pipe_eof.clone();
-            let stdin_is_pipe_reader = stdin_is_pipe;
-            thread::spawn(move || {
-                let mut buf = [0u8; 65536];
-                loop {
-                    match std::io::stdin().read(&mut buf) {
-                        Ok(0) => break,
-                        Ok(n) => {
-                            if tx.send(buf[..n].to_vec()).is_err() {
-                                break;
-                            }
+    let stdin_rx: Option<std::sync::mpsc::Receiver<Vec<u8>>> = if stdin_is_tty || stdin_is_pipe {
+        let (tx, rx) = std::sync::mpsc::sync_channel::<Vec<u8>>(STDIN_CHANNEL_CAP);
+        let pipe_eof_reader = pipe_eof.clone();
+        let stdin_is_pipe_reader = stdin_is_pipe;
+        thread::spawn(move || {
+            let mut buf = [0u8; 65536];
+            loop {
+                match std::io::stdin().read(&mut buf) {
+                    Ok(0) => break,
+                    Ok(n) => {
+                        if tx.send(buf[..n].to_vec()).is_err() {
+                            break;
                         }
-                        Err(_) => break,
                     }
+                    Err(_) => break,
                 }
-                if stdin_is_pipe_reader {
-                    pipe_eof_reader.store(true, Ordering::Release);
-                }
-            });
-            Some(rx)
-        } else {
-            None
-        };
+            }
+            if stdin_is_pipe_reader {
+                pipe_eof_reader.store(true, Ordering::Release);
+            }
+        });
+        Some(rx)
+    } else {
+        None
+    };
 
     let cap_main = captured.clone();
     let pending_cap_main = pending_capture.clone();
     let stdin_forward_main = stdin_forward_enabled.clone();
     let post_auth_main = post_auth.clone();
+    let elevation_attempts_main = elevation_attempts.clone();
+    let defer_stdin_main = defer_stdin;
+    let bastion_outer_main = bastion_outer_hop;
     let spawn_instant = Instant::now();
 
     loop {
@@ -478,18 +739,33 @@ pub fn run(
         }
 
         // Open stdin forwarding once injection succeeded or SSH post-auth is visible.
-        if !stdin_forward_main.load(Ordering::Acquire)
-            && (inject_completed.load(Ordering::Acquire)
-                || (preset_some && post_auth_main.load(Ordering::Acquire))
-                || (preset_some
-                    && !pending_inject.load(Ordering::Acquire)
-                    && spawn_instant.elapsed() >= Duration::from_secs(2))
-                || (!preset_some
-                    && !pending_capture.load(Ordering::Acquire)
-                    && !pending_inject.load(Ordering::Acquire)
-                    && spawn_instant.elapsed() >= Duration::from_secs(1)))
-        {
-            stdin_forward_main.store(true, Ordering::Release);
+        if !stdin_forward_main.load(Ordering::Acquire) {
+            let enable = if defer_stdin_main {
+                if bastion_outer_main {
+                    // Inner brokre on the bastion owns sudo/su; forward stdin after outer SSH login.
+                    post_auth_main.load(Ordering::Acquire)
+                        && !pending_inject.load(Ordering::Acquire)
+                        && spawn_instant.elapsed() >= Duration::from_secs(1)
+                } else {
+                    post_auth_main.load(Ordering::Acquire)
+                        && elevation_attempts_main.load(Ordering::Acquire) >= 1
+                        && !pending_inject.load(Ordering::Acquire)
+                        && spawn_instant.elapsed() >= Duration::from_secs(1)
+                }
+            } else {
+                inject_completed.load(Ordering::Acquire)
+                    || (preset_some && post_auth_main.load(Ordering::Acquire))
+                    || (preset_some
+                        && !pending_inject.load(Ordering::Acquire)
+                        && spawn_instant.elapsed() >= Duration::from_secs(2))
+                    || (!preset_some
+                        && !pending_capture.load(Ordering::Acquire)
+                        && !pending_inject.load(Ordering::Acquire)
+                        && spawn_instant.elapsed() >= Duration::from_secs(1))
+            };
+            if enable {
+                stdin_forward_main.store(true, Ordering::Release);
+            }
         }
 
         if stdin_forward_main.load(Ordering::Acquire) {
@@ -605,7 +881,102 @@ pub fn run(
 
 #[cfg(test)]
 mod tests {
-    use super::{contains_ascii_case_insensitive, ssh_post_auth_indicated};
+    use super::{
+        contains_ascii_case_insensitive, should_arm_vault_inject, ssh_post_auth_indicated,
+        PtyRunOptions,
+    };
+
+    #[test]
+    fn bastion_outer_hop_injects_bastion_ssh_then_inner_from_mac_vault() {
+        let outer = PtyRunOptions {
+            bastion_outer_hop: true,
+            ..Default::default()
+        };
+        assert!(should_arm_vault_inject(
+            &outer, false, true, false, "password", false, false, 0, false
+        ));
+        assert!(!should_arm_vault_inject(
+            &outer, true, false, false, "password", true, false, 0, false
+        ));
+        let outer_inner = PtyRunOptions {
+            bastion_outer_hop: true,
+            inner_vault_record: Some(uuid::Uuid::new_v4()),
+            inner_host_hint: Some("10.0.0.7".into()),
+            ..Default::default()
+        };
+        assert!(should_arm_vault_inject(
+            &outer_inner,
+            false,
+            true,
+            true,
+            "password",
+            false,
+            false,
+            0,
+            false
+        ));
+        assert!(!should_arm_vault_inject(
+            &outer_inner,
+            false,
+            true,
+            false,
+            "password",
+            false,
+            false,
+            0,
+            false
+        ));
+        assert!(!should_arm_vault_inject(
+            &outer_inner,
+            true,
+            false,
+            false,
+            "password",
+            true,
+            false,
+            0,
+            false
+        ));
+    }
+
+    #[test]
+    fn passive_inner_skips_ssh_but_allows_elevation() {
+        let inner = PtyRunOptions {
+            passive_inner_ssh: true,
+            ..Default::default()
+        };
+        assert!(!should_arm_vault_inject(
+            &inner, false, true, true, "password", false, false, 0, false
+        ));
+        assert!(should_arm_vault_inject(
+            &inner, true, false, false, "password", true, false, 0, false
+        ));
+    }
+
+    #[test]
+    fn elevation_retry_only_after_auth_failed() {
+        let direct = PtyRunOptions::default();
+        assert!(should_arm_vault_inject(
+            &direct, true, false, false, "password", true, false, 0, false
+        ));
+        assert!(!should_arm_vault_inject(
+            &direct, true, false, false, "password", true, false, 1, false
+        ));
+        assert!(should_arm_vault_inject(
+            &direct, true, false, false, "password", true, false, 1, true
+        ));
+        assert!(!should_arm_vault_inject(
+            &direct, true, false, false, "password", true, false, 2, true
+        ));
+    }
+
+    #[test]
+    fn direct_ssh_allows_first_elevation_inject() {
+        let direct = PtyRunOptions::default();
+        assert!(should_arm_vault_inject(
+            &direct, true, false, false, "password", true, false, 0, false
+        ));
+    }
 
     #[test]
     fn post_auth_detects_ubuntu_welcome() {

@@ -76,3 +76,21 @@ pub fn bastion_key_path() -> PathBuf {
 pub fn bastion_session_path() -> PathBuf {
     run_dir().join("bastion_session.json")
 }
+
+/// Shell token for brokre on a remote host (`$HOME` expanded by the remote login shell).
+pub fn remote_brokre_bin_shell() -> &'static str {
+    "$HOME/.brokre/bin/brokre"
+}
+
+/// Remote brokre invocation prefix for bastion hosts.
+///
+/// - `BROKRE_SOFT_MEMLOCK=1`: Linux bastions often lack memlock ulimit.
+/// - `BROKRE_ALLOW_FILE_KEYCHAIN=1`: Linux headless SSH cannot use secret-service keyring.
+pub fn remote_brokre_shell_token() -> &'static str {
+    "BROKRE_SOFT_MEMLOCK=1 BROKRE_ALLOW_FILE_KEYCHAIN=1 BROKRE_ROUTED_INNER=1 $HOME/.brokre/bin/brokre"
+}
+
+/// True when `shell_join` must not quote `s` (remote `$HOME` / env assignment).
+pub fn remote_shell_token_passthrough(s: &str) -> bool {
+    s == remote_brokre_bin_shell() || s == remote_brokre_shell_token()
+}
