@@ -99,6 +99,7 @@ pub fn probe_tcp(host: &str, port: u16, timeout: Duration) -> ProbeStatus {
             source: String::new(),
         };
     }
+    let mut last_err = None;
     for addr in addrs {
         match TcpStream::connect_timeout(&addr, timeout) {
             Ok(_) => {
@@ -110,23 +111,14 @@ pub fn probe_tcp(host: &str, port: u16, timeout: Duration) -> ProbeStatus {
                     source: String::new(),
                 };
             }
-            Err(e) => {
-                let last_err = e.to_string();
-                return ProbeStatus {
-                    reachable: false,
-                    probe_ms: Some(started.elapsed().as_millis() as u64),
-                    checked_at,
-                    error: Some(last_err),
-                    source: String::new(),
-                };
-            }
+            Err(e) => last_err = Some(e.to_string()),
         }
     }
     ProbeStatus {
         reachable: false,
         probe_ms: Some(started.elapsed().as_millis() as u64),
         checked_at,
-        error: Some("connect failed".into()),
+        error: Some(last_err.unwrap_or_else(|| "connect failed".into())),
         source: String::new(),
     }
 }

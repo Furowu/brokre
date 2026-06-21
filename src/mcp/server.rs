@@ -266,7 +266,7 @@ Reuses a persistent elevated shell by default. BROKRE_MCP_SESSION=0 disables reu
         Parameters(req): Parameters<ExecElevatedRequest>,
         peer: Peer<rmcp::RoleServer>,
     ) -> std::result::Result<CallToolResult, McpError> {
-        if needs_unlock_for_exec("ssh", &[req.alias.clone()]) {
+        if needs_unlock_for_exec("ssh", std::slice::from_ref(&req.alias)) {
             let server = self.ensure_manage_server().map_err(mcp_err)?;
             ensure_bastion_unlocked(&server, &peer).await?;
         }

@@ -787,7 +787,7 @@ fn dispatch(
             Err(e) => error_response(StatusCode(500), &e.to_string()),
         }
     } else if path.starts_with("/api/bastion") {
-        if let Some(resp) = handle_bastion_routes(&state, req, &method, path) {
+        if let Some(resp) = handle_bastion_routes(&state, req, method, path) {
             resp
         } else {
             error_response(StatusCode(404), "not found")
