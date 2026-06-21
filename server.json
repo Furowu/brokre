@@ -1,0 +1,21 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.Furowu/brokre",
+  "title": "brokre",
+  "description": "AI-safe credential broker for MCP — run saved SSH/MySQL/psql aliases; passwords never reach AI.",
+  "repository": {
+    "url": "https://github.com/Furowu/brokre",
+    "source": "github"
+  },
+  "version": "0.2.3",
+  "packages": [
+    {
+      "registryType": "npm",
+      "identifier": "brokre",
+      "version": "0.2.3",
+      "transport": {
+        "type": "stdio"
+      }
+    }
+  ]
+}
