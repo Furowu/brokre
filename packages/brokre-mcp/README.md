@@ -94,7 +94,7 @@ Disable auto-open: `BROKRE_MCP_NO_AUTO_OPEN=1`
 
 | Tool | Purpose |
 |------|---------|
-| `brokre_list` | List saved aliases (metadata only) |
+| `brokre_list` | Saved aliases (metadata only); auto smart-list when bastions registered — probe, merge `bastion::inner` routes, hide unreachable |
 | `brokre_exec` | Run a saved connection (`binary` + `args`); `ssh` + `sudo`/`su` auto-reuses elevated session |
 | `brokre_exec_elevated` | Remote privileged command (`alias`, `command`, `mode`); default `session=reuse` |
 | `brokre_setup` | Open manage UI in browser for the human |
@@ -102,6 +102,54 @@ Disable auto-open: `BROKRE_MCP_NO_AUTO_OPEN=1`
 | `brokre_audit_verify` | Verify tamper-evident audit log chain |
 
 **Not exposed:** `reveal`, password export, or manage session tokens.
+
+### `brokre_list` — cross-network smart list
+
+When bastions are registered on the laptop, `brokre_list` **automatically** (no extra params):
+
+1. TCP-probes local and bastion-discovered aliases
+2. Merges routed entries like `b150::db` (`route: ["b150"]`, `access: "via_b150"`)
+3. **Hides** unreachable aliases (e.g. local LAN `db` when off-network)
+
+Use `all: true` to include unreachable entries. Prefer `addr` with `availability: "available"`; for cross-network inner hosts use `bastion::inner` in `brokre_exec` args.
+
+**Example response** (cross-network via VPN to bastion `b150`):
+
+```json
+{
+  "items": [
+    {
+      "profile": "ssh",
+      "name": "db",
+      "addr": "b150::db",
+      "route": ["b150"],
+      "kind": "inner",
+      "access": "via_b150",
+      "host_alias": "10.0.0.20",
+      "availability": "available",
+      "status": {
+        "reachable": true,
+        "probe_ms": 3,
+        "source": "b150",
+        "checked_at": "2026-06-21T12:00:00Z"
+      }
+    }
+  ],
+  "bastion_gate": {
+    "required": true,
+    "unlocked_during_call": true,
+    "idle_expires_at": "2026-06-21T12:10:00Z"
+  }
+}
+```
+
+**Execute routed alias:**
+
+```json
+{ "binary": "ssh", "args": ["b150::db", "uname", "-a"] }
+```
+
+When both direct and routed paths work, both appear — `access: "direct"` vs `access: "via_b150"`.
 
 ### Elevated sessions (`brokre_exec_elevated`)
 

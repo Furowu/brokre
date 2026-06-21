@@ -1,15 +1,79 @@
 //! MCP-specific bastion gate: URL-mode elicitation, then shared browser poll.
 
-use crate::bastion::gate::{bastion_auth_url, fetch_unlocked_status, poll_timeout};
-use crate::bastion::session::{gate_required, is_unlocked};
+use crate::bastion::gate::{
+    bastion_auth_url, exec_touches_bastion_outbound, fetch_unlocked_status,
+    list_touches_bastion_outbound, poll_timeout,
+};
+use crate::bastion::session::{gate_required, is_unlocked, load_session};
 use crate::manage::open_browser;
 use crate::manage::server::ManageServer;
 use rmcp::model::ElicitationAction;
 use rmcp::service::ElicitationMode;
 use rmcp::{ErrorData as McpError, Peer, RoleServer};
+use serde::Serialize;
 use std::thread;
 use std::time::Duration;
 use uuid::Uuid;
+
+/// Bastion outbound gate metadata included in MCP tool responses.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct BastionGateInfo {
+    /// This call is subject to bastion outbound gate (key configured + operation touches bastions).
+    pub required: bool,
+    /// Human unlocked the bastion session during this tool call (browser / elicitation).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub unlocked_during_call: Option<bool>,
+    /// Rolling idle expiry of the active bastion session (RFC3339), when unlocked.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub idle_expires_at: Option<String>,
+}
+
+impl BastionGateInfo {
+    pub fn for_list(probe: bool, include_bastions: bool, unlocked_during_call: bool) -> Self {
+        Self::build(
+            gate_applies_for_list(probe, include_bastions),
+            unlocked_during_call,
+        )
+    }
+
+    pub fn for_exec(profile: &str, args: &[String], unlocked_during_call: bool) -> Self {
+        Self::build(
+            gate_applies_for_exec(profile, args),
+            unlocked_during_call,
+        )
+    }
+
+    fn build(applies: bool, unlocked_during_call: bool) -> Self {
+        if !applies {
+            return Self {
+                required: false,
+                unlocked_during_call: None,
+                idle_expires_at: None,
+            };
+        }
+        let idle_expires_at = if is_unlocked() {
+            load_session()
+                .ok()
+                .flatten()
+                .map(|s| s.idle_expires_at.to_rfc3339())
+        } else {
+            None
+        };
+        Self {
+            required: true,
+            unlocked_during_call: Some(unlocked_during_call),
+            idle_expires_at,
+        }
+    }
+}
+
+pub fn gate_applies_for_list(probe: bool, include_bastions: bool) -> bool {
+    gate_required() && list_touches_bastion_outbound(probe, include_bastions)
+}
+
+pub fn gate_applies_for_exec(profile: &str, args: &[String]) -> bool {
+    gate_required() && exec_touches_bastion_outbound(profile, args)
+}
 
 pub fn needs_unlock_for_exec(profile: &str, args: &[String]) -> bool {
     crate::bastion::gate::needs_unlock_for_exec(profile, args)
@@ -19,12 +83,13 @@ pub fn needs_unlock_for_list(probe: bool, include_bastions: bool) -> bool {
     crate::bastion::gate::needs_unlock_for_list(probe, include_bastions)
 }
 
+/// Ensure bastion outbound access is unlocked. Returns `true` when the human unlocked during this call.
 pub async fn ensure_bastion_unlocked(
     server: &ManageServer,
     peer: &Peer<RoleServer>,
-) -> std::result::Result<(), McpError> {
+) -> std::result::Result<bool, McpError> {
     if !gate_required() || is_unlocked() {
-        return Ok(());
+        return Ok(false);
     }
 
     let elicitation_id = Uuid::new_v4().to_string();
@@ -43,7 +108,7 @@ pub async fn ensure_bastion_unlocked(
             )
             .await
         {
-            Ok(ElicitationAction::Accept) if is_unlocked() => return Ok(()),
+            Ok(ElicitationAction::Accept) if is_unlocked() => return Ok(true),
             Ok(ElicitationAction::Accept) => {}
             Ok(ElicitationAction::Decline) => {
                 return Err(McpError::invalid_request(
@@ -67,7 +132,8 @@ pub async fn ensure_bastion_unlocked(
         let _ = open_browser(&url_clone);
     });
 
-    poll_until_unlocked_async(server, poll_timeout()).await
+    poll_until_unlocked_async(server, poll_timeout()).await?;
+    Ok(true)
 }
 
 async fn poll_until_unlocked_async(
@@ -90,4 +156,24 @@ async fn poll_until_unlocked_async(
         "bastion unlock timed out — open the auth page and retry",
         None,
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bastion_gate_info_not_required_serializes_minimal() {
+        let info = BastionGateInfo::build(false, false);
+        let v = serde_json::to_value(&info).unwrap();
+        assert_eq!(v, serde_json::json!({ "required": false }));
+    }
+
+    #[test]
+    fn bastion_gate_info_required_includes_unlocked_during_call() {
+        let info = BastionGateInfo::build(true, true);
+        let v = serde_json::to_value(&info).unwrap();
+        assert_eq!(v["required"], true);
+        assert_eq!(v["unlocked_during_call"], true);
+    }
 }

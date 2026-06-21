@@ -285,6 +285,86 @@ verify_release_assets() {
   log "all ${#RELEASE_TARGETS[@]} GitHub release assets verified for v${v}"
 }
 
+# Interactive login helpers — npm / MCP Registry refuse publish when creds expire;
+# npm reports misleading E404 instead of 401.
+require_interactive_tty() {
+  if [[ -t 0 ]] || [[ -e /dev/tty ]]; then
+    return 0
+  fi
+  die "需要交互式终端完成登录 — 请在终端运行: npm login 或 mcp-publisher login github"
+}
+
+run_interactive() {
+  require_interactive_tty
+  if [[ -e /dev/tty ]]; then
+    "$@" </dev/tty >/dev/tty 2>&1
+  else
+    "$@"
+  fi
+}
+
+npm_whoami_ok() {
+  npm whoami >/dev/null 2>&1
+}
+
+ensure_npm_login() {
+  if npm_whoami_ok; then
+    log "npm: $(npm whoami)"
+    return 0
+  fi
+  log "npm 凭据缺失或已过期，请在下方按提示完成浏览器登录…"
+  run_interactive npm login --auth-type web \
+    || die "npm login 取消或失败"
+  npm_whoami_ok || die "npm login 后仍无法验证身份"
+  log "npm: $(npm whoami)"
+}
+
+npm_publish_auth_error() {
+  local logfile="$1"
+  grep -qiE 'E401|401 Unauthorized|E403|403 Forbidden|do not have permission' "$logfile" \
+    || grep -qiE 'E404.*Not [Ff]ound|do not have permission to access' "$logfile" \
+    || grep -qiE 'expired|token is expired|unauthorized|authentication' "$logfile"
+}
+
+mcp_publisher_token_exists() {
+  [[ -f "${HOME}/.config/mcp-publisher/token.json" ]]
+}
+
+ensure_mcp_publisher_login() {
+  local publisher="$1"
+  log "MCP Registry：请在下方按提示完成 GitHub 设备码登录…"
+  run_interactive "$publisher" login github \
+    || die "MCP Registry login 取消或失败"
+  log "MCP Registry：GitHub 登录成功"
+}
+
+mcp_publish_auth_error() {
+  local output="$1"
+  grep -qiE 'not logged in|token is expired|invalid or expired|authentication failed|unauthorized|401|403|expired|claims:.*expired' <<<"$output"
+}
+
+_mcp_registry_login_and_publish() {
+  local publisher="$1"
+  ensure_mcp_publisher_login "$publisher"
+  log "MCP Registry：正在发布…"
+  (cd "$DEPLOY_ROOT" && "$publisher" publish) \
+    || die "mcp-publisher publish 失败（登录后仍无法发布，请检查上方输出）"
+}
+
+_mcp_registry_try_publish() {
+  local publisher="$1" output rc
+  output=$(cd "$DEPLOY_ROOT" && "$publisher" publish 2>&1) && rc=0 || rc=$?
+  printf '%s\n' "$output" >&2
+  if [[ "$rc" -eq 0 ]]; then
+    return 0
+  fi
+  if mcp_publish_auth_error "$output"; then
+    _mcp_registry_login_and_publish "$publisher"
+    return 0
+  fi
+  die "mcp-publisher publish 失败（非鉴权错误，请检查上方输出）"
+}
+
 ensure_mcp_publisher() {
   if command -v mcp-publisher >/dev/null 2>&1; then
     printf '%s\n' mcp-publisher
@@ -310,27 +390,51 @@ ensure_mcp_publisher() {
 }
 
 publish_mcp_registry() {
-  local v publisher
+  local after_npm="${1:-0}" v publisher
   [[ -f "$MCP_REGISTRY_SERVER_JSON" ]] || die "missing $MCP_REGISTRY_SERVER_JSON"
   v=$(read_version)
   publisher=$(ensure_mcp_publisher)
   log "publishing io.github.Furowu/brokre@$v to MCP Registry..."
-  (cd "$DEPLOY_ROOT" && "$publisher" publish) \
-    || die "mcp-publisher publish failed — run: $publisher login github"
+
+  # npm publish runs first in ./d npm; MCP JWT expires within minutes — login before publish.
+  if [[ "$after_npm" == "1" ]] || ! mcp_publisher_token_exists; then
+    _mcp_registry_login_and_publish "$publisher"
+  else
+    _mcp_registry_try_publish "$publisher"
+  fi
   log "MCP Registry publish done (verify: curl \"https://registry.modelcontextprotocol.io/v0.1/servers?search=io.github.Furowu/brokre\")"
 }
 
 publish_npm() {
-  local v
+  local v npm_log rc
   v=$(read_version)
   log "checking GitHub release assets before npm publish..."
   verify_release_assets
   verify_mcp_package_clean
+  ensure_npm_login
   log "publishing brokre@$v to npm..."
-  (cd "$MCP_DIR" && npm publish --access public)
-  log "npm publish done"
+  npm_log=$(mktemp)
+  if (cd "$MCP_DIR" && npm publish --access public >"$npm_log" 2>&1); then
+    cat "$npm_log" >&2
+    rm -f "$npm_log"
+    log "npm publish done"
+  else
+    rc=$?
+    cat "$npm_log" >&2
+    if npm_publish_auth_error "$npm_log"; then
+      rm -f "$npm_log"
+      log "npm 凭据已过期，正在重新登录…"
+      ensure_npm_login
+      (cd "$MCP_DIR" && npm publish --access public) \
+        || die "npm publish failed after re-login"
+      log "npm publish done"
+    else
+      rm -f "$npm_log"
+      die "npm publish failed (exit $rc)"
+    fi
+  fi
   if [[ "${BROKRE_SKIP_MCP_REGISTRY:-}" != "1" ]]; then
-    publish_mcp_registry
+    publish_mcp_registry 1
   else
     log "skip MCP Registry (BROKRE_SKIP_MCP_REGISTRY=1)"
   fi

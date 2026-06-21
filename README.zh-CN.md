@@ -108,7 +108,7 @@ claude mcp add --scope project brokre -- npx -y brokre@latest
 
 | MCP 工具 | 用途 |
 |----------|------|
-| `brokre_list` | 已保存别名（元数据 + 可选 `probe` / `include_bastions` 返回 `status`/`route`） |
+| `brokre_list` | 已保存别名；有堡垒时自动探测、合并路由别名（`b150::db`）、隐藏不可达项；含 `access`/`availability`/`bastion_gate` |
 | `brokre_exec` | 运行**任意**已保存 CLI 别名（`binary` + `args`）；`ssh` + `sudo`/`su` 时自动复用 elevated 会话 |
 | `brokre_exec_elevated` | 远端提权执行（`alias` + `command` + `mode`）；默认 `session=reuse` 复用后台 shell（10 分钟空闲销毁） |
 | `brokre_setup` | 在浏览器打开 manage UI，由人类添加凭据 |
@@ -208,19 +208,49 @@ brokre <你的-cli> <别名> [args...]
 ### 列出元数据（AI / 脚本安全）
 
 ```bash
-brokre list --json
-brokre list --json --probe --include-bastions   # 含 TCP 可达性与堡垒路由
+brokre list --json              # 无堡垒时：本地别名；有堡垒时：智能列表（见下）
+brokre list --all --json        # 含不可达别名（排查用）
+brokre list --no-bastion-discovery   # 仅本地，不 SSH、不探测
 ```
 
-### 堡垒代理（出差 / 内网入口）
+已注册堡垒时，`brokre list` **默认**会：TCP 探测可达性、合并堡垒上的别名（如 `b150::db`）、**隐藏不可达**的本地局域网项，避免 AI 误用跨网不可达的直连别名。
+
+### 跨网清单继承（堡垒 broker）
+
+适用于出差、VPN、公网入口等**跨网**场景：本机直连内网主机不可达，但经堡垒（如 `b150`）可访问其上的 brokre 与内网凭据。
+
+**前提**
+
+1. 本机：`brokre bastion enable b150`（`b150` 为已保存的 SSH 别名）
+2. 堡垒主机上已安装 brokre，并保存内网别名（如 `db`）
+
+**智能列表**
+
+```bash
+brokre bastion unlock            # 若已设堡垒密钥
+brokre list                      # 自动含 b150::db（route=b150, access=via_b150）
+```
+
+跨网时本地 `db`（`access=direct`）若不可达则**不出现在列表**；请使用 `b150::db`。
+
+**执行**
+
+```bash
+brokre ssh b150::db uname -a
+# MCP: brokre_exec binary=ssh, args=["b150::db", "uname", "-a"]
+```
+
+同一主机在本地与堡垒均可达时，列表会**同时显示** `db`（`direct`）与 `b150::db`（`via_b150`），通过 `access` 区分路径。
+
+### 堡垒代理（跨网 / 内网入口）
 
 将**任意**已保存且远端安装了 brokre 的 SSH 别名提升为堡垒 broker；凭据留在堡垒，本地只缓存元数据并通过 SSH 透传执行。
 
 ```bash
-brokre bastion enable b150          # 提升 ssh 别名 b150 为堡垒
+brokre bastion enable b150        # 提升 ssh 别名 b150 为堡垒
 brokre bastion set-key              # 设定堡垒解锁密钥（TTY）
 brokre bastion unlock               # 解锁出站会话（TTL，默认 10 分钟空闲）
-brokre list --json --probe          # 本地 + 堡垒别名，含毫秒级 TCP 状态
+brokre list --json                  # 智能列表：可达性 + 堡垒路由别名
 brokre ssh b150::db uname -a        # 路由执行：经 b150 在远端 brokre 注入 db 凭据
 brokre bastion sync b150 --json     # 仅拉取某堡垒上的别名清单
 ```

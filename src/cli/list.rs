@@ -1,4 +1,6 @@
-use crate::bastion::discover::{build_local_items, discover_remote_items, merge_list_items, DiscoverOptions};
+use crate::bastion::list_policy::{
+    collect_list_items, format_status_display, resolve_list_options, RawListOptions,
+};
 use crate::bastion::model::BastionListItem;
 use crate::utils::errors::Result;
 use crate::vault::store::VaultStore;
@@ -12,6 +14,8 @@ pub struct ListOptions {
     pub probe: bool,
     pub include_bastions: bool,
     pub no_bastion_discovery: bool,
+    /// Show unreachable aliases (disables smart filtering).
+    pub show_all: bool,
 }
 
 pub fn run(opts: ListOptions) -> Result<()> {
@@ -36,16 +40,14 @@ pub fn run(opts: ListOptions) -> Result<()> {
         records.retain(|r| r.name.contains(n));
     }
 
-    let mut items = build_local_items(records, opts.probe)?;
-
-    let include_bastions = opts.include_bastions || (opts.probe && !opts.no_bastion_discovery);
-    if include_bastions && !opts.no_bastion_discovery {
-        let remote = discover_remote_items(&DiscoverOptions {
-            probe: opts.probe,
-            include_bastions: true,
-        })?;
-        items = merge_list_items(items, remote);
-    }
+    let effective = resolve_list_options(RawListOptions {
+        probe: opts.probe,
+        include_bastions: opts.include_bastions,
+        no_bastion_discovery: opts.no_bastion_discovery,
+        show_all: opts.show_all,
+        for_mcp: false,
+    });
+    let items = collect_list_items(records, &effective)?;
 
     if opts.json {
         print_json(&items)?;
@@ -87,24 +89,11 @@ fn print_table(items: &[BastionListItem]) {
             } else {
                 r.route.join("::")
             };
-            let status = r
-                .status
-                .as_ref()
-                .map(|s| {
-                    if s.reachable {
-                        format!("up@{} {}ms", s.source, s.probe_ms.unwrap_or(0))
-                    } else {
-                        format!(
-                            "down@{} {}",
-                            s.source,
-                            s.error.as_deref().unwrap_or("?")
-                        )
-                    }
-                })
-                .unwrap_or_else(|| "-".into());
+            let access = r.access.as_deref().unwrap_or("-");
+            let status = format_status_display(r);
             println!(
-                "  {:<28}  kind={:<6} route={:<12} host={:<20} status={:<16} last_used={}",
-                r.addr, format!("{:?}", r.kind).to_lowercase(), route, host, status, last
+                "  {:<28}  kind={:<6} route={:<12} access={:<14} host={:<20} status={:<32} last_used={}",
+                r.addr, format!("{:?}", r.kind).to_lowercase(), route, access, host, status, last
             );
         }
     }

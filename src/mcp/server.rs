@@ -4,8 +4,10 @@
 //! Never exposes reveal, rm, or session tokens via MCP tool results.
 
 use crate::audit::query::{list, verify_with_stats, AuditQuery};
-use crate::bastion::discover::{build_local_items, discover_remote_items, merge_list_items, DiscoverOptions};
-use crate::bastion::mcp_gate::{ensure_bastion_unlocked, needs_unlock_for_exec, needs_unlock_for_list};
+use crate::bastion::list_policy::{collect_list_items, resolve_list_options, RawListOptions};
+use crate::bastion::mcp_gate::{
+    ensure_bastion_unlocked, needs_unlock_for_exec, needs_unlock_for_list, BastionGateInfo,
+};
 use crate::manage::{
     open_browser, run_manage_server_with, IdleBehavior, ManageServer, ManageServerOptions,
 };
@@ -28,22 +30,27 @@ use std::time::Duration;
 const SERVER_INSTRUCTIONS: &str = "\
 brokre is an AI-safe credential broker. Rules for agents:\n\
 1. NEVER ask the user for passwords or call brokre reveal — it is TTY-gated and unavailable here.\n\
-2. Use brokre_list to discover saved aliases (metadata only: profile, name, host, route, status).\n\
-3. Routed bastion aliases use `bastion::inner` (e.g. b150::db). Check status.reachable before exec.\n\
-4. Non-privileged remote commands — brokre_exec: binary=ssh, args=[\"alias\", \"uname\", \"-a\"]. \
+2. Use brokre_list to discover saved aliases (metadata: profile, name, addr, host_alias, route, access, availability, status).\n\
+3. Cross-network: when local LAN aliases are unreachable, brokre_list hides them and shows routed entries \
+(e.g. b150::db with access=via_b150, route=[\"b150\"]). Prefer addr containing `::` with availability=available.\n\
+4. Exec routed aliases: brokre_exec binary=ssh, args=[\"b150::db\", \"uname\", \"-a\"] — credentials inject on the bastion.\n\
+5. Non-privileged remote commands — brokre_exec: binary=ssh, args=[\"alias\", \"uname\", \"-a\"]. \
 Args are argv tokens after the alias (NOT one shell string). Example: args=[\"prod\", \"docker\", \"ps\"].\n\
-5. Privileged remote commands (sudo/su) — prefer brokre_exec_elevated:\n\
+6. Privileged remote commands (sudo/su) — prefer brokre_exec_elevated:\n\
    {\"alias\":\"prod\",\"command\":\"whoami\",\"mode\":\"sudo_login\"} for root login env (like sudo -i).\n\
    mode: sudo (default) | sudo_login (sudo -i env) | su. user: target for su (default root).\n\
    session: reuse (default, ~10 min idle) | new (fresh sudo) | close (end session; command=\"\").\n\
-6. brokre_exec shortcut for sudo: binary=ssh, args=[\"prod\",\"sudo\",\"systemctl\",\"status\",\"nginx\"] \
+7. brokre_exec shortcut for sudo: binary=ssh, args=[\"prod\",\"sudo\",\"systemctl\",\"status\",\"nginx\"] \
 (split argv, not quoted). args=[\"prod\",\"sudo\",\"-i\",\"whoami\"] maps to sudo_login. Uses same session pool.\n\
-7. Do NOT ask the user for sudo passwords — vault password is injected locally. If sudo fails, tell the user \
+8. Do NOT ask the user for sudo passwords — vault password is injected locally. If sudo fails, tell the user \
 to verify the vault password matches the remote sudo password via brokre manage UI (brokre_setup).\n\
-8. If brokre_list is empty or exec fails with no saved credential, call brokre_setup for the human to add accounts.\n\
-9. Passwords are injected locally and never returned through MCP.\n\
-10. Bastion outbound access may require human unlock via browser (URL elicitation or local auth page).\n\
-11. brokre_audit_list / brokre_audit_verify: read-only audit metadata (args redacted).";
+9. If brokre_list is empty or exec fails with no saved credential, call brokre_setup for the human to add accounts.\n\
+10. Passwords are injected locally and never returned through MCP.\n\
+11. Bastion outbound access may require human unlock via browser (URL elicitation or local auth page). \
+When gate applies, tell the user to complete bastion unlock in the browser if `bastion_gate.unlocked_during_call` is true or the call blocks waiting.\n\
+12. brokre_list / brokre_exec / brokre_exec_elevated responses include `bastion_gate` \
+(`required`, `unlocked_during_call`, `idle_expires_at`) so agents know unlock state.\n\
+13. brokre_audit_list / brokre_audit_verify: read-only audit metadata (args redacted).";
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct ListRequest {
@@ -53,9 +60,12 @@ pub struct ListRequest {
     /// TCP reachability probe (ms-level timeout).
     #[serde(default)]
     pub probe: bool,
-    /// Include aliases discovered on registered bastions.
+    /// Include aliases discovered on registered bastions (auto-enabled when bastions are registered).
     #[serde(default)]
     pub include_bastions: bool,
+    /// Include unreachable aliases (default: hidden when probing).
+    #[serde(default)]
+    pub all: bool,
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
@@ -189,34 +199,41 @@ impl BrokreMcp {
 #[tool_router]
 impl BrokreMcp {
     #[tool(
-        description = "List saved credential aliases (metadata only — never passwords). Optional profile filter; probe=true adds TCP reachability; include_bastions=true merges bastion-discovered aliases. Always call before brokre_exec."
+        description = "List saved credential aliases (metadata only — never passwords). When bastions are registered, auto-probes reachability, merges routed aliases (e.g. b150::db), and hides unreachable entries. Use all=true to show everything. Response includes items (addr, route, access, availability, host_alias, status) and bastion_gate. Always call before brokre_exec."
     )]
     async fn brokre_list(
         &self,
         Parameters(req): Parameters<ListRequest>,
         peer: Peer<rmcp::RoleServer>,
     ) -> std::result::Result<CallToolResult, McpError> {
-        if needs_unlock_for_list(req.probe, req.include_bastions) {
+        let effective = resolve_list_options(RawListOptions {
+            probe: req.probe,
+            include_bastions: req.include_bastions,
+            no_bastion_discovery: false,
+            show_all: req.all,
+            for_mcp: true,
+        });
+        let mut unlocked_during_call = false;
+        if needs_unlock_for_list(effective.probe, effective.include_bastions) {
             let server = self.ensure_manage_server().map_err(mcp_err)?;
-            ensure_bastion_unlocked(&server, &peer).await?;
+            unlocked_during_call = ensure_bastion_unlocked(&server, &peer).await?;
         }
         let store = VaultStore::open().map_err(mcp_err)?;
         let mut records = store.list().map_err(mcp_err)?;
         if let Some(p) = req.profile {
             records.retain(|r| r.profile == p);
         }
-        let mut items = build_local_items(records, req.probe).map_err(mcp_err)?;
-        let include_bastions = req.include_bastions || req.probe;
-        if include_bastions {
-            let remote = discover_remote_items(&DiscoverOptions {
-                probe: req.probe,
-                include_bastions: true,
-            })
-            .map_err(mcp_err)?;
-            items = merge_list_items(items, remote);
-        }
-        let text = serde_json::to_string_pretty(&items).map_err(mcp_err)?;
-        Ok(CallToolResult::success(vec![Content::text(text)]))
+        let items = collect_list_items(records, &effective).map_err(mcp_err)?;
+        let gate = BastionGateInfo::for_list(
+            effective.probe,
+            effective.include_bastions,
+            unlocked_during_call,
+        );
+        let body = serde_json::json!({
+            "items": items,
+            "bastion_gate": gate,
+        });
+        Ok(text_json_result(&body))
     }
 
     #[tool(
@@ -224,17 +241,19 @@ impl BrokreMcp {
 Requires a saved alias as the first positional arg in args. Args are argv tokens, not a shell string: \
 use [\"prod\",\"uptime\"] not [\"prod\",\"uptime\"]. For remote sudo/su prefer brokre_exec_elevated; \
 shortcut: binary=ssh, args=[\"alias\",\"sudo\",\"cmd\",...] or args=[\"alias\",\"sudo\",\"-i\",\"whoami\"]. \
-Supports bastion routes like b150::db. Never returns vault passwords."
+Supports bastion routes like b150::db. Response includes `bastion_gate` unlock metadata. Never returns vault passwords."
     )]
     async fn brokre_exec(
         &self,
         Parameters(req): Parameters<ExecRequest>,
         peer: Peer<rmcp::RoleServer>,
     ) -> std::result::Result<CallToolResult, McpError> {
+        let mut unlocked_during_call = false;
         if needs_unlock_for_exec(&req.binary, &req.args) {
             let server = self.ensure_manage_server().map_err(mcp_err)?;
-            ensure_bastion_unlocked(&server, &peer).await?;
+            unlocked_during_call = ensure_bastion_unlocked(&server, &peer).await?;
         }
+        let gate = BastionGateInfo::for_exec(&req.binary, &req.args, unlocked_during_call);
         if mcp_session_enabled() && req.binary == "ssh" {
             if let Some((alias, mode, command, user)) =
                 crate::runtime::elevated::ssh_exec_args_to_elevated(&req.args)
@@ -246,12 +265,13 @@ Supports bastion routes like b150::db. Never returns vault passwords."
                         key,
                         Some(command),
                         SessionPolicy::Reuse,
+                        gate,
                     )
                     .await;
                 }
             }
         }
-        run_brokre_cli(&req.binary, &req.args, &[]).await
+        run_brokre_cli(&req.binary, &req.args, &[], gate).await
     }
 
     #[tool(
@@ -259,17 +279,19 @@ Supports bastion routes like b150::db. Never returns vault passwords."
 Preferred for any remote root/sudo work. Example: {\"alias\":\"prod\",\"command\":\"docker ps\",\"mode\":\"sudo_login\"}. \
 mode: sudo (default) | sudo_login (root login env, like sudo -i) | su. user: su target (default root). \
 session: reuse (default, sudo once per ~10 min idle) | new | close (empty command). \
-Reuses a persistent elevated shell by default. BROKRE_MCP_SESSION=0 disables reuse."
+Reuses a persistent elevated shell by default. BROKRE_MCP_SESSION=0 disables reuse. Response includes `bastion_gate` unlock metadata."
     )]
     async fn brokre_exec_elevated(
         &self,
         Parameters(req): Parameters<ExecElevatedRequest>,
         peer: Peer<rmcp::RoleServer>,
     ) -> std::result::Result<CallToolResult, McpError> {
+        let mut unlocked_during_call = false;
         if needs_unlock_for_exec("ssh", std::slice::from_ref(&req.alias)) {
             let server = self.ensure_manage_server().map_err(mcp_err)?;
-            ensure_bastion_unlocked(&server, &peer).await?;
+            unlocked_during_call = ensure_bastion_unlocked(&server, &peer).await?;
         }
+        let gate = BastionGateInfo::for_exec("ssh", &[req.alias.clone()], unlocked_during_call);
         let mode = crate::runtime::elevated::ElevatedMode::parse(&req.mode).map_err(mcp_err)?;
         let policy = SessionPolicy::parse(&req.session).map_err(mcp_err)?;
 
@@ -292,6 +314,7 @@ Reuses a persistent elevated shell by default. BROKRE_MCP_SESSION=0 disables reu
                     ("BROKRE_MCP_EXEC", "1"),
                     ("BROKRE_MCP_ELEVATED", mode.mcp_env_value()),
                 ],
+                gate,
             )
             .await;
         }
@@ -304,7 +327,7 @@ Reuses a persistent elevated shell by default. BROKRE_MCP_SESSION=0 disables reu
             } else {
                 Some(req.command.clone())
             };
-            return run_elevated_pool(self.sessions.clone(), key, cmd, policy).await;
+            return run_elevated_pool(self.sessions.clone(), key, cmd, policy, gate).await;
         }
 
         let args = crate::runtime::elevated::build_ssh_argv(
@@ -321,6 +344,7 @@ Reuses a persistent elevated shell by default. BROKRE_MCP_SESSION=0 disables reu
                 ("BROKRE_MCP_EXEC", "1"),
                 ("BROKRE_MCP_ELEVATED", mode.mcp_env_value()),
             ],
+            gate,
         )
         .await
     }
@@ -388,10 +412,17 @@ fn mcp_err(e: impl std::fmt::Display) -> McpError {
     McpError::internal_error(e.to_string(), None)
 }
 
+fn text_json_result(body: &serde_json::Value) -> CallToolResult {
+    CallToolResult::success(vec![Content::text(
+        serde_json::to_string_pretty(body).unwrap_or_else(|_| body.to_string()),
+    )])
+}
+
 async fn run_brokre_cli(
     binary: &str,
     args: &[String],
     extra_env: &[(&str, &str)],
+    gate: BastionGateInfo,
 ) -> std::result::Result<CallToolResult, McpError> {
     let exe = std::env::current_exe().map_err(mcp_err)?;
     let mut cmd = tokio::process::Command::new(exe);
@@ -418,10 +449,9 @@ async fn run_brokre_cli(
         "exit_code": code,
         "stdout": stdout,
         "stderr": stderr,
+        "bastion_gate": gate,
     });
-    Ok(CallToolResult::success(vec![Content::text(
-        serde_json::to_string_pretty(&body).unwrap_or_else(|_| body.to_string()),
-    )]))
+    Ok(text_json_result(&body))
 }
 
 async fn run_elevated_pool(
@@ -429,6 +459,7 @@ async fn run_elevated_pool(
     key: SessionKey,
     command: Option<String>,
     policy: SessionPolicy,
+    gate: BastionGateInfo,
 ) -> std::result::Result<CallToolResult, McpError> {
     let result = tokio::task::spawn_blocking(move || {
         let mut pool = sessions
@@ -439,20 +470,19 @@ async fn run_elevated_pool(
     .await
     .map_err(|e| McpError::internal_error(format!("session task: {e}"), None))?
     .map_err(mcp_err)?;
-    Ok(session_result_to_call_tool(result))
+    Ok(session_result_to_call_tool(result, gate))
 }
 
-fn session_result_to_call_tool(r: RunResult) -> CallToolResult {
+fn session_result_to_call_tool(r: RunResult, gate: BastionGateInfo) -> CallToolResult {
     let body = serde_json::json!({
         "exit_code": r.exit_code,
         "stdout": r.stdout,
         "stderr": r.stderr,
         "session_reused": r.session_reused,
         "session_idle_expires_at": r.idle_expires_at,
+        "bastion_gate": gate,
     });
-    CallToolResult::success(vec![Content::text(
-        serde_json::to_string_pretty(&body).unwrap_or_else(|_| body.to_string()),
-    )])
+    text_json_result(&body)
 }
 
 pub async fn run_mcp_server() -> std::result::Result<(), BrokreError> {

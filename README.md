@@ -108,7 +108,7 @@ Use `npx -y brokre@latest` so both the npm launcher and binary stay current. On 
 
 | MCP tool | Purpose |
 |----------|---------|
-| `brokre_list` | Saved aliases (metadata + optional `probe` / `include_bastions` for `status` / `route`) |
+| `brokre_list` | Saved aliases; with bastions: auto-probe, merge routed aliases (`b150::db`), hide unreachable; includes `access`/`availability`/`bastion_gate` |
 | `brokre_exec` | Run **any** saved CLI alias (`binary` + `args`); `ssh` + `sudo`/`su` auto-reuses elevated session |
 | `brokre_exec_elevated` | Remote privileged command (`alias`, `command`, `mode`); default `session=reuse` (10 min idle timeout) |
 | `brokre_setup` | Open manage UI in browser for the human to add creds |
@@ -208,19 +208,49 @@ brokre <your-cli> <alias> [args...]
 ### List metadata (safe for AI / scripts)
 
 ```bash
-brokre list --json
-brokre list --json --probe --include-bastions   # TCP reachability + bastion routes
+brokre list --json              # no bastions: local aliases only; with bastions: smart list (below)
+brokre list --all --json        # include unreachable aliases (debugging)
+brokre list --no-bastion-discovery   # local only — no SSH, no probe
 ```
 
-### Bastion proxy (travel / intranet entry)
+When bastions are registered, `brokre list` **by default**: TCP-probes reachability, merges bastion-discovered aliases (e.g. `b150::db`), and **hides unreachable** local LAN entries so AI agents do not pick wrong paths.
+
+### Cross-network list inheritance (bastion broker)
+
+For **cross-network** access — travel, VPN, public entry points — when direct LAN aliases are unreachable locally but reachable via a bastion running brokre.
+
+**Prerequisites**
+
+1. Laptop: `brokre bastion enable b150` (`b150` is a saved SSH alias)
+2. Bastion host runs brokre with inner aliases saved (e.g. `db`)
+
+**Smart list**
+
+```bash
+brokre bastion unlock            # if bastion key is set
+brokre list                      # includes b150::db (route=b150, access=via_b150)
+```
+
+When cross-network, local `db` (`access=direct`) is **omitted** if unreachable; use `b150::db` instead.
+
+**Execute**
+
+```bash
+brokre ssh b150::db uname -a
+# MCP: brokre_exec binary=ssh, args=["b150::db", "uname", "-a"]
+```
+
+When both paths work, the list shows **both** `db` (`direct`) and `b150::db` (`via_b150`) — distinguish by `access`.
+
+### Bastion proxy (cross-network / intranet entry)
 
 Promote **any** saved SSH alias whose remote host runs brokre into a bastion broker. Secrets stay on the bastion; the laptop caches metadata and executes via SSH passthrough.
 
 ```bash
-brokre bastion enable b150          # register ssh alias b150 as bastion
+brokre bastion enable b150        # register ssh alias b150 as bastion
 brokre bastion set-key              # set bastion unlock key (TTY)
 brokre bastion unlock               # unlock outbound session (TTL, 10 min idle default)
-brokre list --json --probe          # local + bastion aliases with ms-level TCP status
+brokre list --json                  # smart list: reachability + bastion-routed aliases
 brokre ssh b150::db uname -a        # routed exec via b150 remote brokre
 brokre bastion sync b150 --json     # fetch alias list from one bastion
 ```
@@ -228,6 +258,7 @@ brokre bastion sync b150 --json     # fetch alias list from one bastion
 - Route separator **`::`** (`:` is illegal in alias names): `db` (local), `b150::db` (via bastion), `b1::b2::inner` (multi-hop, default depth ≤2).
 - **Gate**: with a bastion key set, any outbound SSH (probe / routed exec / direct registered bastion alias) requires unlock. CLI and MCP share the same gate: TTY prompts for the bastion key; non-TTY opens the local auth page and polls (`BROKRE_BASTION_NO_AUTO_OPEN=1` disables auto-open). MCP additionally supports URL-mode elicitation (Cursor, etc.).
 - **Guardrails**: probe concurrency cap, ms timeouts, short cache, loop detection, audit `route`/`bastion` (HMAC v4).
+- **Manage UI**: `brokre manage` **Bastion** tab — register/disable bastions, Web set-key and unlock/lock, sync remote aliases; non-TTY still auto-opens `/bastion-auth`. Audit tab filters by `bastion`/`source` and shows route fields.
 
 ### Reveal / delete (human-only, real TTY)
 

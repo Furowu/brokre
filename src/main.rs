@@ -47,6 +47,9 @@ enum Commands {
         /// Skip remote bastion discovery (used on bastion hosts).
         #[arg(long, hide = true)]
         no_bastion_discovery: bool,
+        /// Show all aliases including unreachable (disables smart filtering).
+        #[arg(long)]
+        all: bool,
         #[arg(long, hide = true)]
         probe_timeout_ms: Option<u64>,
     },
@@ -183,6 +186,7 @@ fn main() {
             probe,
             include_bastions,
             no_bastion_discovery,
+            all,
             probe_timeout_ms,
         }) => {
             if let Some(ms) = probe_timeout_ms {
@@ -197,6 +201,7 @@ fn main() {
                 probe,
                 include_bastions,
                 no_bastion_discovery,
+                show_all: all,
             })
         }
         Some(Commands::Rm { profile, name }) => cli::rm::run(profile, name),

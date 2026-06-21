@@ -1,4 +1,5 @@
 pub mod discover;
+pub mod list_policy;
 pub mod gate;
 pub mod key;
 pub mod mcp_gate;

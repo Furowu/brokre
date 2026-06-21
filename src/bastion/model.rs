@@ -10,6 +10,14 @@ pub enum ListItemKind {
     Inner,
 }
 
+/// High-level reachability for AI consumers (`available` / `unavailable`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum Availability {
+    Available,
+    Unavailable,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct ProbeStatus {
     pub reachable: bool,
@@ -42,6 +50,12 @@ pub struct BastionListItem {
     pub last_used_at: Option<DateTime<Utc>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub status: Option<ProbeStatus>,
+    /// How to reach credentials: `direct` or `via_<bastion>` (e.g. `via_b150`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub access: Option<String>,
+    /// Derived from probe: `available` / `unavailable` (omitted when not probed).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub availability: Option<Availability>,
 }
 
 impl BastionListItem {
@@ -61,6 +75,8 @@ impl BastionListItem {
             created_at: Some(rec.created_at),
             last_used_at: rec.last_used_at,
             status: None,
+            access: None,
+            availability: None,
         }
     }
 

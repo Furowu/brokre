@@ -26,24 +26,10 @@ pub fn discover_remote_items(opts: &DiscoverOptions) -> Result<Vec<BastionListIt
         match fetch_bastion_items(&entry.alias, opts.probe) {
             Ok(mut items) => out.append(&mut items),
             Err(e) => {
-                out.push(BastionListItem {
-                    profile: "bastion".into(),
-                    name: entry.alias.clone(),
-                    addr: entry.alias.clone(),
-                    route: vec![],
-                    kind: ListItemKind::Bastion,
-                    host_alias: entry.host_alias.clone(),
-                    labels: vec![],
-                    created_at: Some(entry.enabled_at),
-                    last_used_at: None,
-                    status: Some(crate::bastion::model::ProbeStatus {
-                        reachable: false,
-                        probe_ms: None,
-                        checked_at: chrono::Utc::now().to_rfc3339(),
-                        error: Some(e.to_string()),
-                        source: "local".into(),
-                    }),
-                });
+                eprintln!(
+                    "brokre: warning: could not list aliases on bastion '{}': {}",
+                    entry.alias, e
+                );
             }
         }
     }

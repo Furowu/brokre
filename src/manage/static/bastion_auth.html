@@ -35,7 +35,8 @@
         desc: 'Enter your bastion key to allow outbound SSH through registered bastions. The key never leaves this page except to local brokre for verification.',
         label: 'Bastion key',
         submit: 'Unlock',
-        ok: 'Unlocked. You may close this tab and return to the agent.',
+        ok: 'Unlocked. This tab will close automatically in 3 seconds…',
+        okManual: 'Unlocked. You may close this tab and return to the agent.',
         errInvalidKey: 'invalid bastion key',
         errKeyNotConfigured: 'bastion key not configured',
         errUnauthorized: 'unauthorized',
@@ -46,7 +47,8 @@
         desc: '输入堡垒密钥以允许经已注册堡垒的 SSH 出站。密钥仅提交给本机 brokre 校验，不会外传。',
         label: '堡垒密钥',
         submit: '解锁',
-        ok: '已解锁。可关闭此标签页并返回 Agent。',
+        ok: '已解锁。此页面将在 3 秒后自动关闭…',
+        okManual: '已解锁。请手动关闭此标签页并返回 Agent。',
         errInvalidKey: '堡垒密钥错误',
         errKeyNotConfigured: '尚未配置堡垒密钥',
         errUnauthorized: '未授权',
@@ -119,9 +121,16 @@
         });
         const data = await res.json().catch(() => ({}));
         if (!res.ok) throw new Error(data.error || res.statusText);
+        document.getElementById('f').style.display = 'none';
+        document.getElementById('key').value = '';
         msg.textContent = tr('ok');
         msg.className = 'msg ok';
-        document.getElementById('key').value = '';
+        setTimeout(() => {
+          window.close();
+          if (!window.closed) {
+            msg.textContent = tr('okManual');
+          }
+        }, 3000);
       } catch (err) {
         msg.textContent = apiErrorMessage(err.message || String(err));
         msg.className = 'msg err';
