@@ -13,6 +13,8 @@
 //! its own error code to mask a real connection / auth failure.
 
 use crate::audit::logger::{append, exec_audit_source, redact_args, AuditEvent};
+use crate::bastion::gate::{ensure_outbound_unlocked, exec_touches_bastion_outbound};
+use crate::bastion::route::{build_routed_local_argv, parse_route, BastionRoute};
 use crate::runtime::prompts::patterns_for;
 use crate::runtime::pty::PtyCredential;
 use crate::security::secret::SecretString;
@@ -123,6 +125,14 @@ fn scp_alias_lookup_tokens(arg: &str) -> Vec<String> {
     out
 }
 
+/// Routed exec through one or more bastion hops (`bastion::inner`).
+struct RoutedExec {
+    profile: String,
+    route: BastionRoute,
+    leading: Vec<String>,
+    trailing: Vec<String>,
+}
+
 /// Entry point used by `main.rs` for any external subcommand.
 pub fn run(binary: String, args: Vec<String>) -> Result<()> {
     // Confirm binary is actually on PATH; otherwise produce the same error a
@@ -135,6 +145,11 @@ pub fn run(binary: String, args: Vec<String>) -> Result<()> {
     }
 
     let profile = binary.clone();
+
+    if let Some(routed) = detect_bastion_route(&profile, &args)? {
+        return exec_routed(routed);
+    }
+
     let store = VaultStore::open()?;
 
     // ---- Try to resolve a saved alias ----
@@ -145,6 +160,31 @@ pub fn run(binary: String, args: Vec<String>) -> Result<()> {
 
     // ---- First-time / unknown — run raw with prompt capture ----
     exec_fresh(&store, profile, binary, args)
+}
+
+fn detect_bastion_route(profile: &str, args: &[String]) -> Result<Option<RoutedExec>> {
+    let idx = match args.iter().position(|a| !a.starts_with('-')) {
+        Some(i) => i,
+        None => return Ok(None),
+    };
+    let token = &args[idx];
+    if let Some(route) = parse_route(token)? {
+        return Ok(Some(RoutedExec {
+            profile: profile.to_string(),
+            route,
+            leading: args[..idx].to_vec(),
+            trailing: args[idx + 1..].to_vec(),
+        }));
+    }
+    Ok(None)
+}
+
+fn exec_routed(r: RoutedExec) -> Result<()> {
+    ensure_outbound_unlocked()?;
+    let mut argv = build_routed_local_argv(&r.profile, &r.route, &r.trailing);
+    let mut full = r.leading;
+    full.append(&mut argv);
+    run("ssh".to_string(), full)
 }
 
 /// Resolve a saved record from CLI args. Returns the record plus argv fragments
@@ -231,6 +271,15 @@ fn exec_saved(
     resolved: ResolvedArgv,
     profile: &str,
 ) -> Result<()> {
+    let mut gate_args = resolved.leading.clone();
+    if let Some(t) = &resolved.removed {
+        gate_args.push(t.clone());
+    }
+    gate_args.extend(resolved.trailing.clone());
+    if exec_touches_bastion_outbound(profile, &gate_args) {
+        ensure_outbound_unlocked()?;
+    }
+
     // Compose final argv: saved_args for same-profile replay; cross-profile borrows password only.
     let mut argv = resolved.compose_argv(&rec, profile);
     let args_for_audit = redact_args(&argv);
@@ -309,6 +358,8 @@ fn exec_saved(
         injector_dur_ms: result.injector_dur_ms,
         injector_outcome: result.injector_outcome.clone(),
         source: Some(exec_audit_source()),
+        route: None,
+        bastion: None,
         hmac_version: None,
         prev_hmac: None,
         hmac: None,
@@ -370,6 +421,8 @@ fn exec_fresh(
         injector_dur_ms: result.injector_dur_ms,
         injector_outcome: result.injector_outcome.clone(),
         source: Some(exec_audit_source()),
+        route: None,
+        bastion: None,
         hmac_version: None,
         prev_hmac: None,
         hmac: None,

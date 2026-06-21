@@ -108,7 +108,7 @@ claude mcp add --scope project brokre -- npx -y brokre@latest
 
 | MCP 工具 | 用途 |
 |----------|------|
-| `brokre_list` | 已保存别名（仅元数据 — profile、name、host） |
+| `brokre_list` | 已保存别名（元数据 + 可选 `probe` / `include_bastions` 返回 `status`/`route`） |
 | `brokre_exec` | 运行**任意**已保存 CLI 别名（`binary` + `args`）；`ssh` + `sudo`/`su` 时自动复用 elevated 会话 |
 | `brokre_exec_elevated` | 远端提权执行（`alias` + `command` + `mode`）；默认 `session=reuse` 复用后台 shell（10 分钟空闲销毁） |
 | `brokre_setup` | 在浏览器打开 manage UI，由人类添加凭据 |
@@ -209,7 +209,26 @@ brokre <你的-cli> <别名> [args...]
 
 ```bash
 brokre list --json
+brokre list --json --probe --include-bastions   # 含 TCP 可达性与堡垒路由
 ```
+
+### 堡垒代理（出差 / 内网入口）
+
+将**任意**已保存且远端安装了 brokre 的 SSH 别名提升为堡垒 broker；凭据留在堡垒，本地只缓存元数据并通过 SSH 透传执行。
+
+```bash
+brokre bastion enable b150          # 提升 ssh 别名 b150 为堡垒
+brokre bastion set-key              # 设定堡垒解锁密钥（TTY）
+brokre bastion unlock               # 解锁出站会话（TTL，默认 10 分钟空闲）
+brokre list --json --probe          # 本地 + 堡垒别名，含毫秒级 TCP 状态
+brokre ssh b150::db uname -a        # 路由执行：经 b150 在远端 brokre 注入 db 凭据
+brokre bastion sync b150 --json     # 仅拉取某堡垒上的别名清单
+```
+
+- 路由分隔符 **`::`**（`:` 非法，与别名 `foo/bar` 无歧义）：`db`（本地）、`b150::db`（经堡垒）、`b1::b2::inner`（多跳，深度默认 ≤2）。
+- **门控**：设定堡垒密钥后，任何 SSH 出站（探测 / 透传 exec / 直连已注册堡垒别名）需先解锁。CLI 与 MCP 共用底层门控：TTY 下自动提示输入堡垒密钥；非 TTY 下自动打开本地认证页并轮询（`BROKRE_BASTION_NO_AUTO_OPEN=1` 可禁用自动打开）。MCP 额外支持 URL-mode elicitation（Cursor 等）。
+- **护栏**：探测并发上限 + 毫秒超时 + 短缓存；环路检测；审计含 `route`/`bastion` 字段（HMAC v4）。
+- **Manage UI**：`brokre manage` 主界面 **堡垒机** Tab 可注册/禁用堡垒、Web 设钥与解锁/锁定、同步远端别名；非 TTY 场景仍会自动弹出 `/bastion-auth` 解锁页。审计 Tab 支持按 `bastion`/`source` 筛选并展示路由字段。
 
 ### Reveal / 删除（仅人类，需真实 TTY）
 
@@ -225,7 +244,7 @@ brokre audit list --profile ssh --action exec --json
 brokre audit verify --json
 ```
 
-事件保存在 `~/.brokre/audit/audit.log`（HMAC 链式）。命令参数统一脱敏为 `<REDACTED>`。新事件含 `source` 字段（`cli`、`mcp` 或 `manage`）。manage UI **审计日志** 页与 MCP `brokre_audit_list` 暴露相同元数据。
+事件保存在 `~/.brokre/audit/audit.log`（HMAC 链式）。命令参数统一脱敏为 `<REDACTED>`。新事件含 `source` 字段（`cli`、`mcp`、`manage` 或路由执行时的 `bastion`）。manage UI **审计日志** 页与 MCP `brokre_audit_list` 暴露相同元数据（含 `route`/`bastion`）。
 
 ### 管理界面安全
 

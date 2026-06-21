@@ -187,17 +187,6 @@ impl PtySession {
                                 let is_sudo = is_remote_sudo_password_prompt(window);
                                 let is_su = expect_su && is_remote_su_password_prompt(window);
                                 let is_elevation = is_sudo || is_su;
-                                if is_elevation {
-                                    let needs_ssh_pw =
-                                        inject_fields_inj.iter().any(|f| f == "password");
-                                    let ssh_pw_done = injected_fields_inj
-                                        .lock()
-                                        .map(|g| g.contains("password"))
-                                        .unwrap_or(false);
-                                    if needs_ssh_pw && !ssh_pw_done {
-                                        continue;
-                                    }
-                                }
                                 if let Some(field) =
                                     field_for_prompt(window, &inject_fields_inj)
                                 {

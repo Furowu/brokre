@@ -21,6 +21,7 @@ pub fn run_list(opts: ListOptions) -> Result<()> {
         name: opts.name,
         action: opts.action,
         source: opts.source,
+        bastion: None,
         since: opts.since,
         until: opts.until,
         limit: opts.limit,

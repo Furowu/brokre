@@ -16,6 +16,7 @@ pub struct AuditQuery {
     pub name: Option<String>,
     pub action: Option<String>,
     pub source: Option<String>,
+    pub bastion: Option<String>,
     pub since: Option<String>,
     pub until: Option<String>,
     #[serde(default = "default_limit")]
@@ -66,6 +67,12 @@ pub struct AuditEventView {
     pub injector_outcome: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub source: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub route: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bastion: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hmac_version: Option<u8>,
 }
 
 impl From<AuditEvent> for AuditEventView {
@@ -84,6 +91,9 @@ impl From<AuditEvent> for AuditEventView {
             injector_dur_ms: ev.injector_dur_ms,
             injector_outcome: ev.injector_outcome,
             source: ev.source,
+            route: ev.route,
+            bastion: ev.bastion,
+            hmac_version: ev.hmac_version,
         }
     }
 }
@@ -151,6 +161,11 @@ fn matches_filter(event: &AuditEvent, query: &AuditQuery) -> bool {
     }
     if let Some(ref s) = query.source {
         if event.source.as_deref() != Some(s.as_str()) {
+            return false;
+        }
+    }
+    if let Some(ref b) = query.bastion {
+        if event.bastion.as_deref() != Some(b.as_str()) {
             return false;
         }
     }
@@ -240,6 +255,8 @@ mod tests {
             injector_dur_ms: None,
             injector_outcome: None,
             source: source.map(str::to_string),
+            route: None,
+            bastion: None,
             hmac_version: None,
             prev_hmac: None,
             hmac: None,
@@ -327,5 +344,73 @@ mod tests {
         let res = list_from_path(tmp.path(), q).unwrap();
         assert_eq!(res.total_matched, 1);
         assert_eq!(res.events[0].name, "a");
+    }
+
+    fn sample_with_bastion(
+        path: &Path,
+        action: &str,
+        profile: &str,
+        name: &str,
+        source: Option<&str>,
+        route: Option<Vec<String>>,
+        bastion: Option<&str>,
+    ) {
+        let key = [1u8; 32];
+        let mut ev = AuditEvent {
+            ts: "2026-01-01T00:00:00Z".into(),
+            sid: uuid::Uuid::new_v4().to_string(),
+            action: action.into(),
+            profile: profile.into(),
+            name: name.into(),
+            exit: Some(0),
+            dur_ms: Some(10),
+            args_redacted: vec!["<REDACTED>".into()],
+            hardening: None,
+            injector_pid: None,
+            injector_dur_ms: None,
+            injector_outcome: None,
+            source: source.map(str::to_string),
+            route,
+            bastion: bastion.map(str::to_string),
+            hmac_version: None,
+            prev_hmac: None,
+            hmac: None,
+        };
+        append_to_path(path, &mut ev, &key).unwrap();
+    }
+
+    #[test]
+    fn list_filters_bastion_and_exposes_route_fields() {
+        let tmp = NamedTempFile::new().unwrap();
+        sample_with_bastion(
+            tmp.path(),
+            "exec",
+            "ssh",
+            "db",
+            Some("bastion"),
+            Some(vec!["b150".into()]),
+            Some("b150"),
+        );
+        sample_with_bastion(
+            tmp.path(),
+            "exec",
+            "ssh",
+            "other",
+            Some("cli"),
+            None,
+            None,
+        );
+
+        let q = AuditQuery {
+            bastion: Some("b150".into()),
+            ..Default::default()
+        };
+        let res = list_from_path(tmp.path(), q).unwrap();
+        assert_eq!(res.total_matched, 1);
+        assert_eq!(res.events[0].bastion.as_deref(), Some("b150"));
+        assert_eq!(
+            res.events[0].route.as_deref(),
+            Some(&["b150".to_string()][..])
+        );
     }
 }

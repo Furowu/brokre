@@ -23,6 +23,8 @@ fn audit_rm(action: &str, profile: &str, name: &str) {
         injector_dur_ms: None,
         injector_outcome: None,
         source: Some("cli".into()),
+        route: None,
+        bastion: None,
         hmac_version: None,
         prev_hmac: None,
         hmac: None,

@@ -4,6 +4,8 @@
 //! Never exposes reveal, rm, or session tokens via MCP tool results.
 
 use crate::audit::query::{list, verify_with_stats, AuditQuery};
+use crate::bastion::discover::{build_local_items, discover_remote_items, merge_list_items, DiscoverOptions};
+use crate::bastion::mcp_gate::{ensure_bastion_unlocked, needs_unlock_for_exec, needs_unlock_for_list};
 use crate::manage::{
     open_browser, run_manage_server_with, IdleBehavior, ManageServer, ManageServerOptions,
 };
@@ -16,7 +18,7 @@ use crate::vault::store::VaultStore;
 use rmcp::{
     handler::server::wrapper::Parameters,
     model::{CallToolResult, Content, Implementation, ProtocolVersion, ServerCapabilities, ServerInfo},
-    schemars, tool, tool_handler, tool_router, ErrorData as McpError, ServerHandler, ServiceExt,
+    schemars, tool, tool_handler, tool_router, ErrorData as McpError, Peer, ServerHandler, ServiceExt,
 };
 use rmcp::transport::stdio;
 use std::sync::{Arc, Mutex};
@@ -26,28 +28,43 @@ use std::time::Duration;
 const SERVER_INSTRUCTIONS: &str = "\
 brokre is an AI-safe credential broker. Rules for agents:\n\
 1. NEVER ask the user for passwords or call brokre reveal — it is TTY-gated and unavailable here.\n\
-2. Use brokre_list to discover saved aliases (metadata only: profile, name, host).\n\
-3. Use brokre_exec with a saved alias for ssh/mysql/psql/etc. Example: binary=ssh, args=[\"prod-bastion\", \"uname\", \"-a\"].\n\
-4. For remote root/sudo: use brokre_exec_elevated (alias + command + mode sudo|sudo_login|su). \
-Sessions reuse by default (session=reuse) — sudo password once per idle window (~10 min). \
-session=new forces fresh session; session=close ends it. Set BROKRE_MCP_SESSION=0 to disable reuse.\n\
-5. brokre_exec with ssh+sudo/su args also uses the session pool when enabled.\n\
-6. If brokre_list is empty or exec fails with no saved credential, call brokre_setup to open the local manage UI for the human to add accounts.\n\
-7. Passwords are injected locally and never returned through MCP.\n\
-8. Use brokre_audit_list to review past operations (metadata only). Use brokre_audit_verify to check log integrity.";
+2. Use brokre_list to discover saved aliases (metadata only: profile, name, host, route, status).\n\
+3. Routed bastion aliases use `bastion::inner` (e.g. b150::db). Check status.reachable before exec.\n\
+4. Non-privileged remote commands — brokre_exec: binary=ssh, args=[\"alias\", \"uname\", \"-a\"]. \
+Args are argv tokens after the alias (NOT one shell string). Example: args=[\"prod\", \"docker\", \"ps\"].\n\
+5. Privileged remote commands (sudo/su) — prefer brokre_exec_elevated:\n\
+   {\"alias\":\"prod\",\"command\":\"whoami\",\"mode\":\"sudo_login\"} for root login env (like sudo -i).\n\
+   mode: sudo (default) | sudo_login (sudo -i env) | su. user: target for su (default root).\n\
+   session: reuse (default, ~10 min idle) | new (fresh sudo) | close (end session; command=\"\").\n\
+6. brokre_exec shortcut for sudo: binary=ssh, args=[\"prod\",\"sudo\",\"systemctl\",\"status\",\"nginx\"] \
+(split argv, not quoted). args=[\"prod\",\"sudo\",\"-i\",\"whoami\"] maps to sudo_login. Uses same session pool.\n\
+7. Do NOT ask the user for sudo passwords — vault password is injected locally. If sudo fails, tell the user \
+to verify the vault password matches the remote sudo password via brokre manage UI (brokre_setup).\n\
+8. If brokre_list is empty or exec fails with no saved credential, call brokre_setup for the human to add accounts.\n\
+9. Passwords are injected locally and never returned through MCP.\n\
+10. Bastion outbound access may require human unlock via browser (URL elicitation or local auth page).\n\
+11. brokre_audit_list / brokre_audit_verify: read-only audit metadata (args redacted).";
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct ListRequest {
     /// Filter by connector profile (ssh, mysql, postgres, …).
     #[serde(default)]
     pub profile: Option<String>,
+    /// TCP reachability probe (ms-level timeout).
+    #[serde(default)]
+    pub probe: bool,
+    /// Include aliases discovered on registered bastions.
+    #[serde(default)]
+    pub include_bastions: bool,
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct ExecRequest {
     /// CLI binary / connector (ssh, mysql, psql, …).
     pub binary: String,
-    /// Arguments after the binary. First positional should be a saved alias when using stored credentials.
+    /// Arguments after the binary. First positional must be a saved alias. Remaining tokens are the remote argv \
+    /// (split form): [\"prod\", \"df\", \"-h\"] not a single shell string. For sudo use brokre_exec_elevated or \
+    /// [\"alias\", \"sudo\", \"systemctl\", \"status\", \"nginx\"].
     #[serde(default)]
     pub args: Vec<String>,
 }
@@ -56,15 +73,15 @@ pub struct ExecRequest {
 pub struct ExecElevatedRequest {
     /// Saved SSH alias from brokre_list (profile ssh).
     pub alias: String,
-    /// Shell command to run with elevated privileges on the remote host.
+    /// Shell command to run with elevated privileges on the remote host (e.g. \"docker ps\", \"systemctl restart nginx\").
     pub command: String,
-    /// `sudo` — run via sudo; `sudo_login` — sudo -i login environment; `su` — su - <user> -c.
+    /// `sudo` — run via sudo bash -lc; `sudo_login` — sudo -i login environment; `su` — su - <user> -c.
     #[serde(default = "default_elevated_mode")]
     pub mode: String,
     /// Target user for `su` mode (default root). Ignored for sudo modes.
     #[serde(default)]
     pub user: Option<String>,
-    /// `reuse` (default) — reuse elevated PTY session; `new` — fresh session; `close` — end session.
+    /// `reuse` (default) — reuse elevated PTY session; `new` — fresh session; `close` — end session (use empty command).
     #[serde(default = "default_session_policy")]
     pub session: String,
 }
@@ -163,58 +180,75 @@ impl BrokreMcp {
         eprintln!("brokre mcp: vault empty — opened manage UI in browser for credential setup");
         Ok(())
     }
+
+    fn ensure_manage_server(&self) -> std::result::Result<ManageServer, BrokreError> {
+        self.ensure_manage(false)
+    }
 }
 
 #[tool_router]
 impl BrokreMcp {
     #[tool(
-        description = "List saved credential aliases (metadata only — never passwords). Use before brokre_exec."
+        description = "List saved credential aliases (metadata only — never passwords). Optional profile filter; probe=true adds TCP reachability; include_bastions=true merges bastion-discovered aliases. Always call before brokre_exec."
     )]
-    fn brokre_list(
+    async fn brokre_list(
         &self,
         Parameters(req): Parameters<ListRequest>,
+        peer: Peer<rmcp::RoleServer>,
     ) -> std::result::Result<CallToolResult, McpError> {
+        if needs_unlock_for_list(req.probe, req.include_bastions) {
+            let server = self.ensure_manage_server().map_err(mcp_err)?;
+            ensure_bastion_unlocked(&server, &peer).await?;
+        }
         let store = VaultStore::open().map_err(mcp_err)?;
         let mut records = store.list().map_err(mcp_err)?;
         if let Some(p) = req.profile {
             records.retain(|r| r.profile == p);
         }
-        let out: Vec<_> = records
-            .into_iter()
-            .map(|r| {
-                serde_json::json!({
-                    "profile": r.profile,
-                    "name": r.name,
-                    "labels": r.labels,
-                    "host_alias": r.host_alias,
-                    "created_at": r.created_at,
-                    "last_used_at": r.last_used_at,
-                })
+        let mut items = build_local_items(records, req.probe).map_err(mcp_err)?;
+        let include_bastions = req.include_bastions || req.probe;
+        if include_bastions {
+            let remote = discover_remote_items(&DiscoverOptions {
+                probe: req.probe,
+                include_bastions: true,
             })
-            .collect();
-        let text = serde_json::to_string_pretty(&out).map_err(mcp_err)?;
+            .map_err(mcp_err)?;
+            items = merge_list_items(items, remote);
+        }
+        let text = serde_json::to_string_pretty(&items).map_err(mcp_err)?;
         Ok(CallToolResult::success(vec![Content::text(text)]))
     }
 
     #[tool(
-        description = "Run a CLI through brokre with saved credentials (ssh/mysql/psql/…). Requires a saved alias. Output may contain command results but never vault passwords."
+        description = "Run a CLI through brokre with saved credentials (ssh/mysql/psql/…). \
+Requires a saved alias as the first positional arg in args. Args are argv tokens, not a shell string: \
+use [\"prod\",\"uptime\"] not [\"prod\",\"uptime\"]. For remote sudo/su prefer brokre_exec_elevated; \
+shortcut: binary=ssh, args=[\"alias\",\"sudo\",\"cmd\",...] or args=[\"alias\",\"sudo\",\"-i\",\"whoami\"]. \
+Supports bastion routes like b150::db. Never returns vault passwords."
     )]
     async fn brokre_exec(
         &self,
         Parameters(req): Parameters<ExecRequest>,
+        peer: Peer<rmcp::RoleServer>,
     ) -> std::result::Result<CallToolResult, McpError> {
+        if needs_unlock_for_exec(&req.binary, &req.args) {
+            let server = self.ensure_manage_server().map_err(mcp_err)?;
+            ensure_bastion_unlocked(&server, &peer).await?;
+        }
         if mcp_session_enabled() && req.binary == "ssh" {
             if let Some((alias, mode, command, user)) =
                 crate::runtime::elevated::ssh_exec_args_to_elevated(&req.args)
             {
-                let key = SessionKey::new(&alias, mode, user.as_deref());
-                return run_elevated_pool(
-                    self.sessions.clone(),
-                    key,
-                    Some(command),
-                    SessionPolicy::Reuse,
-                )
-                .await;
+                if !alias.contains(crate::bastion::route::ROUTE_SEP) {
+                    let key = SessionKey::new(&alias, mode, user.as_deref());
+                    return run_elevated_pool(
+                        self.sessions.clone(),
+                        key,
+                        Some(command),
+                        SessionPolicy::Reuse,
+                    )
+                    .await;
+                }
             }
         }
         run_brokre_cli(&req.binary, &req.args, &[]).await
@@ -222,15 +256,46 @@ impl BrokreMcp {
 
     #[tool(
         description = "Run a command on a saved SSH host with elevated privileges (sudo, sudo -i environment, or su). \
-Reuses a persistent elevated session by default (session=reuse) so sudo password is not re-prompted every call. \
-session=new starts fresh; session=close ends the session. BROKRE_MCP_SESSION=0 disables session reuse."
+Preferred for any remote root/sudo work. Example: {\"alias\":\"prod\",\"command\":\"docker ps\",\"mode\":\"sudo_login\"}. \
+mode: sudo (default) | sudo_login (root login env, like sudo -i) | su. user: su target (default root). \
+session: reuse (default, sudo once per ~10 min idle) | new | close (empty command). \
+Reuses a persistent elevated shell by default. BROKRE_MCP_SESSION=0 disables reuse."
     )]
     async fn brokre_exec_elevated(
         &self,
         Parameters(req): Parameters<ExecElevatedRequest>,
+        peer: Peer<rmcp::RoleServer>,
     ) -> std::result::Result<CallToolResult, McpError> {
+        if needs_unlock_for_exec("ssh", &[req.alias.clone()]) {
+            let server = self.ensure_manage_server().map_err(mcp_err)?;
+            ensure_bastion_unlocked(&server, &peer).await?;
+        }
         let mode = crate::runtime::elevated::ElevatedMode::parse(&req.mode).map_err(mcp_err)?;
         let policy = SessionPolicy::parse(&req.session).map_err(mcp_err)?;
+
+        if req.alias.contains(crate::bastion::route::ROUTE_SEP) {
+            let route = crate::bastion::route::parse_route(&req.alias)
+                .map_err(mcp_err)?
+                .ok_or_else(|| McpError::internal_error("invalid bastion route", None))?;
+            let trailing = crate::runtime::elevated::build_ssh_argv(
+                &route.inner,
+                mode,
+                &req.command,
+                req.user.as_deref(),
+            )
+            .map_err(mcp_err)?;
+            let args = crate::bastion::route::build_routed_local_argv("ssh", &route, &trailing[1..]);
+            return run_brokre_cli(
+                "ssh",
+                &args,
+                &[
+                    ("BROKRE_MCP_EXEC", "1"),
+                    ("BROKRE_MCP_ELEVATED", mode.mcp_env_value()),
+                ],
+            )
+            .await;
+        }
+
         let key = SessionKey::new(&req.alias, mode, req.user.as_deref());
 
         if mcp_session_enabled() {
@@ -285,6 +350,7 @@ session=new starts fresh; session=close ends the session. BROKRE_MCP_SESSION=0 d
             name: req.name,
             action: req.action,
             source: req.source,
+            bastion: None,
             since: req.since,
             until: req.until,
             limit: req.limit.unwrap_or(crate::audit::query::DEFAULT_LIMIT),
@@ -313,7 +379,7 @@ impl ServerHandler for BrokreMcp {
     fn get_info(&self) -> ServerInfo {
         ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
             .with_server_info(Implementation::new("brokre", env!("CARGO_PKG_VERSION")))
-            .with_protocol_version(ProtocolVersion::V_2024_11_05)
+            .with_protocol_version(ProtocolVersion::V_2025_06_18)
             .with_instructions(SERVER_INSTRUCTIONS.to_string())
     }
 }
@@ -390,6 +456,8 @@ fn session_result_to_call_tool(r: RunResult) -> CallToolResult {
 }
 
 pub async fn run_mcp_server() -> std::result::Result<(), BrokreError> {
+    // Gate fallback paths (discover/transport) use browser auth, not TTY.
+    std::env::set_var("BROKRE_MCP", "1");
     let sessions = Arc::new(Mutex::new(ElevatedSessionPool::from_env()));
     let sweeper = sessions.clone();
     thread::spawn(move || loop {

@@ -75,6 +75,25 @@ textarea{font:inherit;border:1px solid #d1d5db;border-radius:6px;padding:.4rem .
 .audit-banner.hidden{display:none!important}
 .audit-banner.ok{background:#ecfdf5;border:1px solid #6ee7b7;color:#065f46}
 .audit-banner.err{background:#fef2f2;border:1px solid #fecaca;color:#991b1b}
+.badge.bastion{background:#ede9fe;color:#5b21b6;cursor:pointer}
+.badge.session-ok{background:#dcfce7;color:#166534}
+.badge.session-lock{background:#fef3c7;color:#92400e}
+.bastion-card{margin-bottom:1rem}
+.bastion-card h3{font-size:.9rem;font-weight:600;margin:0 0 .5rem;color:#374151}
+.bastion-badges{display:flex;flex-wrap:wrap;gap:.4rem;margin-bottom:.5rem}
+.bastion-actions{display:flex;flex-wrap:wrap;gap:.5rem;align-items:center}
+.bastion-unlock{display:flex;flex-wrap:wrap;gap:.5rem;align-items:flex-end;margin-top:.65rem;padding-top:.65rem;border-top:1px solid #e5e7eb}
+.bastion-unlock .field{margin:0;flex:1;min-width:160px;max-width:240px}
+.bastion-unlock .err{flex:1 1 100%;margin:0}
+.bastion-table{width:100%;border-collapse:collapse;font-size:.85rem;margin-top:.5rem}
+.bastion-table th,.bastion-table td{border-bottom:1px solid #e5e7eb;padding:.4rem .35rem;text-align:left}
+.bastion-enable-row{display:flex;flex-wrap:wrap;gap:.5rem;align-items:center}
+.bastion-enable-row select{flex:1;min-width:160px;max-width:280px}
+.banner.server-down{background:#fef2f2;border-color:#fecaca;color:#991b1b}
+.audit-table tbody tr.audit-bastion{background:#faf5ff}
+.audit-quick{display:flex;flex-wrap:wrap;gap:.35rem;margin-bottom:.5rem}
+.audit-quick button{font-size:.75rem;padding:.25rem .5rem;background:#f3f4f6;color:#374151}
+.audit-quick button.on{background:#eff6ff;color:#1d4ed8}
 /* Avoid type=password — Chrome/Google Password Manager still offers to save. */
 .input-secret{-webkit-text-security:disc;text-security:disc;font-family:ui-monospace,monospace}
 </style>
@@ -94,8 +113,12 @@ textarea{font:inherit;border:1px solid #d1d5db;border-radius:6px;padding:.4rem .
     <span data-i18n="onboard.text">Maintain accounts by installed CLI groups. Passwords are write-only.</span>
     <button class="secondary" id="skip-onboard" data-i18n="onboard.skip">Skip</button>
   </div>
+  <div class="banner server-down hidden" id="server-down">
+    <span id="server-down-text" data-i18n="err.serverDown">Manage server is not running. Run <code>brokre manage --open</code> in a terminal and reopen the URL.</span>
+  </div>
   <nav class="nav-tabs" id="nav-tabs">
     <button type="button" class="on" data-view="credentials" data-i18n="tab.credentials">Credentials</button>
+    <button type="button" data-view="bastion" data-i18n="tab.bastion">Bastion</button>
     <button type="button" data-view="audit" data-i18n="tab.audit">Audit log</button>
   </nav>
   <div id="view-credentials">
@@ -103,6 +126,38 @@ textarea{font:inherit;border:1px solid #d1d5db;border-radius:6px;padding:.4rem .
     <input type="search" id="search" data-i18n-placeholder="search.placeholder" placeholder="Search alias / host" style="max-width:220px">
   </div>
   <div id="list"></div>
+  </div>
+  <div id="view-bastion" class="hidden">
+    <div class="section">
+      <div class="section-head">
+        <h2 data-i18n="bastion.title">Bastion</h2>
+      </div>
+      <div class="card bastion-card">
+        <h3 data-i18n="bastion.sessionTitle">Key &amp; session</h3>
+        <div class="bastion-badges" id="bastion-status"></div>
+        <div class="bastion-actions" id="bastion-actions"></div>
+        <div class="bastion-unlock hidden" id="bastion-unlock-row">
+          <div class="field">
+            <label data-i18n="bastion.unlockKey">Bastion key</label>
+            <input id="bastion-unlock-pass" type="text" class="input-secret brokre-secret" autocomplete="one-time-code" data-lpignore="true" data-1p-ignore>
+          </div>
+          <button type="button" id="bastion-unlock-btn" data-i18n="bastion.unlock">Unlock</button>
+          <span class="err" id="bastion-unlock-err"></span>
+        </div>
+      </div>
+      <div class="card bastion-card">
+        <h3 data-i18n="bastion.registerTitle">Register bastion</h3>
+        <div class="bastion-enable-row">
+          <select id="bastion-enable-select" aria-label="SSH alias"><option value="">—</option></select>
+          <button type="button" class="secondary" id="bastion-enable-btn" data-i18n="bastion.enable">Enable</button>
+          <span class="err" id="bastion-enable-err"></span>
+        </div>
+      </div>
+      <div class="card bastion-card">
+        <h3 data-i18n="bastion.listTitle">Registered</h3>
+        <div id="bastion-list-wrap"></div>
+      </div>
+    </div>
   </div>
   <div id="view-audit" class="hidden">
     <div class="banner hidden audit-banner" id="audit-banner"></div>
@@ -115,13 +170,22 @@ textarea{font:inherit;border:1px solid #d1d5db;border-radius:6px;padding:.4rem .
         <input type="text" id="audit-profile" data-i18n-placeholder="audit.profilePh" placeholder="profile">
         <input type="text" id="audit-name" data-i18n-placeholder="audit.namePh" placeholder="alias">
         <input type="text" id="audit-action" data-i18n-placeholder="audit.actionPh" placeholder="action">
+        <input type="text" id="audit-bastion" data-i18n-placeholder="audit.bastionPh" placeholder="bastion">
         <select id="audit-source">
           <option value="" data-i18n="audit.sourceAll">All sources</option>
-          <option value="cli">cli</option>
-          <option value="mcp">mcp</option>
-          <option value="manage">manage</option>
+          <option value="cli" data-i18n="audit.sourceCli">cli</option>
+          <option value="mcp" data-i18n="audit.sourceMcp">mcp</option>
+          <option value="manage" data-i18n="audit.sourceManage">manage</option>
+          <option value="bastion" data-i18n="audit.sourceBastion">bastion</option>
         </select>
+        <input type="datetime-local" id="audit-since" data-i18n-placeholder="audit.sincePh" data-i18n-title="audit.sincePh" title="since">
+        <input type="datetime-local" id="audit-until" data-i18n-placeholder="audit.untilPh" data-i18n-title="audit.untilPh" title="until">
         <button type="button" id="audit-refresh" data-i18n="audit.refresh">Refresh</button>
+      </div>
+      <div class="audit-quick">
+        <button type="button" class="secondary audit-preset" data-preset="bastion-events" data-i18n="audit.presetBastion">Bastion events</button>
+        <button type="button" class="secondary audit-preset" data-preset="routed-exec" data-i18n="audit.presetRouted">Routed exec</button>
+        <button type="button" class="secondary audit-preset" data-preset="clear" data-i18n="audit.presetClear">Clear filters</button>
       </div>
       <div id="audit-table-wrap"></div>
     </div>
@@ -221,6 +285,32 @@ textarea{font:inherit;border:1px solid #d1d5db;border-radius:6px;padding:.4rem .
   </div>
 </div>
 
+<div class="modal" id="modal-bastion-key">
+  <div class="panel">
+    <form autocomplete="off" onsubmit="return false" data-bwignore>
+    <h3 id="bastion-key-title" data-i18n="bastion.setKey">Set bastion key</h3>
+    <p class="muted" data-i18n="bastion.setKeyHint">Used to authorize outbound SSH through registered bastions. Stored as Argon2id verifier only.</p>
+    <div class="field"><label data-i18n="bastion.newKey">New key</label><input id="bastion-key-pass" type="text" class="input-secret brokre-secret" autocomplete="one-time-code" data-lpignore="true" data-1p-ignore></div>
+    <div class="field"><label data-i18n="bastion.confirmKey">Confirm key</label><input id="bastion-key-confirm" type="text" class="input-secret brokre-secret" autocomplete="one-time-code" data-lpignore="true" data-1p-ignore></div>
+    <div class="err" id="bastion-key-err"></div>
+    <div class="actions">
+      <button type="button" class="secondary" data-close data-i18n="btn.cancel">Cancel</button>
+      <button type="button" id="bastion-key-submit" data-i18n="btn.save">Save</button>
+    </div>
+    </form>
+  </div>
+</div>
+
+<div class="modal" id="modal-bastion-sync">
+  <div class="panel audit-panel">
+    <h3 id="bastion-sync-title" data-i18n="bastion.syncTitle">Remote aliases</h3>
+    <div id="bastion-sync-body"></div>
+    <div class="actions">
+      <button type="button" class="secondary" data-close data-i18n="btn.cancel">Close</button>
+    </div>
+  </div>
+</div>
+
 <div class="modal" id="modal-audit">
   <div class="panel audit-panel">
     <h3 data-i18n="audit.detail.title">Audit event detail</h3>
@@ -308,14 +398,63 @@ textarea{font:inherit;border:1px solid #d1d5db;border-radius:6px;padding:.4rem .
       'group.mysql': 'MySQL', 'group.postgres': 'PostgreSQL', 'group.redis': 'Redis',
       'group.clickhouse': 'ClickHouse', 'group.minio': 'MinIO',
       'tab.credentials': 'Credentials',
+      'tab.bastion': 'Bastion',
       'tab.audit': 'Audit log',
+      'bastion.title': 'Bastion brokers',
+      'bastion.sessionTitle': 'Key & session',
+      'bastion.registerTitle': 'Register bastion',
+      'bastion.listTitle': 'Registered',
+      'bastion.keySet': 'Key: configured',
+      'bastion.keyUnset': 'Key: not set — set a key before outbound use',
+      'bastion.unlocked': 'Session: unlocked (idle until {until})',
+      'bastion.locked': 'Session: locked',
+      'bastion.noKeyNeeded': 'Session: no key configured',
+      'bastion.setKey': 'Set / rotate key',
+      'bastion.setKeyHint': 'Used to authorize outbound SSH through registered bastions. Stored as Argon2id verifier only.',
+      'bastion.newKey': 'New key',
+      'bastion.confirmKey': 'Confirm key',
+      'bastion.unlock': 'Unlock',
+      'bastion.lock': 'Lock',
+      'bastion.unlockKey': 'Bastion key',
+      'bastion.register': 'Register SSH alias',
+      'bastion.enable': 'Enable',
+      'bastion.disable': 'Disable',
+      'bastion.sync': 'Sync',
+      'bastion.syncTitle': 'Remote aliases on {alias}',
+      'bastion.syncLocked': 'Unlock bastion session before sync',
+      'bastion.syncFail': 'Sync failed',
+      'bastion.empty': 'No bastions registered',
+      'bastion.count': 'Registered ({n}/{max})',
+      'bastion.enabledAt': 'enabled',
+      'bastion.col.alias': 'alias',
+      'bastion.col.host': 'host',
+      'bastion.col.actions': 'actions',
+      'bastion.sync.col.addr': 'addr',
+      'bastion.sync.col.profile': 'profile',
+      'bastion.sync.col.host': 'host',
+      'bastion.sync.col.status': 'status',
+      'bastion.probe.up': 'up {ms}ms',
+      'bastion.probe.down': 'down: {err}',
+      'bastion.selectNone': '— select —',
+      'bastion.badge': 'bastion',
+      'badge.bastion': 'Bastion',
       'audit.title': 'Audit log',
       'audit.verify': 'Verify chain',
       'audit.refresh': 'Refresh',
       'audit.profilePh': 'profile',
       'audit.namePh': 'alias',
       'audit.actionPh': 'action (e.g. exec)',
+      'audit.bastionPh': 'bastion alias',
+      'audit.sincePh': 'since',
+      'audit.untilPh': 'until',
+      'audit.presetBastion': 'Bastion events',
+      'audit.presetRouted': 'Routed exec',
+      'audit.presetClear': 'Clear filters',
       'audit.sourceAll': 'All sources',
+      'audit.sourceCli': 'cli',
+      'audit.sourceMcp': 'mcp',
+      'audit.sourceManage': 'manage',
+      'audit.sourceBastion': 'bastion',
       'audit.empty': 'No audit events matched.',
       'audit.loadFail': 'Failed to load audit log',
       'audit.matched': 'Matched {n} event(s)',
@@ -328,13 +467,25 @@ textarea{font:inherit;border:1px solid #d1d5db;border-radius:6px;padding:.4rem .
       'audit.col.exit': 'Exit',
       'audit.col.ms': 'ms',
       'audit.col.command': 'Command',
+      'audit.col.route': 'Route',
+      'audit.detail.route': 'Route',
+      'audit.detail.bastion': 'Bastion',
+      'audit.detail.hmac': 'HMAC version',
       'audit.detail.title': 'Audit event detail',
       'audit.detail.command': 'Command',
       'audit.detail.sid': 'Session ID',
       'audit.detail.injector': 'Injector',
       'audit.detail.hardening': 'Hardening',
       'audit.cmdLegacy': 'Legacy log — command was fully redacted at write time and cannot be recovered.',
-      'audit.clickHint': 'Click a row for full detail'
+      'audit.clickHint': 'Click a row for full detail',
+      'err.invalidBastionKey': 'invalid bastion key',
+      'err.bastionKeyNotConfigured': 'bastion key not configured',
+      'err.passphrasesMismatch': 'passphrases do not match',
+      'err.bastionLocked': 'bastion outbound access locked — unlock first',
+      'err.bastionNotRegistered': 'bastion not registered',
+      'err.aliasRequired': 'alias is required',
+      'err.unauthorized': 'unauthorized',
+      'err.serverDown': 'Manage server stopped (idle timeout or closed). Run brokre manage --open in a terminal, then reopen the URL.'
     },
     zh: {
       title: 'brokre 管理',
@@ -409,14 +560,63 @@ textarea{font:inherit;border:1px solid #d1d5db;border-radius:6px;padding:.4rem .
       'group.mysql': 'MySQL', 'group.postgres': 'PostgreSQL', 'group.redis': 'Redis',
       'group.clickhouse': 'ClickHouse', 'group.minio': 'MinIO',
       'tab.credentials': '凭据',
+      'tab.bastion': '堡垒机',
       'tab.audit': '审计日志',
+      'bastion.title': '堡垒 broker',
+      'bastion.sessionTitle': '密钥与会话',
+      'bastion.registerTitle': '注册堡垒',
+      'bastion.listTitle': '已注册',
+      'bastion.keySet': '密钥：已设置',
+      'bastion.keyUnset': '密钥：未设置 — 出站前请先设钥',
+      'bastion.unlocked': '会话：已解锁（空闲至 {until}）',
+      'bastion.locked': '会话：已锁定',
+      'bastion.noKeyNeeded': '会话：未配置密钥',
+      'bastion.setKey': '设置 / 轮换密钥',
+      'bastion.setKeyHint': '用于授权经已注册堡垒的 SSH 出站。仅以 Argon2id verifier 本地存储。',
+      'bastion.newKey': '新密钥',
+      'bastion.confirmKey': '确认密钥',
+      'bastion.unlock': '解锁',
+      'bastion.lock': '锁定',
+      'bastion.unlockKey': '堡垒密钥',
+      'bastion.register': '注册 SSH 别名',
+      'bastion.enable': '启用',
+      'bastion.disable': '禁用',
+      'bastion.sync': '同步',
+      'bastion.syncTitle': '{alias} 上的远端别名',
+      'bastion.syncLocked': '同步前请先解锁堡垒会话',
+      'bastion.syncFail': '同步失败',
+      'bastion.empty': '暂无已注册堡垒',
+      'bastion.count': '已注册（{n}/{max}）',
+      'bastion.enabledAt': '启用',
+      'bastion.col.alias': 'alias',
+      'bastion.col.host': 'host',
+      'bastion.col.actions': '操作',
+      'bastion.sync.col.addr': 'addr',
+      'bastion.sync.col.profile': 'profile',
+      'bastion.sync.col.host': 'host',
+      'bastion.sync.col.status': '状态',
+      'bastion.probe.up': '可达 {ms}ms',
+      'bastion.probe.down': '不可达: {err}',
+      'bastion.selectNone': '— 请选择 —',
+      'bastion.badge': '堡垒',
+      'badge.bastion': '堡垒',
       'audit.title': '审计日志',
       'audit.verify': '验证链',
       'audit.refresh': '刷新',
       'audit.profilePh': 'profile',
       'audit.namePh': 'alias',
       'audit.actionPh': 'action（如 exec）',
+      'audit.bastionPh': '堡垒 alias',
+      'audit.sincePh': '起始时间',
+      'audit.untilPh': '截止时间',
+      'audit.presetBastion': '堡垒事件',
+      'audit.presetRouted': '路由执行',
+      'audit.presetClear': '清除筛选',
       'audit.sourceAll': '全部来源',
+      'audit.sourceCli': 'cli',
+      'audit.sourceMcp': 'mcp',
+      'audit.sourceManage': 'manage',
+      'audit.sourceBastion': 'bastion',
       'audit.empty': '无匹配的审计事件。',
       'audit.loadFail': '无法加载审计日志',
       'audit.matched': '匹配 {n} 条事件',
@@ -429,13 +629,25 @@ textarea{font:inherit;border:1px solid #d1d5db;border-radius:6px;padding:.4rem .
       'audit.col.exit': '退出码',
       'audit.col.ms': '耗时 ms',
       'audit.col.command': '命令',
+      'audit.col.route': '路由',
+      'audit.detail.route': '路由',
+      'audit.detail.bastion': '堡垒',
+      'audit.detail.hmac': 'HMAC 版本',
       'audit.detail.title': '审计明细',
       'audit.detail.command': '命令',
       'audit.detail.sid': '会话 ID',
       'audit.detail.injector': '注入器',
       'audit.detail.hardening': '加固',
       'audit.cmdLegacy': '旧版日志 — 写入时命令已全量脱敏，无法还原。',
-      'audit.clickHint': '点击行查看完整明细'
+      'audit.clickHint': '点击行查看完整明细',
+      'err.invalidBastionKey': '堡垒密钥错误',
+      'err.bastionKeyNotConfigured': '尚未配置堡垒密钥',
+      'err.passphrasesMismatch': '两次输入的密钥不一致',
+      'err.bastionLocked': '堡垒出站已锁定 — 请先解锁',
+      'err.bastionNotRegistered': '该别名未注册为堡垒',
+      'err.aliasRequired': '请填写 alias',
+      'err.unauthorized': '未授权',
+      'err.serverDown': 'Manage 服务已停止（空闲超时或已关闭）。请在终端运行 brokre manage --open 后重新打开页面。'
     }
   };
 
@@ -456,6 +668,39 @@ textarea{font:inherit;border:1px solid #d1d5db;border-radius:6px;padding:.4rem .
     return s;
   }
 
+  const API_ERROR_KEYS = {
+    'invalid bastion key': 'err.invalidBastionKey',
+    'bastion key not configured': 'err.bastionKeyNotConfigured',
+    'passphrases do not match': 'err.passphrasesMismatch',
+    'bastion outbound access locked — unlock first': 'err.bastionLocked',
+    'bastion not registered': 'err.bastionNotRegistered',
+    'alias is required': 'err.aliasRequired',
+    'unauthorized': 'err.unauthorized',
+    'Failed to fetch': 'err.serverDown',
+  };
+
+  function apiErrorMessage(msg) {
+    const key = API_ERROR_KEYS[msg];
+    return key ? t(key) : msg;
+  }
+
+  function i18nSelectOptions(selectId) {
+    const sel = document.getElementById(selectId);
+    if (!sel) return;
+    [...sel.options].forEach(opt => {
+      const k = opt.getAttribute('data-i18n');
+      if (k) opt.textContent = t(k);
+    });
+  }
+
+  function formatProbeStatus(status) {
+    if (!status) return '-';
+    if (status.reachable) {
+      return t('bastion.probe.up', { ms: status.probe_ms || 0 });
+    }
+    return t('bastion.probe.down', { err: status.error || '?' });
+  }
+
   function applyI18n() {
     document.documentElement.lang = lang === 'zh' ? 'zh-CN' : 'en';
     document.title = t('title');
@@ -465,19 +710,30 @@ textarea{font:inherit;border:1px solid #d1d5db;border-radius:6px;padding:.4rem .
     document.querySelectorAll('[data-i18n-placeholder]').forEach(el => {
       el.placeholder = t(el.getAttribute('data-i18n-placeholder'));
     });
+    document.querySelectorAll('[data-i18n-title]').forEach(el => {
+      el.title = t(el.getAttribute('data-i18n-title'));
+    });
     document.querySelectorAll('#lang-switch [data-lang]').forEach(el => {
       el.classList.toggle('on', el.dataset.lang === lang);
     });
-    const sel = document.getElementById('f-auth-type');
-    if (sel) {
-      [...sel.options].forEach(opt => {
-        const k = opt.getAttribute('data-i18n');
-        if (k) opt.textContent = t(k);
-      });
-    }
+    i18nSelectOptions('f-auth-type');
+    i18nSelectOptions('audit-source');
     updateFormFields();
     render();
+    if (currentView === 'bastion') renderBastion();
+    if (currentView === 'audit' && lastAuditResult) renderAuditTable(lastAuditResult);
+    if (lastSyncAlias && document.getElementById('modal-bastion-sync').classList.contains('show')) {
+      document.getElementById('bastion-sync-title').textContent = t('bastion.syncTitle', { alias: lastSyncAlias });
+      if (lastSyncItems) renderSyncTableBody(lastSyncItems);
+    }
   }
+
+  window.addEventListener('storage', (ev) => {
+    if (ev.key === 'brokre_lang' && (ev.newValue === 'en' || ev.newValue === 'zh') && ev.newValue !== lang) {
+      lang = ev.newValue;
+      applyI18n();
+    }
+  });
 
   document.getElementById('lang-switch').addEventListener('click', (ev) => {
     const el = ev.target.closest('[data-lang]');
@@ -505,22 +761,55 @@ textarea{font:inherit;border:1px solid #d1d5db;border-radius:6px;padding:.4rem .
   });
 
   async function api(path, opts) {
-    const res = await fetch(path, Object.assign({ headers: headers() }, opts || {}));
+    let res;
+    try {
+      res = await fetch(path, Object.assign({ headers: headers() }, opts || {}));
+    } catch (_) {
+      setServerDown(true);
+      throw new Error('Failed to fetch');
+    }
     if (!res.ok) {
       let msg = res.statusText;
       try { const j = await res.json(); if (j.error) msg = j.error; } catch(_){}
       throw new Error(msg);
     }
+    setServerDown(false);
     if (res.status === 204) return null;
     const ct = res.headers.get('content-type') || '';
     if (ct.includes('application/json')) return res.json();
     return res.text();
   }
 
+  function setServerDown(down) {
+    const el = document.getElementById('server-down');
+    if (!el) return;
+    el.classList.toggle('hidden', !down);
+    if (down) {
+      const text = document.getElementById('server-down-text');
+      if (text) text.textContent = t('err.serverDown');
+    }
+  }
+
   let creds = [];
   let groups = [];
   let rotateTarget = null;
   let deleteTarget = null;
+  let bastionState = { bastions: [], key_set: false, unlocked: false, max_bastions: 8 };
+  let bastionPollTimer = null;
+  let lastAuditResult = null;
+  let lastSyncAlias = null;
+  let lastSyncItems = null;
+
+  function bastionAliasSet() {
+    return new Set((bastionState.bastions || []).map(b => b.alias));
+  }
+
+  function fmtDateTime(iso) {
+    if (!iso) return '-';
+    try {
+      return new Date(iso).toLocaleString(lang === 'zh' ? 'zh-CN' : undefined);
+    } catch (_) { return iso; }
+  }
 
   function esc(s){ return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
 
@@ -569,8 +858,13 @@ textarea{font:inherit;border:1px solid #d1d5db;border-radius:6px;padding:.4rem .
   }
 
   function renderCard(c) {
+    const isBastion = c.profile === 'ssh' && bastionAliasSet().has(c.name);
     let h = '<div class="card" data-p="' + esc(c.profile) + '" data-n="' + esc(c.name) + '">';
-    h += '<div class="card-head"><span class="name">' + esc(c.name) + '</span>';
+    h += '<div class="card-head"><span class="name">' + esc(c.name);
+    if (isBastion) {
+      h += ' <span class="badge bastion btn-bastion-badge" title="' + esc(t('badge.bastion')) + '">' + esc(t('badge.bastion')) + '</span>';
+    }
+    h += '</span>';
     h += '<span class="muted">' + t('host') + '=' + esc(c.host_alias || '-') + ' · ' + t('last') + '=' + esc(fmtDate(c.last_used_at)) + '</span></div>';
     if (c.profile !== groups.find(x => x.profiles.includes(c.profile))?.create_profile) {
       h += '<div class="muted" style="font-size:.75rem">' + t('profile') + ': ' + esc(c.profile) + '</div>';
@@ -588,6 +882,10 @@ textarea{font:inherit;border:1px solid #d1d5db;border-radius:6px;padding:.4rem .
   }
 
   function bindCardActions(root) {
+    root.querySelectorAll('.btn-bastion-badge').forEach(btn => btn.addEventListener('click', (ev) => {
+      ev.stopPropagation();
+      switchView('bastion');
+    }));
     root.querySelectorAll('.btn-copy').forEach(btn => btn.addEventListener('click', () => {
       navigator.clipboard.writeText(btn.dataset.cmd).catch(()=>{});
     }));
@@ -838,14 +1136,192 @@ textarea{font:inherit;border:1px solid #d1d5db;border-radius:6px;padding:.4rem .
   }
 
   async function refresh(){
-    const [credList, profileGroups] = await Promise.all([
+    const [credList, profileGroups, bastionData] = await Promise.all([
       api('/api/credentials'),
       api('/api/profiles'),
+      api('/api/bastion').catch(() => ({ bastions: [], key_set: false, unlocked: false, max_bastions: 8 })),
     ]);
     creds = credList;
     groups = profileGroups;
+    bastionState = bastionData || bastionState;
     render();
+    if (currentView === 'bastion') renderBastion();
   }
+
+  function renderBastion() {
+    const statusEl = document.getElementById('bastion-status');
+    const actionsEl = document.getElementById('bastion-actions');
+    const unlockRow = document.getElementById('bastion-unlock-row');
+    const listWrap = document.getElementById('bastion-list-wrap');
+    const enableSelect = document.getElementById('bastion-enable-select');
+    const aliases = bastionAliasSet();
+
+    let statusHtml = '';
+    if (bastionState.key_set) {
+      statusHtml += '<span class="badge">' + esc(t('bastion.keySet')) + '</span>';
+      if (bastionState.unlocked) {
+        statusHtml += '<span class="badge session-ok">' + esc(t('bastion.unlocked', { until: fmtDateTime(bastionState.idle_expires_at) })) + '</span>';
+      } else {
+        statusHtml += '<span class="badge session-lock">' + esc(t('bastion.locked')) + '</span>';
+      }
+    } else {
+      statusHtml += '<span class="badge warn">' + esc(t('bastion.keyUnset')) + '</span>';
+    }
+    statusEl.innerHTML = statusHtml;
+
+    let actionsHtml = '';
+    actionsHtml += '<button type="button" class="secondary" id="bastion-set-key-btn">' + esc(t('bastion.setKey')) + '</button>';
+    if (bastionState.key_set && bastionState.unlocked) {
+      actionsHtml += '<button type="button" class="secondary" id="bastion-lock-btn">' + esc(t('bastion.lock')) + '</button>';
+    }
+    actionsEl.innerHTML = actionsHtml;
+
+    unlockRow.classList.toggle('hidden', !bastionState.key_set || bastionState.unlocked);
+    document.getElementById('bastion-unlock-err').textContent = '';
+
+    const sshCreds = creds.filter(c => c.profile === 'ssh' && !aliases.has(c.name));
+    let opts = '<option value="">' + esc(t('bastion.selectNone')) + '</option>';
+    sshCreds.forEach(c => {
+      const label = c.name + (c.host_alias ? ' (' + c.host_alias + ')' : '');
+      opts += '<option value="' + esc(c.name) + '">' + esc(label) + '</option>';
+    });
+    enableSelect.innerHTML = opts;
+
+    const bastions = bastionState.bastions || [];
+    const max = bastionState.max_bastions || 8;
+    if (!bastions.length) {
+      listWrap.innerHTML = '<div class="section-empty">' + esc(t('bastion.empty')) + '</div>';
+    } else {
+      let html = '<p class="muted">' + esc(t('bastion.count', { n: bastions.length, max: max })) + '</p>';
+      html += '<table class="bastion-table"><thead><tr>';
+      html += '<th>' + esc(t('bastion.col.alias')) + '</th><th>' + esc(t('bastion.col.host')) + '</th><th>' + esc(t('bastion.enabledAt')) + '</th><th>' + esc(t('bastion.col.actions')) + '</th></tr></thead><tbody>';
+      bastions.forEach(b => {
+        const host = b.host_alias || '-';
+        const at = b.enabled_at ? fmtDate(b.enabled_at) : '-';
+        html += '<tr data-alias="' + esc(b.alias) + '">';
+        html += '<td>' + esc(b.alias) + '</td><td>' + esc(host) + '</td><td>' + esc(at) + '</td>';
+        html += '<td><button type="button" class="secondary btn-bastion-sync">' + esc(t('bastion.sync')) + '</button> ';
+        html += '<button type="button" class="danger btn-bastion-disable">' + esc(t('bastion.disable')) + '</button></td>';
+        html += '</tr>';
+      });
+      html += '</tbody></table>';
+      listWrap.innerHTML = html;
+      listWrap.querySelectorAll('.btn-bastion-disable').forEach(btn => {
+        btn.addEventListener('click', async () => {
+          const alias = btn.closest('tr').dataset.alias;
+          try {
+            await api('/api/bastion/disable', { method: 'POST', body: JSON.stringify({ alias }) });
+            await refresh();
+          } catch (e) { alert(apiErrorMessage(e.message)); }
+        });
+      });
+      listWrap.querySelectorAll('.btn-bastion-sync').forEach(btn => {
+        btn.addEventListener('click', () => syncBastion(btn.closest('tr').dataset.alias));
+      });
+    }
+
+    const setKeyBtn = document.getElementById('bastion-set-key-btn');
+    if (setKeyBtn) setKeyBtn.onclick = () => {
+      document.getElementById('bastion-key-err').textContent = '';
+      document.getElementById('bastion-key-pass').value = '';
+      document.getElementById('bastion-key-confirm').value = '';
+      armSecretInputs(document.getElementById('modal-bastion-key'));
+      document.getElementById('modal-bastion-key').classList.add('show');
+    };
+    const lockBtn = document.getElementById('bastion-lock-btn');
+    if (lockBtn) lockBtn.onclick = async () => {
+      try {
+        await api('/api/bastion/lock', { method: 'POST', body: '{}' });
+        await refresh();
+      } catch (e) { alert(apiErrorMessage(e.message)); }
+    };
+    if (!unlockRow.classList.contains('hidden')) armSecretInputs(unlockRow);
+  }
+
+  function renderSyncTableBody(items) {
+    const body = document.getElementById('bastion-sync-body');
+    if (!items || !items.length) {
+      body.innerHTML = '<div class="empty">—</div>';
+      return;
+    }
+    let html = '<table class="bastion-table"><thead><tr>';
+    html += '<th>' + esc(t('bastion.sync.col.addr')) + '</th>';
+    html += '<th>' + esc(t('bastion.sync.col.profile')) + '</th>';
+    html += '<th>' + esc(t('bastion.sync.col.host')) + '</th>';
+    html += '<th>' + esc(t('bastion.sync.col.status')) + '</th>';
+    html += '</tr></thead><tbody>';
+    items.forEach(item => {
+      html += '<tr><td>' + esc(item.addr || '-') + '</td><td>' + esc(item.profile || '-') + '</td>';
+      html += '<td>' + esc(item.host_alias || '-') + '</td><td>' + esc(formatProbeStatus(item.status)) + '</td></tr>';
+    });
+    html += '</tbody></table>';
+    body.innerHTML = html;
+  }
+
+  async function syncBastion(alias) {
+    if (bastionState.key_set && !bastionState.unlocked) {
+      alert(t('bastion.syncLocked'));
+      document.getElementById('bastion-unlock-row').classList.remove('hidden');
+      armSecretInputs(document.getElementById('bastion-unlock-row'));
+      return;
+    }
+    lastSyncAlias = alias;
+    lastSyncItems = null;
+    const body = document.getElementById('bastion-sync-body');
+    body.innerHTML = '<div class="empty">' + esc(t('loading')) + '</div>';
+    document.getElementById('bastion-sync-title').textContent = t('bastion.syncTitle', { alias });
+    document.getElementById('modal-bastion-sync').classList.add('show');
+    try {
+      const items = await api('/api/bastion/sync/' + encodeURIComponent(alias));
+      lastSyncItems = items || [];
+      renderSyncTableBody(lastSyncItems);
+    } catch (e) {
+      body.innerHTML = '<div class="err">' + esc(t('bastion.syncFail') + ': ' + apiErrorMessage(e.message)) + '</div>';
+    }
+  }
+
+  async function loadBastionStatus() {
+    try {
+      bastionState = await api('/api/bastion');
+      if (currentView === 'bastion') renderBastion();
+    } catch (_) {}
+  }
+
+  document.getElementById('bastion-enable-btn').addEventListener('click', async () => {
+    const err = document.getElementById('bastion-enable-err');
+    err.textContent = '';
+    const alias = document.getElementById('bastion-enable-select').value;
+    if (!alias) return;
+    try {
+      await api('/api/bastion/enable', { method: 'POST', body: JSON.stringify({ alias }) });
+      await refresh();
+    } catch (e) { err.textContent = apiErrorMessage(e.message); }
+  });
+
+  document.getElementById('bastion-unlock-btn').addEventListener('click', async () => {
+    const err = document.getElementById('bastion-unlock-err');
+    err.textContent = '';
+    const passphrase = document.getElementById('bastion-unlock-pass').value;
+    try {
+      await api('/api/bastion/unlock', { method: 'POST', body: JSON.stringify({ passphrase }) });
+      document.getElementById('bastion-unlock-pass').value = '';
+      await refresh();
+    } catch (e) { err.textContent = apiErrorMessage(e.message); }
+  });
+
+  document.getElementById('bastion-key-submit').addEventListener('click', async () => {
+    const err = document.getElementById('bastion-key-err');
+    err.textContent = '';
+    const passphrase = document.getElementById('bastion-key-pass').value;
+    const confirm = document.getElementById('bastion-key-confirm').value;
+    try {
+      await api('/api/bastion/set-key', { method: 'POST', body: JSON.stringify({ passphrase, confirm }) });
+      document.getElementById('bastion-key-pass').value = '';
+      document.getElementById('bastion-key-confirm').value = '';
+      closeModals();
+      await refresh();
+    } catch (e) { err.textContent = apiErrorMessage(e.message); }
+  });
 
   async function refreshConfig(){
     try {
@@ -855,10 +1331,17 @@ textarea{font:inherit;border:1px solid #d1d5db;border-radius:6px;padding:.4rem .
       const m = Math.floor(left / 60);
       const s = String(left % 60).padStart(2,'0');
       document.getElementById('idle').textContent = t('idle', { m: m, s: s });
-    } catch(_){}
+    } catch (e) {
+      document.getElementById('idle').textContent = '—';
+      if (e && e.message === 'Failed to fetch') setServerDown(true);
+    }
   }
 
-  function closeModals(){ document.querySelectorAll('.modal').forEach(m => m.classList.remove('show')); }
+  function closeModals(){
+    document.querySelectorAll('.modal').forEach(m => m.classList.remove('show'));
+    lastSyncAlias = null;
+    lastSyncItems = null;
+  }
 
   document.querySelectorAll('[data-close]').forEach(b => b.addEventListener('click', closeModals));
   document.getElementById('search').addEventListener('input', render);
@@ -1002,6 +1485,10 @@ textarea{font:inherit;border:1px solid #d1d5db;border-radius:6px;padding:.4rem .
       [t('audit.col.ms'), ev.dur_ms == null ? '-' : String(ev.dur_ms)],
       [t('audit.detail.sid'), ev.sid || '-'],
     ];
+    const routeStr = formatAuditRoute(ev);
+    if (routeStr !== '-') rows.push([t('audit.detail.route'), routeStr]);
+    if (ev.bastion) rows.push([t('audit.detail.bastion'), ev.bastion]);
+    if (ev.hmac_version != null) rows.push([t('audit.detail.hmac'), String(ev.hmac_version)]);
     if (ev.injector_outcome) {
       let inj = ev.injector_outcome;
       if (ev.injector_pid != null) inj += ' (pid ' + ev.injector_pid + ')';
@@ -1038,14 +1525,33 @@ textarea{font:inherit;border:1px solid #d1d5db;border-radius:6px;padding:.4rem .
     document.getElementById('modal-audit').classList.add('show');
   }
 
+  function formatAuditRoute(ev) {
+    if (ev.route && ev.route.length) {
+      const chain = ev.route.join('::');
+      if (ev.name && ev.name !== '-') return chain + '::' + ev.name;
+      return chain;
+    }
+    if (ev.bastion && ev.name) return ev.bastion + '::' + ev.name;
+    return '-';
+  }
+
   function switchView(view) {
     currentView = view;
     document.getElementById('view-credentials').classList.toggle('hidden', view !== 'credentials');
+    document.getElementById('view-bastion').classList.toggle('hidden', view !== 'bastion');
     document.getElementById('view-audit').classList.toggle('hidden', view !== 'audit');
     document.querySelectorAll('#nav-tabs button').forEach(btn => {
       btn.classList.toggle('on', btn.dataset.view === view);
     });
+    if (bastionPollTimer) {
+      clearInterval(bastionPollTimer);
+      bastionPollTimer = null;
+    }
     if (view === 'audit') loadAudit().catch(() => {});
+    if (view === 'bastion') {
+      loadBastionStatus().then(() => renderBastion());
+      bastionPollTimer = setInterval(() => loadBastionStatus(), 5000);
+    }
   }
 
   document.querySelectorAll('#nav-tabs button').forEach(btn => {
@@ -1057,17 +1563,51 @@ textarea{font:inherit;border:1px solid #d1d5db;border-radius:6px;padding:.4rem .
     const profile = document.getElementById('audit-profile').value.trim();
     const name = document.getElementById('audit-name').value.trim();
     const action = document.getElementById('audit-action').value.trim();
+    const bastion = document.getElementById('audit-bastion').value.trim();
     const source = document.getElementById('audit-source').value;
+    const sinceEl = document.getElementById('audit-since');
+    const untilEl = document.getElementById('audit-until');
     if (profile) params.set('profile', profile);
     if (name) params.set('name', name);
     if (action) params.set('action', action);
+    if (bastion) params.set('bastion', bastion);
     if (source) params.set('source', source);
+    if (sinceEl && sinceEl.value) {
+      const d = new Date(sinceEl.value);
+      if (!isNaN(d)) params.set('since', d.toISOString());
+    }
+    if (untilEl && untilEl.value) {
+      const d = new Date(untilEl.value);
+      if (!isNaN(d)) params.set('until', d.toISOString());
+    }
     params.set('limit', '100');
-    const qs = params.toString();
-    return qs ? '/api/audit?' + qs : '/api/audit?limit=100';
+    return '/api/audit?' + params.toString();
+  }
+
+  function applyAuditPreset(preset) {
+    const clear = () => {
+      document.getElementById('audit-profile').value = '';
+      document.getElementById('audit-name').value = '';
+      document.getElementById('audit-action').value = '';
+      document.getElementById('audit-bastion').value = '';
+      document.getElementById('audit-source').value = '';
+      document.getElementById('audit-since').value = '';
+      document.getElementById('audit-until').value = '';
+    };
+    clear();
+    if (preset === 'bastion-events') {
+      document.getElementById('audit-action').value = 'bastion';
+    } else if (preset === 'routed-exec') {
+      document.getElementById('audit-source').value = 'bastion';
+    }
+    document.querySelectorAll('.audit-preset').forEach(btn => {
+      btn.classList.toggle('on', btn.dataset.preset === preset && preset !== 'clear');
+    });
+    if (currentView === 'audit') loadAudit().catch(() => {});
   }
 
   function renderAuditTable(result) {
+    lastAuditResult = result;
     const wrap = document.getElementById('audit-table-wrap');
     auditEvents = result.events || [];
     if (!auditEvents.length) {
@@ -1082,6 +1622,7 @@ textarea{font:inherit;border:1px solid #d1d5db;border-radius:6px;padding:.4rem .
     html += '<th>' + esc(t('audit.col.action')) + '</th>';
     html += '<th>' + esc(t('audit.col.source')) + '</th>';
     html += '<th>' + esc(t('audit.col.target')) + '</th>';
+    html += '<th>' + esc(t('audit.col.route')) + '</th>';
     html += '<th>' + esc(t('audit.col.exit')) + '</th>';
     html += '<th>' + esc(t('audit.col.ms')) + '</th>';
     html += '<th>' + esc(t('audit.col.command')) + '</th>';
@@ -1094,11 +1635,14 @@ textarea{font:inherit;border:1px solid #d1d5db;border-radius:6px;padding:.4rem .
       const cmdFull = formatAuditCommand(ev.args_redacted);
       const cmd = truncateText(cmdFull, 56);
       const legacy = auditArgsAllRedacted(ev.args_redacted);
-      html += '<tr class="audit-row" data-audit-idx="' + idx + '" title="' + esc(t('audit.clickHint')) + '">';
+      const routeStr = formatAuditRoute(ev);
+      const isBastionEv = (ev.action || '').startsWith('bastion/') || ev.source === 'bastion';
+      html += '<tr class="audit-row' + (isBastionEv ? ' audit-bastion' : '') + '" data-audit-idx="' + idx + '" title="' + esc(t('audit.clickHint')) + '">';
       html += '<td>' + esc(ev.ts) + '</td>';
       html += '<td>' + esc(ev.action) + '</td>';
       html += '<td>' + esc(src) + '</td>';
       html += '<td>' + esc(target) + '</td>';
+      html += '<td>' + esc(routeStr) + '</td>';
       html += '<td>' + esc(exit) + '</td>';
       html += '<td>' + esc(ms) + '</td>';
       html += '<td class="cmd' + (legacy ? ' muted' : '') + '">' + esc(cmd) + '</td>';
@@ -1142,7 +1686,7 @@ textarea{font:inherit;border:1px solid #d1d5db;border-radius:6px;padding:.4rem .
 
   document.getElementById('audit-refresh').addEventListener('click', () => loadAudit().catch(() => {}));
   document.getElementById('audit-verify').addEventListener('click', () => verifyAudit().catch(() => {}));
-  ['audit-profile', 'audit-name', 'audit-action'].forEach(id => {
+  ['audit-profile', 'audit-name', 'audit-action', 'audit-bastion'].forEach(id => {
     document.getElementById(id).addEventListener('keydown', ev => {
       if (ev.key === 'Enter') loadAudit().catch(() => {});
     });
@@ -1150,13 +1694,20 @@ textarea{font:inherit;border:1px solid #d1d5db;border-radius:6px;padding:.4rem .
   document.getElementById('audit-source').addEventListener('change', () => {
     if (currentView === 'audit') loadAudit().catch(() => {});
   });
+  document.querySelectorAll('.audit-preset').forEach(btn => {
+    btn.addEventListener('click', () => applyAuditPreset(btn.dataset.preset));
+  });
 
   applyI18n();
   refresh().catch(() => {
     document.getElementById('list').innerHTML = '<div class="empty">' + esc(t('loadFail')) + '</div>';
+    setServerDown(true);
   });
   refreshConfig();
   setInterval(refreshConfig, 10000);
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden) refreshConfig().catch(() => {});
+  });
 })();
 </script>
 </body>

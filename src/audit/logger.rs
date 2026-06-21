@@ -15,6 +15,7 @@ type HmacSha256 = Hmac<Sha256>;
 pub const HMAC_VERSION_LEGACY: u8 = 1;
 pub const HMAC_VERSION_V2: u8 = 2;
 pub const HMAC_VERSION_V3: u8 = 3;
+pub const HMAC_VERSION_V4: u8 = 4;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct AuditEvent {
@@ -37,7 +38,13 @@ pub struct AuditEvent {
     /// Origin of the event: `cli`, `mcp`, or `manage`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<String>,
-    /// HMAC canonicalization version (`1` = legacy, `2` = full payload, `3` = + source).
+    /// Bastion route chain for routed exec/list (e.g. `["b150"]`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub route: Option<Vec<String>>,
+    /// Primary bastion hop for routed operations.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bastion: Option<String>,
+    /// HMAC canonicalization version (`1` = legacy, `2` = full payload, `3` = + source, `4` = + route/bastion).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hmac_version: Option<u8>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -60,6 +67,25 @@ struct HmacPayloadV2<'a> {
     injector_pid: Option<u32>,
     injector_dur_ms: Option<u64>,
     injector_outcome: Option<&'a str>,
+}
+
+#[derive(Serialize)]
+struct HmacPayloadV4<'a> {
+    ts: &'a str,
+    sid: &'a str,
+    action: &'a str,
+    profile: &'a str,
+    name: &'a str,
+    exit: Option<i32>,
+    dur_ms: Option<u64>,
+    args_redacted: &'a [String],
+    hardening: Option<&'a HardeningReport>,
+    injector_pid: Option<u32>,
+    injector_dur_ms: Option<u64>,
+    injector_outcome: Option<&'a str>,
+    source: Option<&'a str>,
+    route: Option<&'a [String]>,
+    bastion: Option<&'a str>,
 }
 
 #[derive(Serialize)]
@@ -136,8 +162,31 @@ pub fn compute_hmac_for_append(event: &AuditEvent, key: &[u8; 32]) -> String {
     compute_hmac(event, key)
 }
 
+fn compute_hmac_v4(event: &AuditEvent, key: &[u8; 32]) -> String {
+    let payload = HmacPayloadV4 {
+        ts: &event.ts,
+        sid: &event.sid,
+        action: &event.action,
+        profile: &event.profile,
+        name: &event.name,
+        exit: event.exit,
+        dur_ms: event.dur_ms,
+        args_redacted: &event.args_redacted,
+        hardening: event.hardening.as_ref(),
+        injector_pid: event.injector_pid,
+        injector_dur_ms: event.injector_dur_ms,
+        injector_outcome: event.injector_outcome.as_deref(),
+        source: event.source.as_deref(),
+        route: event.route.as_deref(),
+        bastion: event.bastion.as_deref(),
+    };
+    let data = serde_json::to_vec(&payload).expect("HMAC payload serialization");
+    hmac_with_key(key, &data)
+}
+
 fn compute_hmac(event: &AuditEvent, key: &[u8; 32]) -> String {
     match event.hmac_version {
+        Some(HMAC_VERSION_V4) => compute_hmac_v4(event, key),
         Some(HMAC_VERSION_V3) => compute_hmac_v3(event, key),
         Some(HMAC_VERSION_V2) => compute_hmac_v2(event, key),
         _ => compute_hmac_v1(event, key),
@@ -162,9 +211,11 @@ pub fn events_from_line(line: &str) -> Vec<AuditEvent> {
     events
 }
 
-/// Audit source for CLI exec paths (`mcp` when spawned from MCP).
+/// Audit source for CLI exec paths (`mcp` when spawned from MCP, `bastion` when routed).
 pub fn exec_audit_source() -> String {
-    if std::env::var_os("BROKRE_MCP_EXEC").is_some() {
+    if std::env::var_os("BROKRE_BASTION_SOURCE").is_some() {
+        "bastion".into()
+    } else if std::env::var_os("BROKRE_MCP_EXEC").is_some() {
         "mcp".into()
     } else {
         "cli".into()
@@ -172,7 +223,9 @@ pub fn exec_audit_source() -> String {
 }
 
 pub fn append(event: &mut AuditEvent, hmac_key: &[u8; 32]) -> Result<()> {
-    event.hmac_version = Some(if event.source.is_some() {
+    event.hmac_version = Some(if event.route.is_some() || event.bastion.is_some() {
+        HMAC_VERSION_V4
+    } else if event.source.is_some() {
         HMAC_VERSION_V3
     } else {
         HMAC_VERSION_V2
@@ -263,6 +316,8 @@ mod tests {
             injector_dur_ms: None,
             injector_outcome: None,
             source: None,
+            route: None,
+            bastion: None,
             hmac_version: None,
             prev_hmac: None,
             hmac: None,
@@ -333,5 +388,19 @@ mod tests {
         assert_eq!(parsed.len(), 2);
         assert_eq!(parsed[0].name, "a");
         assert_eq!(parsed[1].name, "b");
+    }
+
+    #[test]
+    fn hmac_v4_with_route_bastion_verifies() {
+        let key = [4u8; 32];
+        let mut ev = sample_event("exec", "b150::db");
+        ev.source = Some("bastion".into());
+        ev.route = Some(vec!["b150".into()]);
+        ev.bastion = Some("b150".into());
+        ev.hmac_version = Some(HMAC_VERSION_V4);
+        ev.hmac = Some(compute_hmac(&ev, &key));
+        let tmp = NamedTempFile::new().unwrap();
+        std::fs::write(tmp.path(), serde_json::to_string(&ev).unwrap()).unwrap();
+        assert!(verify_chain(tmp.path(), &key).is_ok());
     }
 }

@@ -59,7 +59,7 @@
 ## T10: Local manage web UI
 
 - **Attack**: Malicious site or AI agent calls `http://127.0.0.1:<port>/reveal` or CSRF-writes credentials.
-- **Mitigation**: No reveal/export endpoint; passwords never appear in HTTP responses. Server binds loopback only. Write APIs require `Authorization: Bearer <session_token>`. Delete/rotate require reveal passphrase verification; literal `YES` is accepted only when `reveal_protected == false` (auto-saved records). Embedded MCP manage omits session tokens from stderr; idle timeout marks the session expired (auth rejected). Standalone `brokre manage` prints the full URL only to a human terminal.
+- **Mitigation**: No reveal/export endpoint; passwords never appear in HTTP responses. Server binds loopback only. Write APIs require `Authorization: Bearer <session_token>`. Delete/rotate require reveal passphrase verification; literal `YES` is accepted only when `reveal_protected == false` (auto-saved records). Bastion key setup/rotation uses `POST /api/bastion/set-key` (write auth only; Argon2id verifier, clears active unlock session). Embedded MCP manage omits session tokens from stderr; idle timeout marks the session expired (auth rejected). Standalone `brokre manage` prints the full URL only to a human terminal.
 - **Residual risk**: Browser extensions or local malware on the same host can attempt localhost requests while `brokre manage` is running and the session is active. `brokre reveal` remains TTY-gated (T2) and is not exposed via HTTP.
 
 ## T11: MCP server exposes secrets to AI
@@ -73,6 +73,18 @@
 - **Attack**: Local malware or a compromised `brokre mcp` process reuses an open root shell; attacker reads PTY output or injects commands between AI invocations.
 - **Mitigation**: Sessions live only inside the MCP process (never returned to the agent). Password injection still uses short-lived injector children (T1). Default idle timeout 10 minutes, max lifetime 30 minutes, background sweeper, and full pool teardown when MCP exits. `session=close` ends a session early; `BROKRE_MCP_SESSION=0` disables reuse. Each `run` is audit-logged (`mcp/elevated-session/*`).
 - **Residual risk**: A persistent root shell increases blast radius if the local brokre process is compromised while a session is active. Sudo password is still assumed to match the vault `password` field. True interactive TTY programs (`vim`, bare `sudo -i` without a command) remain unsupported over MCP.
+
+## T13: Bastion route amplification (SSH fan-out)
+
+- **Attack**: AI or script triggers `brokre list --probe --include-bastions` or many routed execs, opening concurrent SSH/TCP probes through one or more bastions and overwhelming target `sshd` or bastion CPU.
+- **Mitigation**: TCP probes use ms-level timeouts, concurrency semaphores, and short result caches. Bastion outbound requires a human-unlocked TTL session when a bastion key is configured. Registered bastion count and hop depth are capped (`BROKRE_BASTION_MAX`, `BROKRE_BASTION_MAX_DEPTH`). Loop detection via `BROKRE_BASTION_PATH`.
+- **Residual risk**: A unlocked session still allows the local MCP/CLI owner to fan out until idle timeout; operators should keep TTL short and monitor audit (`bastion/*`, `source=bastion`).
+
+## T14: Bastion unlock bypass / session forgery
+
+- **Attack**: Malware writes a fake `~/.brokre/run/bastion_session.json` or calls unlock APIs without knowing the bastion key.
+- **Mitigation**: Session file mode 0600; only manage `POST /api/bastion/unlock` or `POST /api/bastion/set-key` (Bearer write auth + Argon2id verifier) or TTY `brokre bastion unlock` / `brokre bastion set-key` create or rotate keys and sessions. MCP uses URL-mode elicitation (sensitive key never in MCP client) or localhost browser + status polling. Unlock/deny/set-key events are audit-logged (HMAC v4 with `bastion` field).
+- **Residual risk**: Root on the laptop can still patch brokre or replace the binary; bastion gate is a human intent latch, not anti-root.
 
 ## Future Work
 

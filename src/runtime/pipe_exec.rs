@@ -25,11 +25,15 @@ pub fn should_use_pipe_mode(
         return true;
     }
     if bin == "ssh" {
+        // Remote sudo/su always needs a PTY for password injection — even when stdin
+        // is a pipe (CI, IDE agents, scripts). MCP sets BROKRE_MCP_EXEC for the same rule.
+        if remote_trailing
+            .is_some_and(crate::runtime::ssh_identity::remote_command_needs_tty)
+        {
+            return false;
+        }
         if std::env::var_os("BROKRE_MCP_EXEC").is_some() {
-            // MCP: keep pipe/ASKPASS for normal remote commands (binary-safe);
-            // switch to PTY only when the remote command needs a TTY.
-            return !remote_trailing
-                .is_some_and(crate::runtime::ssh_identity::remote_command_needs_tty);
+            return true;
         }
         return stdin_is_pipe;
     }
@@ -169,5 +173,23 @@ mod tests {
             Some(&["sudo".into(), "whoami".into()]),
         ));
         std::env::remove_var("BROKRE_MCP_EXEC");
+    }
+
+    #[test]
+    fn cli_sudo_forces_pty_even_when_stdin_is_pipe() {
+        assert!(!should_use_pipe_mode(
+            "ssh",
+            true,
+            Some(&["sudo".into(), "whoami".into()]),
+        ));
+    }
+
+    #[test]
+    fn cli_quoted_sudo_script_forces_pty_when_stdin_is_pipe() {
+        assert!(!should_use_pipe_mode(
+            "ssh",
+            true,
+            Some(&["sudo -i whoami".into()]),
+        ));
     }
 }

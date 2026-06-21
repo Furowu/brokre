@@ -297,6 +297,8 @@ fn audit_action(
         injector_dur_ms: None,
         injector_outcome: None,
         source: Some("mcp".into()),
+        route: None,
+        bastion: None,
         hmac_version: None,
         prev_hmac: None,
         hmac: None,

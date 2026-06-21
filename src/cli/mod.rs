@@ -1,4 +1,5 @@
 pub mod audit;
+pub mod bastion;
 pub mod exec;
 #[cfg(unix)]
 pub mod injector;

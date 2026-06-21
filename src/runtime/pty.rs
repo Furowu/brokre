@@ -290,20 +290,6 @@ pub fn run(
                                             &window,
                                         );
                                     let is_elevation_prompt = is_sudo_prompt || is_su_prompt;
-                                    // Remote sudo/su runs only after SSH userauth; still wait until
-                                    // the SSH login password is injected when one is expected.
-                                    if is_elevation_prompt {
-                                        let needs_ssh_password = inject_fields_a
-                                            .iter()
-                                            .any(|f| f == "password");
-                                        let ssh_password_done = injected_fields_a
-                                            .lock()
-                                            .map(|g| g.contains("password"))
-                                            .unwrap_or(false);
-                                        if needs_ssh_password && !ssh_password_done {
-                                            continue 'prompt_scan;
-                                        }
-                                    }
                                     // Do not re-arm password capture after we're clearly past
                                     // SSH authentication — later "…password:" lines are usually MOTD.
                                     if !preset_some
@@ -330,14 +316,20 @@ pub fn run(
                                                     *pf = Some(field);
                                                 }
                                                 pending_inj_a.store(true, Ordering::Release);
+                                                window.clear();
+                                                break 'prompt_scan;
                                             }
                                         }
                                     } else {
                                         pending_cap_a.store(true, Ordering::Release);
                                         let mut g = cap_a.lock().unwrap();
                                         *g = Some(String::new());
+                                        window.clear();
+                                        break 'prompt_scan;
                                     }
-                                    window.clear();
+                                    // Pattern matched but injection not armed (e.g. stale
+                                    // password prompt after SSH inject) — keep window for
+                                    // elevation re-match when sudo/su prompts arrive.
                                     break 'prompt_scan;
                                 }
                             }
@@ -489,6 +481,9 @@ pub fn run(
         if !stdin_forward_main.load(Ordering::Acquire)
             && (inject_completed.load(Ordering::Acquire)
                 || (preset_some && post_auth_main.load(Ordering::Acquire))
+                || (preset_some
+                    && !pending_inject.load(Ordering::Acquire)
+                    && spawn_instant.elapsed() >= Duration::from_secs(2))
                 || (!preset_some
                     && !pending_capture.load(Ordering::Acquire)
                     && !pending_inject.load(Ordering::Acquire)

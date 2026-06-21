@@ -181,6 +181,9 @@ pub fn remote_command_needs_tty(trailing: &[String]) -> bool {
         "sudo" | "su" => return true,
         _ => {}
     }
+    if trailing.len() == 1 {
+        return script_invokes_privilege_escalation(&trailing[0]);
+    }
     if let Some(script) = shell_script_from_argv(trailing) {
         return script_invokes_privilege_escalation(script);
     }
@@ -518,6 +521,7 @@ mod tests {
             "pattern".into(),
             "file".into(),
         ]));
+        assert!(remote_command_needs_tty(&["sudo -i whoami".into()]));
     }
 
     #[test]

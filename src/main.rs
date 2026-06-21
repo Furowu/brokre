@@ -38,6 +38,17 @@ enum Commands {
         name_glob: Option<String>,
         #[arg(long)]
         json: bool,
+        /// TCP reachability probe (ms-level timeout).
+        #[arg(long)]
+        probe: bool,
+        /// Include aliases discovered on registered bastions.
+        #[arg(long)]
+        include_bastions: bool,
+        /// Skip remote bastion discovery (used on bastion hosts).
+        #[arg(long, hide = true)]
+        no_bastion_discovery: bool,
+        #[arg(long, hide = true)]
+        probe_timeout_ms: Option<u64>,
     },
     /// Remove a saved credential.
     Rm { profile: String, name: String },
@@ -64,10 +75,40 @@ enum Commands {
     },
     /// Model Context Protocol server for AI assistants (Cursor, Claude Code, …).
     Mcp,
+    /// Bastion proxy: promote SSH aliases as credential brokers.
+    Bastion {
+        #[command(subcommand)]
+        action: BastionCmd,
+    },
     /// Any other word is treated as `<cli> [args...]` — the transparent
     /// pass-through that's the whole point of brokre.
     #[command(external_subcommand)]
     External(Vec<OsString>),
+}
+
+#[derive(Subcommand)]
+enum BastionCmd {
+    /// Promote a saved SSH alias as a bastion broker.
+    Enable { alias: String },
+    /// Remove a bastion registration.
+    Disable { alias: String },
+    /// List registered bastions.
+    List {
+        #[arg(long)]
+        json: bool,
+    },
+    /// Set the bastion unlock key (TTY required).
+    SetKey,
+    /// Unlock bastion outbound access for the current TTL session (TTY required).
+    Unlock,
+    /// Lock (clear) the bastion session immediately.
+    Lock,
+    /// Fetch and print aliases from a bastion (`brokre list --json --probe`).
+    Sync {
+        alias: String,
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -139,7 +180,25 @@ fn main() {
             host,
             name_glob,
             json,
-        }) => cli::list::run(profile, label, host, name_glob, json),
+            probe,
+            include_bastions,
+            no_bastion_discovery,
+            probe_timeout_ms,
+        }) => {
+            if let Some(ms) = probe_timeout_ms {
+                std::env::set_var("BROKRE_PROBE_TIMEOUT_MS", ms.to_string());
+            }
+            cli::list::run(cli::list::ListOptions {
+                profile_filter: profile,
+                labels: label,
+                host_glob: host,
+                name_glob,
+                json,
+                probe,
+                include_bastions,
+                no_bastion_discovery,
+            })
+        }
         Some(Commands::Rm { profile, name }) => cli::rm::run(profile, name),
         Some(Commands::Reveal {
             profile,
@@ -171,6 +230,15 @@ fn main() {
             AuditCmd::Verify { json } => cli::audit::run_verify(json),
         },
         Some(Commands::Manage { onboard, open }) => cli::manage::run(onboard, open),
+        Some(Commands::Bastion { action }) => match action {
+            BastionCmd::Enable { alias } => cli::bastion::run_enable(alias),
+            BastionCmd::Disable { alias } => cli::bastion::run_disable(alias),
+            BastionCmd::List { json } => cli::bastion::run_list(json),
+            BastionCmd::SetKey => cli::bastion::run_set_key(),
+            BastionCmd::Unlock => cli::bastion::run_unlock(),
+            BastionCmd::Lock => cli::bastion::run_lock(),
+            BastionCmd::Sync { alias, json } => cli::bastion::run_sync(alias, json),
+        },
         Some(Commands::Mcp) => cli::mcp::run(),
         Some(Commands::External(raw)) => {
             // raw[0] is the binary name (e.g. "ssh"), raw[1..] are args.
@@ -225,7 +293,9 @@ fn print_usage() {
     eprintln!();
     eprintln!("Usage:");
     eprintln!("  brokre <cli> [args...]              run any CLI through brokre");
-    eprintln!("  brokre list [--profile P] [--json]  list saved aliases");
+    eprintln!("  brokre list [--profile P] [--json] [--probe]  list saved aliases");
+    eprintln!("  brokre bastion enable <ssh-alias>        register bastion broker");
+    eprintln!("  brokre bastion unlock                    unlock bastion outbound session");
     eprintln!("  brokre rm <profile> <alias>         delete an alias");
     eprintln!("  brokre reveal <profile> <alias>     show stored plaintext (TTY + passphrase)");
     eprintln!("  brokre audit list [--profile P] [--json]  query audit history");

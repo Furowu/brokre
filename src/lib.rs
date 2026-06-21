@@ -1,4 +1,5 @@
 pub mod audit;
+pub mod bastion;
 pub mod cli;
 pub mod manage;
 pub mod mcp;

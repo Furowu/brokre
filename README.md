@@ -108,7 +108,7 @@ Use `npx -y brokre@latest` so both the npm launcher and binary stay current. On 
 
 | MCP tool | Purpose |
 |----------|---------|
-| `brokre_list` | Saved aliases (metadata only — profile, name, host) |
+| `brokre_list` | Saved aliases (metadata + optional `probe` / `include_bastions` for `status` / `route`) |
 | `brokre_exec` | Run **any** saved CLI alias (`binary` + `args`); `ssh` + `sudo`/`su` auto-reuses elevated session |
 | `brokre_exec_elevated` | Remote privileged command (`alias`, `command`, `mode`); default `session=reuse` (10 min idle timeout) |
 | `brokre_setup` | Open manage UI in browser for the human to add creds |
@@ -209,7 +209,25 @@ brokre <your-cli> <alias> [args...]
 
 ```bash
 brokre list --json
+brokre list --json --probe --include-bastions   # TCP reachability + bastion routes
 ```
+
+### Bastion proxy (travel / intranet entry)
+
+Promote **any** saved SSH alias whose remote host runs brokre into a bastion broker. Secrets stay on the bastion; the laptop caches metadata and executes via SSH passthrough.
+
+```bash
+brokre bastion enable b150          # register ssh alias b150 as bastion
+brokre bastion set-key              # set bastion unlock key (TTY)
+brokre bastion unlock               # unlock outbound session (TTL, 10 min idle default)
+brokre list --json --probe          # local + bastion aliases with ms-level TCP status
+brokre ssh b150::db uname -a        # routed exec via b150 remote brokre
+brokre bastion sync b150 --json     # fetch alias list from one bastion
+```
+
+- Route separator **`::`** (`:` is illegal in alias names): `db` (local), `b150::db` (via bastion), `b1::b2::inner` (multi-hop, default depth ≤2).
+- **Gate**: with a bastion key set, any outbound SSH (probe / routed exec / direct registered bastion alias) requires unlock. CLI and MCP share the same gate: TTY prompts for the bastion key; non-TTY opens the local auth page and polls (`BROKRE_BASTION_NO_AUTO_OPEN=1` disables auto-open). MCP additionally supports URL-mode elicitation (Cursor, etc.).
+- **Guardrails**: probe concurrency cap, ms timeouts, short cache, loop detection, audit `route`/`bastion` (HMAC v4).
 
 ### Reveal / delete (human-only, real TTY)
 
