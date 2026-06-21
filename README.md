@@ -101,8 +101,6 @@ Or add manually to `~/.cursor/mcp.json` or project `.cursor/mcp.json`:
 }
 ```
 
-Regenerate the install link after config changes: `node scripts/generate-cursor-install-link.js`
-
 **Claude Code** — project `.mcp.json`:
 
 ```json

@@ -101,8 +101,6 @@ npm 包 [`brokre`](https://www.npmjs.com/package/brokre) 是面向 Cursor、Clau
 }
 ```
 
-配置变更后重新生成安装链接：`node scripts/generate-cursor-install-link.js`
-
 **Claude Code** — 项目 `.mcp.json`：
 
 ```json

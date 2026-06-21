@@ -20,12 +20,21 @@
 /hosts
 /r
 /d
+/d.example
 /deploy.env
 .deploy.env
+.deploy.env.example
 .mcp.json
 *.local
 .env
 .env.*
+
+# Deploy / release tooling (local only — not open source)
+/scripts/
+/homebrew/
+/.github/workflows/release.yml
+/.github/workflows/publish-mcp-registry.yml
+/server.json
 
 # Local brokre runtime data (if copied into repo for testing)
 .brokre/
