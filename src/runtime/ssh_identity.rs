@@ -238,9 +238,7 @@ pub fn routed_bastion_user_trailing(trailing: &[String]) -> Option<&[String]> {
     ) {
         i += 1;
     }
-    let Some(inner) = trailing.get(i) else {
-        return None;
-    };
+    let inner = trailing.get(i)?;
     if inner.starts_with('-') {
         return None;
     }

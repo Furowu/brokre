@@ -330,7 +330,7 @@ Reuses a persistent elevated shell by default. BROKRE_MCP_SESSION=0 disables reu
             unlocked_during_call =
                 ensure_bastion_unlocked(&server, &peer, "brokre_exec_elevated").await?;
         }
-        let gate = BastionGateInfo::for_exec("ssh", &[req.alias.clone()], unlocked_during_call);
+        let gate = BastionGateInfo::for_exec("ssh", std::slice::from_ref(&req.alias), unlocked_during_call);
         let mode = crate::runtime::elevated::ElevatedMode::parse(&req.mode).map_err(mcp_err)?;
         let policy = SessionPolicy::parse(&req.session).map_err(mcp_err)?;
 

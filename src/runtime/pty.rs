@@ -124,54 +124,58 @@ pub struct PtyRunOptions {
     pub passive_inner_ssh: bool,
 }
 
+/// Prompt context for [`should_arm_vault_inject`] (keeps arity within clippy limits).
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct VaultInjectPrompt<'a> {
+    pub is_elevation_prompt: bool,
+    pub is_ssh_login_prompt: bool,
+    pub is_inner_hop_ssh_prompt: bool,
+    pub field: &'a str,
+    pub ssh_login_done: bool,
+    pub inner_ssh_login_done: bool,
+    pub elevation_attempts: usize,
+    pub auth_failed_visible: bool,
+}
+
 /// Whether to arm vault injection for a matched prompt (unit-tested policy).
 pub(crate) fn should_arm_vault_inject(
     options: &PtyRunOptions,
-    is_elevation_prompt: bool,
-    is_ssh_login_prompt: bool,
-    is_inner_hop_ssh_prompt: bool,
-    field: &str,
-    ssh_login_done: bool,
-    inner_ssh_login_done: bool,
-    elevation_attempts: usize,
-    auth_failed_visible: bool,
+    prompt: &VaultInjectPrompt<'_>,
 ) -> bool {
-    if field != "password" {
+    if prompt.field != "password" {
         return false;
     }
     if options.bastion_outer_hop {
-        if is_ssh_login_prompt {
-            if is_inner_hop_ssh_prompt {
-                return options.inner_vault_record.is_some() && !inner_ssh_login_done;
+        if prompt.is_ssh_login_prompt {
+            if prompt.is_inner_hop_ssh_prompt {
+                return options.inner_vault_record.is_some() && !prompt.inner_ssh_login_done;
             }
             // Routed inner hop pending — do not inject bastion cred into a partial/generic prompt.
             if options.inner_vault_record.is_some() {
                 return false;
             }
-            if !ssh_login_done {
+            if !prompt.ssh_login_done {
                 return true;
             }
             return false;
         }
-        if let Some(_) = options.inner_vault_record {
-            if is_elevation_prompt {
-                // Nested sudo/su runs on the bastion-side brokre with local vault inject.
-                return false;
-            }
+        if options.inner_vault_record.is_some() && prompt.is_elevation_prompt {
+            // Nested sudo/su runs on the bastion-side brokre with local vault inject.
+            return false;
         }
         return false;
     }
-    if options.passive_inner_ssh && is_ssh_login_prompt {
+    if options.passive_inner_ssh && prompt.is_ssh_login_prompt {
         return false;
     }
-    if is_elevation_prompt {
-        if elevation_attempts == 0 {
+    if prompt.is_elevation_prompt {
+        if prompt.elevation_attempts == 0 {
             return true;
         }
-        return auth_failed_visible && elevation_attempts == 1;
+        return prompt.auth_failed_visible && prompt.elevation_attempts == 1;
     }
-    if is_ssh_login_prompt {
-        return !ssh_login_done;
+    if prompt.is_ssh_login_prompt {
+        return !prompt.ssh_login_done;
     }
     // Generic CLI password prompt (mysql, psql, sh harness, etc.).
     true
@@ -454,14 +458,16 @@ pub fn run(
                                     inject_disabled: false,
                                     passive_inner_ssh: passive_inner_ssh_a,
                                 },
-                                is_elevation_prompt,
-                                is_ssh_login_prompt,
-                                is_inner_hop_ssh,
-                                &field,
-                                ssh_done,
-                                inner_ssh_done,
-                                elev_attempts,
-                                auth_failed,
+                                &VaultInjectPrompt {
+                                    is_elevation_prompt,
+                                    is_ssh_login_prompt,
+                                    is_inner_hop_ssh_prompt: is_inner_hop_ssh,
+                                    field: &field,
+                                    ssh_login_done: ssh_done,
+                                    inner_ssh_login_done: inner_ssh_done,
+                                    elevation_attempts: elev_attempts,
+                                    auth_failed_visible: auth_failed,
+                                },
                             ) && (!already || allow_elevation_reinject)
                             {
                                 let use_inner = bastion_outer_a
@@ -882,8 +888,29 @@ pub fn run(
 mod tests {
     use super::{
         contains_ascii_case_insensitive, should_arm_vault_inject, ssh_post_auth_indicated,
-        PtyRunOptions,
+        PtyRunOptions, VaultInjectPrompt,
     };
+
+    fn pw_prompt(
+        is_elevation: bool,
+        is_ssh_login: bool,
+        is_inner_hop: bool,
+        ssh_done: bool,
+        inner_done: bool,
+        elev_attempts: usize,
+        auth_failed: bool,
+    ) -> VaultInjectPrompt<'static> {
+        VaultInjectPrompt {
+            is_elevation_prompt: is_elevation,
+            is_ssh_login_prompt: is_ssh_login,
+            is_inner_hop_ssh_prompt: is_inner_hop,
+            field: "password",
+            ssh_login_done: ssh_done,
+            inner_ssh_login_done: inner_done,
+            elevation_attempts: elev_attempts,
+            auth_failed_visible: auth_failed,
+        }
+    }
 
     #[test]
     fn bastion_outer_hop_injects_bastion_ssh_then_inner_from_mac_vault() {
@@ -892,10 +919,12 @@ mod tests {
             ..Default::default()
         };
         assert!(should_arm_vault_inject(
-            &outer, false, true, false, "password", false, false, 0, false
+            &outer,
+            &pw_prompt(false, true, false, false, false, 0, false),
         ));
         assert!(!should_arm_vault_inject(
-            &outer, true, false, false, "password", true, false, 0, false
+            &outer,
+            &pw_prompt(true, false, false, true, false, 0, false),
         ));
         let outer_inner = PtyRunOptions {
             bastion_outer_hop: true,
@@ -905,36 +934,15 @@ mod tests {
         };
         assert!(should_arm_vault_inject(
             &outer_inner,
-            false,
-            true,
-            true,
-            "password",
-            false,
-            false,
-            0,
-            false
+            &pw_prompt(false, true, true, false, false, 0, false),
         ));
         assert!(!should_arm_vault_inject(
             &outer_inner,
-            false,
-            true,
-            false,
-            "password",
-            false,
-            false,
-            0,
-            false
+            &pw_prompt(false, true, false, false, false, 0, false),
         ));
         assert!(!should_arm_vault_inject(
             &outer_inner,
-            true,
-            false,
-            false,
-            "password",
-            true,
-            false,
-            0,
-            false
+            &pw_prompt(true, false, false, true, false, 0, false),
         ));
     }
 
@@ -945,10 +953,12 @@ mod tests {
             ..Default::default()
         };
         assert!(!should_arm_vault_inject(
-            &inner, false, true, true, "password", false, false, 0, false
+            &inner,
+            &pw_prompt(false, true, true, false, false, 0, false),
         ));
         assert!(should_arm_vault_inject(
-            &inner, true, false, false, "password", true, false, 0, false
+            &inner,
+            &pw_prompt(true, false, false, true, false, 0, false),
         ));
     }
 
@@ -956,16 +966,20 @@ mod tests {
     fn elevation_retry_only_after_auth_failed() {
         let direct = PtyRunOptions::default();
         assert!(should_arm_vault_inject(
-            &direct, true, false, false, "password", true, false, 0, false
+            &direct,
+            &pw_prompt(true, false, false, true, false, 0, false),
         ));
         assert!(!should_arm_vault_inject(
-            &direct, true, false, false, "password", true, false, 1, false
+            &direct,
+            &pw_prompt(true, false, false, true, false, 1, false),
         ));
         assert!(should_arm_vault_inject(
-            &direct, true, false, false, "password", true, false, 1, true
+            &direct,
+            &pw_prompt(true, false, false, true, false, 1, true),
         ));
         assert!(!should_arm_vault_inject(
-            &direct, true, false, false, "password", true, false, 2, true
+            &direct,
+            &pw_prompt(true, false, false, true, false, 2, true),
         ));
     }
 
@@ -973,7 +987,8 @@ mod tests {
     fn direct_ssh_allows_first_elevation_inject() {
         let direct = PtyRunOptions::default();
         assert!(should_arm_vault_inject(
-            &direct, true, false, false, "password", true, false, 0, false
+            &direct,
+            &pw_prompt(true, false, false, true, false, 0, false),
         ));
     }
 
