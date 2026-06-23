@@ -10,9 +10,31 @@
 
 由 [Techinone](https://www.tio.tech)（成都同创合一科技有限公司）开发维护。
 
-## 0.2.3 新特性 — 堡垒机助力集群管理
+## 0.2.8 新特性
 
-**0.2.3** 进一步强化 brokre 作为**多主机 / 集群场景的堡垒代理**：一台笔记本、一个 MCP 会话，即可操作多台内网目标 — 无需把 vault 密码复制进 AI 上下文，也无需在跳板机上散落明文凭据。
+**0.2.8** 为当前正式版本：**一条 npm 命令安装**、**主流 IDE 自动注册 MCP**、**每次 MCP 启动自动升级二进制** — 并包含面向多主机 / 集群的**堡垒代理**（一台笔记本、一个 MCP 会话，操作多台内网目标）。
+
+### npm — 安装、自动更新、自动 MCP 注册
+
+```bash
+npm install -g brokre          # 或：npx -y brokre@latest
+```
+
+| 能力 | 说明 |
+|------|------|
+| **自动 MCP 注册** | `postinstall` 执行 `brokre-setup-mcp` — 仅检测**已安装**的 IDE（应用、CLI 或真实使用痕迹），向各客户端全局 MCP 配置合并 `npx -y brokre@latest`。**不会**为未安装的软件创建配置文件。手动重跑：`npx brokre-setup-mcp`（`--dry-run` 预览 / `--force` 覆盖）。跳过：`BROKRE_MCP_SKIP_SETUP=1`。 |
+| **二进制自动升级** | 每次 MCP 启动对比 npm 包版本与 `PATH` / `~/.brokre/bin/brokre`；缺失或更旧时从 [GitHub Release](https://github.com/Furowu/brokre/releases) 下载匹配版本。 |
+| **支持的 IDE** | Cursor、VS Code、VS Code Insiders、Claude Code、Claude Desktop、Trae、Kimi Code、Windsurf、OpenClaw — 详见 [packages/brokre-mcp/README.md](packages/brokre-mcp/README.md)。 |
+
+推荐 MCP 配置（自动注册也会写入相同内容）：
+
+```json
+{ "command": "npx", "args": ["-y", "brokre@latest"] }
+```
+
+### 堡垒代理 — 集群管理
+
+堡垒层让 AI Agent 在**单一跳板机**后操作**整组主机**，无需把 vault 密码复制进上下文，也无需在笔记本上散落内网明文凭据。
 
 | 优势 | 实际效果 |
 |------|----------|
@@ -32,6 +54,14 @@ brokre bastion unlock
 brokre list --json                       # b150::db、b150::worker-01 …
 brokre ssh b150::db systemctl status   # MCP：brokre_exec 路由别名
 ```
+
+MCP 等价调用：
+
+```json
+{ "binary": "ssh", "args": ["b150::db", "uname", "-a"] }
+```
+
+**门控策略（默认 / 严格）** — 详见下文 [堡垒门控策略](#堡垒门控策略默认-vs-严格)。未执行 `brokre bastion set-key` 前门控不生效；设钥后 **默认模式** 仅堡垒出站需解锁，**严格模式** 要求所有 exec/list 先解锁。
 
 完整配置见下文 [跨网段列表继承](#跨网段列表继承堡垒代理) 与 [堡垒代理](#堡垒代理跨网段--内网入口)。
 
@@ -123,6 +153,14 @@ claude mcp add --scope project brokre -- npx -y brokre@latest
 
 推荐 `npx -y brokre@latest`：npm 启动器与二进制均会自动保持最新。每次 MCP 启动时，若本地 `brokre`（`PATH` 或 `~/.brokre/bin/`）版本低于 npm 包版本，会自动从 GitHub Release 下载并覆盖 `~/.brokre/bin/`。
 
+**一行安装 + IDE 自动配置**（npm **0.2.8+**）：
+
+```bash
+npm install -g brokre
+```
+
+安装 MCP 启动器、执行 `brokre-setup-mcp` 向**已检测到**的 IDE 注册 brokre（Cursor、VS Code、Claude Code、Trae、Kimi Code、Windsurf、OpenClaw 等），并在每次 MCP 连接时保持 CLI 二进制同步。手动重跑：`npx brokre-setup-mcp`。跳过自动注册：`BROKRE_MCP_SKIP_SETUP=1`。
+
 **无需 Node** — MCP 直接指向原生二进制：
 
 ```json
@@ -137,6 +175,7 @@ claude mcp add --scope project brokre -- npx -y brokre@latest
 | `brokre_setup` | 在浏览器打开 manage UI，由人类添加凭据 |
 | `brokre_audit_list` | 查询审计历史（仅元数据 — 参数已脱敏） |
 | `brokre_audit_verify` | 验证防篡改审计链 |
+| `brokre_bastion_policy` | 读取或设置堡垒门控模式（`default` / `strict`）；返回 `key_set`、`unlocked` |
 
 #### MCP 与 CLI 对照（AI 必读）
 
@@ -316,10 +355,50 @@ brokre bastion sync b150 --json     # 仅拉取某堡垒上的别名清单
 ```
 
 - 路由分隔符 **`::`**（`:` 非法，与别名 `foo/bar` 无歧义）：`db`（本地）、`b150::db`（经堡垒）、`b1::b2::inner`（多跳，深度默认 ≤2）。
-- **门控**：设定堡垒密钥后，经堡垒出站的操作需先解锁（`::` 路由、直连已注册堡垒别名、堡垒别名发现）。**默认模式**仅上述场景触发；**严格模式**（`brokre bastion strict on` / manage / MCP `brokre_bastion_policy`）要求所有 exec/list 先解锁。已解锁会话在活跃使用时会**自动续期**空闲超时。
 - **远端 brokre**：路由执行在堡垒上以 `~/.brokre/bin/brokre` 调用（自动附带 `BROKRE_SOFT_MEMLOCK=1`、`BROKRE_ALLOW_FILE_KEYCHAIN=1`、`BROKRE_ROUTED_INNER=1`，适配 Linux 无头环境）。交互式命令（如 `sudo -i`）自动加 `-tt`。
 - **护栏**：探测并发上限 + 毫秒超时 + 短缓存；环路检测；审计含 `route`/`bastion` 字段（HMAC v4）。
-- **Manage UI**：`brokre manage` 主界面 **堡垒机** Tab 可注册/禁用堡垒、Web 设钥与解锁/锁定、同步远端别名；非 TTY 场景仍会自动弹出 `/bastion-auth` 解锁页。审计 Tab 支持按 `bastion`/`source` 筛选并展示路由字段。
+- **Manage UI**：`brokre manage` 主界面 **堡垒机** Tab 可注册/禁用堡垒、Web 设钥与解锁/锁定、切换严格模式、同步远端别名；非 TTY 场景仍会自动弹出 `/bastion-auth` 解锁页。审计 Tab 支持按 `bastion`/`source` 筛选并展示路由字段。
+
+### 堡垒门控策略（默认 vs 严格）
+
+堡垒**门控**是在敏感操作前要求人类**解锁**的机制。**未设堡垒密钥时门控不生效**（`brokre bastion set-key`）。设钥后，解锁建立本地 TTL 会话（`brokre bastion unlock`、TTY 口令、manage UI `/bastion-auth` 或 MCP 浏览器 elicitation）。
+
+策略保存在 `~/.brokre/bastion/policy.json`（`strict_mode` 字段，默认 `false`）。
+
+| 模式 | `gate_mode` | 何时需要解锁（须已设堡垒密钥） |
+|------|-------------|-------------------------------|
+| **默认** | `default` | **仅堡垒出站** — `b150::inner` 路由执行；SSH/scp/sftp 到**已注册**堡垒别名；`brokre list` / `brokre_list` 在启用堡垒发现并向堡垒 SSH 时。纯**本地**执行（如 `brokre ssh lan-db`）**不需要**解锁。 |
+| **严格** | `strict` | **所有** `brokre exec` 与 `brokre list`（及 MCP `brokre_exec` / `brokre_list`）— 含本地局域网别名。适用于已配置堡垒密钥、且希望 Agent 每次操作都需人类确认的场景。 |
+
+**示例（默认模式、已设密钥、会话未解锁）**
+
+| 操作 | 需要解锁？ |
+|------|-----------|
+| `brokre ssh prod uname -a`（本地别名） | 否 |
+| `brokre ssh b150::db uname -a` | 是 |
+| `brokre ssh b150 uptime`（已注册堡垒） | 是 |
+| `brokre list`（含堡垒发现） | 是 |
+| `brokre list --no-bastion-discovery`（仅本地） | 否 |
+
+**严格**模式下，上表所有操作均需解锁。
+
+**切换门控模式**
+
+```bash
+brokre bastion strict status    # 查看 default | strict
+brokre bastion strict on        # 严格 — 所有 exec/list 需解锁
+brokre bastion strict off       # 默认 — 仅堡垒出站
+```
+
+| 入口 | 方式 |
+|------|------|
+| CLI | `brokre bastion strict on\|off\|status` |
+| Manage UI | **堡垒机** Tab — 严格模式开关 |
+| MCP | `brokre_bastion_policy` — 读取当前策略，或传 `{"strict_mode": true}` / `false` |
+
+MCP 读取返回 `strict_mode`、`gate_mode`、`key_set`、`unlocked`。list/exec 响应含 `bastion_gate`（`required`、`unlocked_during_call`、`idle_expires_at`）。
+
+**解锁会话 TTL**（默认）：空闲 **10 分钟**（`BROKRE_BASTION_IDLE_SECS`）、最长 **30 分钟**（`BROKRE_BASTION_MAX_SECS`）。已解锁期间每次门控调用会**续期**空闲窗口。堡垒门控鉴权与 manage UI 会话空闲过期**独立**。MCP 解锁时禁用自动打开浏览器：`BROKRE_BASTION_NO_AUTO_OPEN=1`。
 
 ### Reveal / 删除（仅人类，需真实 TTY）
 

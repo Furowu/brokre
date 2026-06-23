@@ -4,26 +4,69 @@ MCP launcher for [brokre](https://github.com/Furowu/brokre) — a **local creden
 
 Developed by [Techinone](https://www.tio.tech) (成都同创合一科技有限公司).
 
-## What's New in 0.2.3 — Bastion for cluster management
+**Current version: 0.2.8** · [npm](https://www.npmjs.com/package/brokre)
 
-**0.2.3** strengthens brokre as a **bastion broker for multi-host / cluster operations**: one laptop, one MCP session, many inner targets — without copying vault passwords into AI context or scattering secrets across jump hosts.
+## What's New in 0.2.8
+
+### npm install — auto MCP setup + auto binary upgrade
+
+```bash
+npm install -g brokre
+# or use without global install:
+npx -y brokre@latest
+```
+
+| Feature | Behavior |
+|---------|----------|
+| **Auto MCP registration** | `postinstall` → `brokre-setup-mcp`. Detects **installed** IDEs only; merges `npx -y brokre@latest` into global MCP config. Idempotent — no duplicate entries, no writes for missing software. |
+| **Auto binary upgrade** | Each MCP start compares npm version vs `~/.brokre/bin/brokre` / `PATH`; downloads matching release when needed. |
+| **Manual controls** | `npx brokre-setup-mcp` · `--dry-run` · `--force` · skip: `BROKRE_MCP_SKIP_SETUP=1` |
+
+**IDEs with auto-setup** (global config paths):
+
+| IDE | Config file |
+|-----|-------------|
+| Cursor | `~/.cursor/mcp.json` |
+| VS Code | `…/Code/User/mcp.json` |
+| VS Code Insiders | `…/Code - Insiders/User/mcp.json` |
+| Claude Code | `~/.claude.json` |
+| Claude Desktop | `…/Claude/claude_desktop_config.json` |
+| Trae | `…/Trae/User/mcp.json` |
+| Kimi Code | `~/.kimi-code/mcp.json` |
+| Windsurf | `~/.codeium/windsurf/mcp_config.json` |
+| OpenClaw | `~/.openclaw/openclaw.json` (`mcp.servers`) |
+
+### Bastion broker — cluster management
+
+Operate **many inner hosts through one jump box** — passwords stay on the bastion, not in AI context.
 
 | Advantage | What it means in practice |
 |-----------|----------------------------|
-| **Single control plane** | Register a bastion SSH alias (`b150`), sync inner aliases from remote brokre, and drive the whole cluster from MCP `brokre_list` |
-| **Smart routing** | `b150::db`, `b150::app-01`, multi-hop `b1::b2::inner` — route separator `::`; AI picks `access=via_b150` when direct LAN paths are down |
-| **Secrets stay on the bastion** | Routed exec runs `~/.brokre/bin/brokre` on the jump host; laptop holds metadata and session gate, not inner-host passwords |
-| **Human gate, agent-friendly** | Bastion outbound requires unlock (TTY, `/bastion-auth`, or MCP URL elicitation); gate auth survives manage UI idle expiry so long MCP runs keep working |
-| **Cluster-safe defaults** | Reachability probes with ms timeouts and concurrency caps; unreachable local aliases hidden from default list; loop detection and audit `route`/`bastion` fields |
-| **Privileged ops over routes** | `brokre_exec_elevated` and `sudo`/`sudo -i` paths work through bastions with session reuse and PTY hardening |
+| **Single control plane** | Register bastion alias `b150`, sync inner aliases, drive cluster via `brokre_list` |
+| **Smart routing** | `b150::db`, multi-hop `b1::b2::inner` — separator `::`; `access=via_b150` when LAN is down |
+| **Secrets on bastion** | Routed exec uses remote `~/.brokre/bin/brokre`; laptop holds metadata + gate only |
+| **Human gate** | Unlock via TTY, `/bastion-auth`, or MCP URL elicitation; survives manage UI idle expiry |
+| **Cluster-safe list** | Probes, hides unreachable locals, loop detection, audit `route`/`bastion` |
+| **Privileged over routes** | `brokre_exec_elevated`, `sudo`/`sudo -i` through bastions with session reuse |
 
-Typical MCP flow for a cluster behind one entry host:
+**Gate policy (default vs strict)** — inactive until `brokre bastion set-key`. **Default**: unlock only for bastion outbound (`::` routes, registered bastion SSH, bastion list discovery). **Strict**: every exec/list requires unlock. CLI: `brokre bastion strict on|off|status` · MCP: `brokre_bastion_policy`. Config: `~/.brokre/bastion/policy.json`. See main [README](../../README.md#bastion-gate-policy-default-vs-strict).
+
+Typical MCP flow:
 
 ```json
 { "binary": "ssh", "args": ["b150::db", "uname", "-a"] }
 ```
 
-See [`brokre_list` — cross-network smart list](#brokre_list--cross-network-smart-list) below for routed alias discovery and execution.
+CLI setup:
+
+```bash
+brokre bastion enable b150
+brokre bastion sync b150 --json
+brokre bastion unlock
+brokre list --json
+```
+
+See [`brokre_list` — cross-network smart list](#brokre_list--cross-network-smart-list) below.
 
 ## Prerequisites
 
@@ -97,9 +140,27 @@ claude mcp add --scope project brokre -- npx -y brokre@latest
 
 ### Auto-update
 
-Recommended: `npx -y brokre@latest` so the npm launcher stays current.
+Recommended: `npx -y brokre@latest` so the npm launcher stays current (package version **0.2.8**).
 
 On each MCP start, this package compares the **npm package version** with any local `brokre` binary (on `PATH` or in `~/.brokre/bin/`). If the binary is missing or older, it downloads the matching release from GitHub into `~/.brokre/bin/` and uses that — even when an older `brokre` is already on `PATH`.
+
+### Auto MCP registration (`npm i brokre`, 0.2.8+)
+
+On `npm install brokre` (local or global), `postinstall` runs `brokre-setup-mcp`, which **detects installed IDEs** (app bundle, CLI, or real usage artifacts — not empty directories) and merges a global brokre MCP entry (`npx -y brokre@latest`) into each client's config file. **Does not create config files for software that is not installed.** Existing non-brokre servers are preserved; duplicate brokre aliases under other names are not added.
+
+| IDE | Global config path |
+|-----|-------------------|
+| Cursor | `~/.cursor/mcp.json` |
+| VS Code | `~/Library/Application Support/Code/User/mcp.json` (macOS) |
+| VS Code Insiders | `…/Code - Insiders/User/mcp.json` |
+| Claude Code | `~/.claude.json` (`mcpServers`) |
+| Claude Desktop | `…/Claude/claude_desktop_config.json` |
+| Trae | `…/Trae/User/mcp.json` |
+| Kimi Code | `~/.kimi-code/mcp.json` |
+| Windsurf | `~/.codeium/windsurf/mcp_config.json` |
+| OpenClaw | `~/.openclaw/openclaw.json` (`mcp.servers`) |
+
+Manual re-run: `npx brokre-setup-mcp` (add `--dry-run` to preview, `--force` to overwrite). Skip on install: `BROKRE_MCP_SKIP_SETUP=1`.
 
 **CLI on PATH:** On first download, `brokre-mcp` adds `~/.brokre/bin` to your shell profile (`~/.zshrc`, etc.) and tries to symlink `/usr/local/bin/brokre` when writable. Open a **new terminal** (or `source ~/.zshrc`) so `brokre manage` works.
 
@@ -123,6 +184,7 @@ Disable auto-open: `BROKRE_MCP_NO_AUTO_OPEN=1`
 | `brokre_setup` | Open manage UI in browser for the human |
 | `brokre_audit_list` | Query audit history (metadata only — args redacted) |
 | `brokre_audit_verify` | Verify tamper-evident audit log chain |
+| `brokre_bastion_policy` | Read/set gate mode: `default` (bastion outbound only) or `strict` (all exec/list); returns `key_set`, `unlocked` |
 
 **Not exposed:** `reveal`, password export, or manage session tokens.
 
@@ -204,6 +266,27 @@ Use `all: true` to include unreachable entries. Prefer `addr` with `availability
 
 When both direct and routed paths work, both appear — `access: "direct"` vs `access: "via_b150"`.
 
+### Bastion gate policy (`default` vs `strict`)
+
+| Mode | Unlock required when key is set |
+|------|----------------------------------|
+| **default** (`strict_mode: false`) | Bastion outbound only: `b150::db` routes, SSH to registered bastion aliases, `brokre_list` with bastion discovery. Local `brokre_exec` to LAN aliases — no unlock. |
+| **strict** (`strict_mode: true`) | Every `brokre_exec` and `brokre_list`. |
+
+```bash
+brokre bastion set-key           # gate inactive until this
+brokre bastion strict status
+brokre bastion strict on         # strict
+brokre bastion strict off        # default
+brokre bastion unlock
+```
+
+```json
+{ "strict_mode": true }
+```
+
+MCP `brokre_bastion_policy` (omit `strict_mode` to read). Unlock TTL defaults: 10 min idle / 30 min max — env `BROKRE_BASTION_IDLE_SECS`, `BROKRE_BASTION_MAX_SECS`. List/exec include `bastion_gate` in responses.
+
 ### Elevated sessions (`brokre_exec_elevated`)
 
 Runs a command on a saved SSH host with `sudo`, `sudo -i` environment (`sudo_login`), or `su`. By default the MCP server **reuses** a background elevated shell (same `alias` + `mode` + `user`) so sudo is not re-prompted every call.
@@ -247,6 +330,7 @@ For scripts or file writes with complex quoting, use `shell_command` (ssh only).
 
 | Variable | Description |
 |----------|-------------|
+| `BROKRE_MCP_SKIP_SETUP` | Set to `1` to skip auto MCP registration on `npm install` |
 | `BROKRE_BIN` | Pin a specific `brokre` binary (skips version check and auto-download) |
 | `BROKRE_VERSION` | Release version to download (default: npm package version) |
 | `BROKRE_SKIP_AUTO_INSTALL` | Set to `1` to use `PATH` only, no GitHub download |
@@ -256,6 +340,8 @@ For scripts or file writes with complex quoting, use `shell_command` (ssh only).
 | `BROKRE_MCP_SESSION_MAX_SECS` | Max session lifetime (default: `1800`) |
 | `BROKRE_MCP_SESSION_CMD_TIMEOUT` | Per remote command timeout in seconds (default: `120`) |
 | `BROKRE_BASTION_NO_AUTO_OPEN` | Set to `1` to skip browser on bastion gate unlock (non-TTY) |
+| `BROKRE_BASTION_IDLE_SECS` | Bastion unlock idle timeout in seconds (default: `600`) |
+| `BROKRE_BASTION_MAX_SECS` | Bastion unlock max session lifetime in seconds (default: `1800`) |
 
 ## License
 
