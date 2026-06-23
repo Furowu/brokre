@@ -5,16 +5,16 @@ class Brokre < Formula
 
   if OS.mac? && Hardware::CPU.intel?
     url "https://github.com/Furowu/brokre/releases/download/v0.2.8/brokre-x86_64-apple-darwin.tar.gz"
-    sha256 "13c84feb542db11d399d9d147a91fdafb20b09d2477adcdb8b3d729bef6a7ce2"
+    sha256 "429d6e20fe7e9c11c490cd67bb888f67282b23e57e88711fab599691199dd6b0"
   elsif OS.mac? && Hardware::CPU.arm?
     url "https://github.com/Furowu/brokre/releases/download/v0.2.8/brokre-aarch64-apple-darwin.tar.gz"
-    sha256 "cda70025b0f6a8b9b760f4c47b08a4ecb967de77adb1bf0ba8380bc68e42b8bd"
+    sha256 "9e343821c8dfbc8135c1e67ecc3edd2cc506008228e8d3cb3bde47b54e2f56c9"
   elsif OS.linux? && Hardware::CPU.intel?
     url "https://github.com/Furowu/brokre/releases/download/v0.2.8/brokre-x86_64-unknown-linux-gnu.tar.gz"
-    sha256 "4f79dde67288a4d62dedfee5342d68681b98907f9e30c5aa7091020ec0f62d59"
+    sha256 "a0b8690137de3de5aafc75a7a768c06d1683dadd83f72c16c32dbb98429d8dc6"
   elsif OS.linux? && Hardware::CPU.arm?
     url "https://github.com/Furowu/brokre/releases/download/v0.2.8/brokre-aarch64-unknown-linux-gnu.tar.gz"
-    sha256 "71f81e69e49e46e35e9ea370266b0f56a8652d19ce018191c450b3ac2478a08e"
+    sha256 "08544382c5e7941c2d45df9c507a6a935fa7dfb361d6731688d485221fbf51bd"
   end
 
   def install
