@@ -273,7 +273,7 @@ brokre list --all --json        # 含不可达别名（排查用）
 brokre list --no-bastion-discovery   # 仅本地，不 SSH、不探测
 ```
 
-已注册堡垒时，`brokre list` **默认**会：TCP 探测可达性、合并堡垒上的别名（如 `b150::db`）、**隐藏不可达**的本地局域网项，避免 AI 误用跨网不可达的直连别名。
+已注册堡垒时，`brokre list` **默认**会：探测可达性（SSH 别名读服务端 banner，其它协议 TCP）、合并堡垒上的别名（如 `b150::db`）、**隐藏不可达**的本地局域网项，避免 AI 误用跨网不可达的直连别名。
 
 ### 跨网清单继承（堡垒 broker）
 
@@ -316,7 +316,7 @@ brokre bastion sync b150 --json     # 仅拉取某堡垒上的别名清单
 ```
 
 - 路由分隔符 **`::`**（`:` 非法，与别名 `foo/bar` 无歧义）：`db`（本地）、`b150::db`（经堡垒）、`b1::b2::inner`（多跳，深度默认 ≤2）。
-- **门控**：设定堡垒密钥后，任何 SSH 出站（探测 / 透传 exec / 直连已注册堡垒别名）需先解锁。CLI 与 MCP 共用底层门控：TTY 下自动提示输入堡垒密钥；非 TTY 下自动打开本地认证页并轮询（`BROKRE_BASTION_NO_AUTO_OPEN=1` 可禁用自动打开）。MCP 额外支持 URL-mode elicitation（Cursor 等）。`/bastion-auth` 页展示调用来源（MCP 客户端、工具名或 CLI）；解锁 API 凭 URL 中的会话 token 鉴权，**不受 manage UI 空闲过期影响**；manage 进程重启时门控轮询会自动跟随 `manage.json` 重新发现实例。
+- **门控**：设定堡垒密钥后，经堡垒出站的操作需先解锁（`::` 路由、直连已注册堡垒别名、堡垒别名发现）。**默认模式**仅上述场景触发；**严格模式**（`brokre bastion strict on` / manage / MCP `brokre_bastion_policy`）要求所有 exec/list 先解锁。已解锁会话在活跃使用时会**自动续期**空闲超时。
 - **远端 brokre**：路由执行在堡垒上以 `~/.brokre/bin/brokre` 调用（自动附带 `BROKRE_SOFT_MEMLOCK=1`、`BROKRE_ALLOW_FILE_KEYCHAIN=1`、`BROKRE_ROUTED_INNER=1`，适配 Linux 无头环境）。交互式命令（如 `sudo -i`）自动加 `-tt`。
 - **护栏**：探测并发上限 + 毫秒超时 + 短缓存；环路检测；审计含 `route`/`bastion` 字段（HMAC v4）。
 - **Manage UI**：`brokre manage` 主界面 **堡垒机** Tab 可注册/禁用堡垒、Web 设钥与解锁/锁定、同步远端别名；非 TTY 场景仍会自动弹出 `/bastion-auth` 解锁页。审计 Tab 支持按 `bastion`/`source` 筛选并展示路由字段。

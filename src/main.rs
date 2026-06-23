@@ -133,6 +133,12 @@ enum BastionCmd {
         #[arg(long)]
         json: bool,
     },
+    /// Gate policy: default (bastion outbound only) or strict (all operations).
+    Strict {
+        /// `on`, `off`, or `status` (default).
+        #[arg(value_name = "MODE")]
+        mode: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -172,6 +178,8 @@ fn main() {
             .with_writer(std::io::stderr)
             .finish(),
     );
+
+    brokre::vault::keychain::prepare_platform_storage();
 
     #[cfg(unix)]
     if std::env::args().nth(1).as_deref() == Some("--internal-injector") {
@@ -264,6 +272,7 @@ fn main() {
             BastionCmd::Unlock => cli::bastion::run_unlock(),
             BastionCmd::Lock => cli::bastion::run_lock(),
             BastionCmd::Sync { alias, json } => cli::bastion::run_sync(alias, json),
+            BastionCmd::Strict { mode } => cli::bastion::run_strict(mode),
         },
         Some(Commands::Mcp) => cli::mcp::run(),
         Some(Commands::External(raw)) => {

@@ -13,7 +13,7 @@
 //! its own error code to mask a real connection / auth failure.
 
 use crate::audit::logger::{append, exec_audit_source, redact_args, AuditEvent};
-use crate::bastion::gate::{ensure_outbound_unlocked, exec_touches_bastion_outbound};
+use crate::bastion::gate::{ensure_outbound_unlocked, needs_unlock_for_exec};
 use crate::bastion::route::{build_routed_local_argv, parse_route, BastionRoute};
 use crate::runtime::prompts::patterns_for;
 use crate::runtime::pty::PtyCredential;
@@ -180,7 +180,12 @@ fn detect_bastion_route(profile: &str, args: &[String]) -> Result<Option<RoutedE
 }
 
 fn exec_routed(r: RoutedExec) -> Result<()> {
-    ensure_outbound_unlocked()?;
+    let mut gate_args = r.leading.clone();
+    gate_args.push(r.route.addr.clone());
+    gate_args.extend(r.trailing.clone());
+    if needs_unlock_for_exec(&r.profile, &gate_args) {
+        ensure_outbound_unlocked()?;
+    }
     let mut argv = build_routed_local_argv(&r.profile, &r.route, &r.trailing);
     let mut full = r.leading;
     full.append(&mut argv);
@@ -276,7 +281,7 @@ fn exec_saved(
         gate_args.push(t.clone());
     }
     gate_args.extend(resolved.trailing.clone());
-    if exec_touches_bastion_outbound(profile, &gate_args) {
+    if needs_unlock_for_exec(profile, &gate_args) {
         ensure_outbound_unlocked()?;
     }
 
@@ -284,15 +289,22 @@ fn exec_saved(
     let mut argv = resolved.compose_argv(&rec, profile);
     let args_for_audit = redact_args(&argv);
     #[cfg(unix)]
-    if is_openssh_profile(profile) && !resolved.trailing.is_empty() {
-        crate::runtime::ssh_identity::insert_force_tty_for_privileged_remote(
-            &mut argv,
-            &resolved.trailing,
-        );
-        crate::runtime::ssh_identity::insert_force_tty_for_routed_interactive(
-            &mut argv,
-            &resolved.trailing,
-        );
+    if is_openssh_profile(profile) {
+        if resolved.trailing.is_empty() {
+            crate::runtime::ssh_identity::insert_force_tty_for_interactive_login(
+                &mut argv,
+                &resolved.trailing,
+            );
+        } else {
+            crate::runtime::ssh_identity::insert_force_tty_for_privileged_remote(
+                &mut argv,
+                &resolved.trailing,
+            );
+            crate::runtime::ssh_identity::insert_force_tty_for_routed_interactive(
+                &mut argv,
+                &resolved.trailing,
+            );
+        }
     }
     #[cfg(unix)]
     let _key_guard = if is_openssh_profile(profile) {
@@ -376,7 +388,13 @@ fn exec_saved(
     #[cfg(unix)]
     let exec_cred = PtyCredential::VaultRecord(rec.id);
     #[cfg(unix)]
-    let result = if crate::runtime::pipe_exec::should_use_pipe_mode(
+    let result = if crate::runtime::pipe_exec::should_use_inherited_tty_mode(
+        profile,
+        routed_inner_passive,
+        resolved.trailing.is_empty(),
+    ) {
+        crate::runtime::pipe_exec::run_inherited_tty(profile, &argv)?
+    } else if crate::runtime::pipe_exec::should_use_pipe_mode(
         profile,
         crate::security::tty::stdin_is_pipe(),
         remote_trailing,
@@ -452,6 +470,10 @@ fn exec_fresh(
             "brokre: stdin is a pipe; save credentials first with an interactive `brokre {} <host>` (TTY required).",
             profile.rsplit('/').next().unwrap_or(&profile)
         );
+    }
+
+    if needs_unlock_for_exec(&profile, &args) {
+        ensure_outbound_unlocked()?;
     }
 
     // Pre-collect alias so the user doesn't forget to save after the session ends.

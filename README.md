@@ -273,7 +273,7 @@ brokre list --all --json        # include unreachable aliases (debugging)
 brokre list --no-bastion-discovery   # local only — no SSH, no probe
 ```
 
-When bastions are registered, `brokre list` **by default**: TCP-probes reachability, merges bastion-discovered aliases (e.g. `b150::db`), and **hides unreachable** local LAN entries so AI agents do not pick wrong paths.
+When bastions are registered, `brokre list` **by default**: probes reachability (SSH aliases require a valid server banner; other protocols use TCP), merges bastion-discovered aliases (e.g. `b150::db`), and **hides unreachable** local LAN entries so AI agents do not pick wrong paths.
 
 ### Cross-network list inheritance (bastion broker)
 
@@ -316,7 +316,7 @@ brokre bastion sync b150 --json     # fetch alias list from one bastion
 ```
 
 - Route separator **`::`** (`:` is illegal in alias names): `db` (local), `b150::db` (via bastion), `b1::b2::inner` (multi-hop, default depth ≤2).
-- **Gate**: with a bastion key set, any outbound SSH (probe / routed exec / direct registered bastion alias) requires unlock. CLI and MCP share the same gate: TTY prompts for the bastion key; non-TTY opens the local auth page and polls (`BROKRE_BASTION_NO_AUTO_OPEN=1` disables auto-open). MCP additionally supports URL-mode elicitation (Cursor, etc.). The `/bastion-auth` page shows the caller (MCP client, tool name, or CLI). Unlock uses the session token in the URL — **not blocked by manage UI idle expiry**; if manage restarts, gate polling re-discovers the live instance via `manage.json`.
+- **Gate**: with a bastion key set, unlock is required for bastion outbound (`::` routes, registered bastion aliases, bastion discovery). **Default** mode limits gate to those paths; **strict** mode (`brokre bastion strict on`, manage UI, MCP `brokre_bastion_policy`) requires unlock for all exec/list. Unlocked sessions **auto-renew** idle timeout while in use.
 - **Remote brokre**: routed exec invokes `~/.brokre/bin/brokre` on the bastion (with `BROKRE_SOFT_MEMLOCK=1`, `BROKRE_ALLOW_FILE_KEYCHAIN=1`, `BROKRE_ROUTED_INNER=1` for headless Linux). Interactive commands (e.g. `sudo -i`) automatically get `-tt`.
 - **Guardrails**: probe concurrency cap, ms timeouts, short cache, loop detection, audit `route`/`bastion` (HMAC v4).
 - **Manage UI**: `brokre manage` **Bastion** tab — register/disable bastions, Web set-key and unlock/lock, sync remote aliases; non-TTY still auto-opens `/bastion-auth`. Audit tab filters by `bastion`/`source` and shows route fields.

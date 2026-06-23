@@ -1,3 +1,4 @@
+use crate::bastion::gate::needs_unlock_for_list;
 use crate::bastion::model::{BastionListItem, ListItemKind};
 use crate::bastion::probe::{probe_items, ProbeOptions};
 use crate::bastion::registry::{list_bastions, max_bastions};
@@ -15,7 +16,9 @@ pub fn discover_remote_items(opts: &DiscoverOptions) -> Result<Vec<BastionListIt
     if !opts.include_bastions {
         return Ok(vec![]);
     }
-    ensure_gate_for_outbound()?;
+    if needs_unlock_for_list(opts.probe, opts.include_bastions) {
+        ensure_gate_for_outbound()?;
+    }
     let bastions = list_bastions()?;
     if bastions.is_empty() {
         return Ok(vec![]);

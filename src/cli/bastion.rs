@@ -100,12 +100,40 @@ pub fn run_unlock() -> Result<()> {
         println!("bastion session already unlocked");
         return Ok(());
     }
-    crate::bastion::gate::unlock_via_tty_prompt()
+    crate::bastion::gate::unlock_cli_interactive()
 }
 
 pub fn run_lock() -> Result<()> {
     clear_session()?;
     println!("bastion session locked");
+    Ok(())
+}
+
+pub fn run_strict(mode: Option<String>) -> Result<()> {
+    match mode.as_deref() {
+        None | Some("status") => {
+            let strict = crate::bastion::policy::strict_mode();
+            println!(
+                "bastion gate mode: {}",
+                if strict { "strict" } else { "default" }
+            );
+        }
+        Some("on") | Some("enable") | Some("true") | Some("1") => {
+            crate::bastion::policy::set_strict_mode(true)?;
+            audit_bastion("bastion/strict-on", "-");
+            println!("bastion gate mode: strict (all operations require unlock)");
+        }
+        Some("off") | Some("disable") | Some("false") | Some("0") => {
+            crate::bastion::policy::set_strict_mode(false)?;
+            audit_bastion("bastion/strict-off", "-");
+            println!("bastion gate mode: default (bastion outbound only)");
+        }
+        Some(other) => {
+            return Err(BrokreError::Cli(format!(
+                "unknown strict mode '{other}' — use on, off, or status"
+            )));
+        }
+    }
     Ok(())
 }
 

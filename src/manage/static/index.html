@@ -136,6 +136,13 @@ textarea{font:inherit;border:1px solid #d1d5db;border-radius:6px;padding:.4rem .
         <h3 data-i18n="bastion.sessionTitle">Key &amp; session</h3>
         <div class="bastion-badges" id="bastion-status"></div>
         <div class="bastion-actions" id="bastion-actions"></div>
+        <div class="field bastion-strict-row" id="bastion-strict-row">
+          <label class="checkbox-label">
+            <input type="checkbox" id="bastion-strict-mode">
+            <span data-i18n="bastion.strictMode">Strict gate (all operations require unlock)</span>
+          </label>
+          <p class="hint" data-i18n="bastion.strictHint">Default: unlock only when using bastions or routed hosts.</p>
+        </div>
         <div class="bastion-unlock hidden" id="bastion-unlock-row">
           <div class="field">
             <label data-i18n="bastion.unlockKey">Bastion key</label>
@@ -415,6 +422,8 @@ textarea{font:inherit;border:1px solid #d1d5db;border-radius:6px;padding:.4rem .
       'bastion.confirmKey': 'Confirm key',
       'bastion.unlock': 'Unlock',
       'bastion.lock': 'Lock',
+      'bastion.strictMode': 'Strict gate (all operations require unlock)',
+      'bastion.strictHint': 'Default: unlock only when using bastions or routed hosts.',
       'bastion.unlockKey': 'Bastion key',
       'bastion.register': 'Register SSH alias',
       'bastion.enable': 'Enable',
@@ -577,6 +586,8 @@ textarea{font:inherit;border:1px solid #d1d5db;border-radius:6px;padding:.4rem .
       'bastion.confirmKey': '确认密钥',
       'bastion.unlock': '解锁',
       'bastion.lock': '锁定',
+      'bastion.strictMode': '严格门控（所有操作均需解锁）',
+      'bastion.strictHint': '默认：仅在使用堡垒机或路由主机时需要解锁。',
       'bastion.unlockKey': '堡垒密钥',
       'bastion.register': '注册 SSH 别名',
       'bastion.enable': '启用',
@@ -794,7 +805,7 @@ textarea{font:inherit;border:1px solid #d1d5db;border-radius:6px;padding:.4rem .
   let groups = [];
   let rotateTarget = null;
   let deleteTarget = null;
-  let bastionState = { bastions: [], key_set: false, unlocked: false, max_bastions: 8 };
+  let bastionState = { bastions: [], key_set: false, unlocked: false, strict_mode: false, gate_mode: 'default', max_bastions: 8 };
   let bastionPollTimer = null;
   let lastAuditResult = null;
   let lastSyncAlias = null;
@@ -1175,6 +1186,24 @@ textarea{font:inherit;border:1px solid #d1d5db;border-radius:6px;padding:.4rem .
       actionsHtml += '<button type="button" class="secondary" id="bastion-lock-btn">' + esc(t('bastion.lock')) + '</button>';
     }
     actionsEl.innerHTML = actionsHtml;
+
+    const strictCb = document.getElementById('bastion-strict-mode');
+    if (strictCb) {
+      strictCb.checked = !!bastionState.strict_mode;
+      strictCb.onchange = async () => {
+        try {
+          await api('/api/bastion/strict-mode', {
+            method: 'POST',
+            body: JSON.stringify({ strict_mode: strictCb.checked }),
+          });
+          bastionState.strict_mode = strictCb.checked;
+          bastionState.gate_mode = strictCb.checked ? 'strict' : 'default';
+        } catch (e) {
+          strictCb.checked = !strictCb.checked;
+          alert(e.message || String(e));
+        }
+      };
+    }
 
     unlockRow.classList.toggle('hidden', !bastionState.key_set || bastionState.unlocked);
     document.getElementById('bastion-unlock-err').textContent = '';

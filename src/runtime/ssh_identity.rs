@@ -251,6 +251,23 @@ pub fn is_routed_interactive_trailing(trailing: &[String]) -> bool {
     routed_bastion_user_trailing(trailing).is_some_and(|user| user.is_empty())
 }
 
+/// Interactive `brokre ssh alias` with no remote subcommand.
+pub fn is_interactive_login_trailing(trailing: &[String]) -> bool {
+    trailing.is_empty()
+}
+
+/// Prepend `-tt` for saved-alias interactive logins so the remote shell gets a real TTY.
+pub fn insert_force_tty_for_interactive_login(argv: &mut Vec<String>, trailing: &[String]) {
+    if !is_interactive_login_trailing(trailing) {
+        return;
+    }
+    if has_tty_request_flag(argv) || has_disable_tty_flag(argv) {
+        return;
+    }
+    let pos = connection_target_index(argv);
+    argv.insert(pos, "-tt".into());
+}
+
 /// Prepend `-tt` before the connection target for interactive bastion routes.
 pub fn insert_force_tty_for_routed_interactive(argv: &mut Vec<String>, trailing: &[String]) {
     if !is_routed_interactive_trailing(trailing) {

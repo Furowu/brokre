@@ -7,6 +7,7 @@
 
 use crate::audit::logger::{append, AuditEvent};
 use crate::bastion::key::{key_is_set, verify_bastion_key};
+use crate::bastion::policy::strict_mode;
 use crate::bastion::registry::{is_registered_bastion, list_bastions};
 use crate::bastion::route::ROUTE_SEP;
 use crate::bastion::session::{gate_required, is_unlocked, unlock_session};
@@ -81,19 +82,34 @@ pub fn exec_touches_bastion_outbound(profile: &str, args: &[String]) -> bool {
 }
 
 /// Whether this list operation may SSH to bastions for discovery.
-pub fn list_touches_bastion_outbound(probe: bool, include_bastions: bool) -> bool {
-    if !(probe || include_bastions) {
+/// Local TCP reachability probes do not touch bastion outbound SSH.
+pub fn list_touches_bastion_outbound(_probe: bool, include_bastions: bool) -> bool {
+    if !include_bastions {
         return false;
     }
     list_bastions().map(|b| !b.is_empty()).unwrap_or(false)
 }
 
+pub fn gate_applies_to_exec(profile: &str, args: &[String]) -> bool {
+    if strict_mode() {
+        return true;
+    }
+    exec_touches_bastion_outbound(profile, args)
+}
+
+pub fn gate_applies_to_list(probe: bool, include_bastions: bool) -> bool {
+    if strict_mode() {
+        return true;
+    }
+    list_touches_bastion_outbound(probe, include_bastions)
+}
+
 pub fn needs_unlock_for_exec(profile: &str, args: &[String]) -> bool {
-    gate_required() && !is_unlocked() && exec_touches_bastion_outbound(profile, args)
+    gate_required() && !is_unlocked() && gate_applies_to_exec(profile, args)
 }
 
 pub fn needs_unlock_for_list(probe: bool, include_bastions: bool) -> bool {
-    gate_required() && !is_unlocked() && list_touches_bastion_outbound(probe, include_bastions)
+    gate_required() && !is_unlocked() && gate_applies_to_list(probe, include_bastions)
 }
 
 /// Context shown on the bastion auth page so the user knows who requested unlock.
@@ -197,7 +213,11 @@ pub fn invocation_from_mcp() -> bool {
 /// - **CLI** (`brokre ssh …` in a terminal): TTY passphrase prompt only.
 /// - **MCP** (server or `BROKRE_MCP_EXEC` child): open local bastion auth page + poll.
 pub fn ensure_outbound_unlocked() -> Result<()> {
-    if !gate_required() || is_unlocked() {
+    if !gate_required() {
+        return Ok(());
+    }
+    if is_unlocked() {
+        let _ = crate::bastion::session::touch_session();
         return Ok(());
     }
     if invocation_from_mcp() {
@@ -208,13 +228,30 @@ pub fn ensure_outbound_unlocked() -> Result<()> {
 }
 
 fn ensure_cli_unlock() -> Result<()> {
-    if !stdin_is_real_tty() || !stdout_is_real_tty() {
+    unlock_cli_interactive()
+}
+
+/// CLI unlock: passphrase on a real TTY; otherwise open `/bastion-auth` in the browser (see README).
+pub fn unlock_cli_interactive() -> Result<()> {
+    if !key_is_set() {
         return Err(BrokreError::Cli(
-            "bastion outbound access locked — run from a terminal or `brokre bastion unlock`"
-                .into(),
+            "no bastion key configured — run `brokre bastion set-key`".into(),
         ));
     }
-    unlock_via_tty_prompt()
+    if is_unlocked() {
+        return Ok(());
+    }
+    if stdin_is_real_tty() && stdout_is_real_tty() {
+        unlock_via_tty_prompt()
+    } else if auto_open_enabled() {
+        unlock_via_browser_poll("cli")
+    } else {
+        Err(BrokreError::Cli(
+            "bastion outbound access locked — run from a terminal, `brokre bastion unlock`, \
+             or unset BROKRE_BASTION_NO_AUTO_OPEN"
+                .into(),
+        ))
+    }
 }
 
 fn ensure_mcp_unlock() -> Result<()> {
@@ -340,6 +377,7 @@ pub fn fetch_unlocked_status(port: u16, token: &str) -> Result<bool> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serial_test::serial;
 
     fn with_env_vars<F>(vars: &[(&str, Option<&str>)], f: F)
     where
@@ -429,5 +467,55 @@ mod tests {
                 assert!(invocation_from_mcp());
             },
         );
+    }
+
+    #[test]
+    fn list_probe_alone_does_not_touch_bastion_outbound() {
+        assert!(!list_touches_bastion_outbound(true, false));
+    }
+
+    #[test]
+    #[serial]
+    fn strict_mode_gate_applies_to_any_exec() {
+        let saved = std::env::var_os("BROKRE_HOME");
+        let tmp = tempfile::tempdir().unwrap();
+        std::env::set_var("BROKRE_HOME", tmp.path());
+        crate::bastion::policy::set_strict_mode(true).unwrap();
+        assert!(gate_applies_to_exec("ssh", &["lan07".into()]));
+        crate::bastion::policy::set_strict_mode(false).unwrap();
+        assert!(!gate_applies_to_exec("ssh", &["lan07".into()]));
+        match saved {
+            Some(v) => std::env::set_var("BROKRE_HOME", v),
+            None => std::env::remove_var("BROKRE_HOME"),
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn list_include_bastions_touches_when_registry_nonempty() {
+        let saved = std::env::var_os("BROKRE_HOME");
+        let tmp = tempfile::tempdir().unwrap();
+        std::env::set_var("BROKRE_HOME", tmp.path());
+        std::env::set_var("BROKRE_ALLOW_FILE_KEYCHAIN", "1");
+        use crate::security::secret::SecretString;
+        use crate::vault::service::auto_save;
+        use crate::vault::store::VaultStore;
+        let store = VaultStore::open().unwrap();
+        auto_save(
+            &store,
+            "ssh",
+            &["u@10.0.0.150".into()],
+            SecretString::new("pw".into()),
+            "b150",
+        )
+        .unwrap();
+        crate::bastion::enable_bastion("b150").unwrap();
+        assert!(list_touches_bastion_outbound(false, true));
+        assert!(!list_touches_bastion_outbound(true, false));
+        match saved {
+            Some(v) => std::env::set_var("BROKRE_HOME", v),
+            None => std::env::remove_var("BROKRE_HOME"),
+        }
+        std::env::remove_var("BROKRE_ALLOW_FILE_KEYCHAIN");
     }
 }

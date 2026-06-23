@@ -77,6 +77,10 @@ pub fn bastion_session_path() -> PathBuf {
     run_dir().join("bastion_session.json")
 }
 
+pub fn bastion_policy_path() -> PathBuf {
+    bastion_dir().join("policy.json")
+}
+
 /// Shell token for brokre on a remote host (`$HOME` expanded by the remote login shell).
 pub fn remote_brokre_bin_shell() -> &'static str {
     "$HOME/.brokre/bin/brokre"

@@ -118,14 +118,6 @@ fn session_valid(session: Option<BastionSession>) -> Result<()> {
         let _ = clear_session();
         return Err(BrokreError::PolicyDenied);
     }
-    if let Ok(g) = last_activity().lock() {
-        if let Some(last) = *g {
-            if last.elapsed() > idle_limit() {
-                let _ = clear_session();
-                return Err(BrokreError::PolicyDenied);
-            }
-        }
-    }
     Ok(())
 }
 

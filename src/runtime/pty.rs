@@ -258,6 +258,99 @@ impl Drop for RawModeGuard {
     }
 }
 
+fn try_enable_interactive_raw(raw_mode: &Mutex<Option<RawModeGuard>>, stdin_is_tty: bool, ready: bool) {
+    if !stdin_is_tty || !ready {
+        return;
+    }
+    let mut guard = raw_mode.lock().unwrap();
+    if guard.is_none() {
+        *guard = Some(RawModeGuard::enable());
+    }
+}
+
+/// Vault preset blocks stdin until inject completes, except on bastion inner hops where SSH
+/// login inject is disabled (`passive_inner_ssh`) and bytes must pass through immediately.
+fn initial_stdin_forward_enabled(
+    stdin_is_tty: bool,
+    preset_some: bool,
+    passive_inner_ssh: bool,
+    defer_stdin: bool,
+) -> bool {
+    let blocks_initial_stdin = preset_some && !passive_inner_ssh;
+    stdin_is_tty && !blocks_initial_stdin && !defer_stdin
+}
+
+fn tty_raw_mode_ready(pending_capture: bool, pending_inject: bool) -> bool {
+    !pending_capture && !pending_inject
+}
+
+#[cfg(unix)]
+fn open_stdin_read_source() -> Box<dyn Read + Send> {
+    std::fs::File::open("/dev/tty")
+        .map(|f| Box::new(f) as Box<dyn Read + Send>)
+        .unwrap_or_else(|_| Box::new(std::io::stdin()) as Box<dyn Read + Send>)
+}
+
+#[cfg(not(unix))]
+fn open_stdin_read_source() -> Box<dyn Read + Send> {
+    Box::new(std::io::stdin())
+}
+
+fn spawn_stdin_reader(
+    pipe_eof: Arc<AtomicBool>,
+    stdin_is_pipe: bool,
+) -> std::sync::mpsc::Receiver<Vec<u8>> {
+    const STDIN_CHANNEL_CAP: usize = 8;
+    let (tx, rx) = std::sync::mpsc::sync_channel::<Vec<u8>>(STDIN_CHANNEL_CAP);
+    let pipe_eof_reader = pipe_eof.clone();
+    thread::spawn(move || {
+        let mut source = open_stdin_read_source();
+        let mut buf = [0u8; 65536];
+        loop {
+            match source.read(&mut buf) {
+                Ok(0) => break,
+                Ok(n) => {
+                    if tx.send(buf[..n].to_vec()).is_err() {
+                        break;
+                    }
+                }
+                Err(_) => break,
+            }
+        }
+        if stdin_is_pipe {
+            pipe_eof_reader.store(true, Ordering::Release);
+        }
+    });
+    rx
+}
+
+#[cfg(unix)]
+struct SigintForwardGuard {
+    flag: Arc<AtomicBool>,
+    registration: signal_hook::SigId,
+}
+
+#[cfg(unix)]
+impl SigintForwardGuard {
+    fn register() -> Option<Self> {
+        let flag = Arc::new(AtomicBool::new(false));
+        let registration =
+            signal_hook::flag::register(signal_hook::consts::SIGINT, Arc::clone(&flag)).ok()?;
+        Some(Self { flag, registration })
+    }
+
+    fn take_pending(&self) -> bool {
+        self.flag.swap(false, Ordering::AcqRel)
+    }
+}
+
+#[cfg(unix)]
+impl Drop for SigintForwardGuard {
+    fn drop(&mut self) {
+        let _ = signal_hook::low_level::unregister(self.registration);
+    }
+}
+
 pub fn run(
     binary: &str,
     args: &[String],
@@ -307,9 +400,16 @@ pub fn run(
     let stdin_is_tty = crate::security::tty::stdin_is_real_tty();
     let stdin_is_pipe = crate::security::tty::stdin_is_pipe();
     let preset_inject = !options.inject_disabled && cred.preset_injection();
-    // Raw mode only for interactive capture; vault inject + passive inner hop keep canonical tty.
-    let _raw_guard = if stdin_is_tty && !options.inject_disabled && !preset_inject {
-        Some(RawModeGuard::enable())
+    // First-time capture enables raw mode immediately; vault inject defers until
+    // stdin forwarding opens so arrow keys / Ctrl+C behave like plain ssh.
+    let raw_mode: Arc<Mutex<Option<RawModeGuard>>> = Arc::new(Mutex::new(None));
+    if stdin_is_tty && !options.inject_disabled && !preset_inject {
+        *raw_mode.lock().unwrap() = Some(RawModeGuard::enable());
+    }
+
+    #[cfg(unix)]
+    let sigint_forward = if stdin_is_tty {
+        SigintForwardGuard::register()
     } else {
         None
     };
@@ -357,9 +457,12 @@ pub fn run(
     let preset_some = preset_inject && !options.inject_disabled;
 
     // Gate stdin -> PTY forwarding so pipe data cannot arrive before password injection.
-    let stdin_forward_enabled = Arc::new(AtomicBool::new(
-        stdin_is_tty && !preset_some && !defer_stdin,
-    ));
+    let stdin_forward_enabled = Arc::new(AtomicBool::new(initial_stdin_forward_enabled(
+        stdin_is_tty,
+        preset_some,
+        passive_inner_ssh,
+        defer_stdin,
+    )));
     let stdin_forward_a = stdin_forward_enabled.clone();
 
     let bin_base = binary
@@ -699,34 +802,16 @@ pub fn run(
     });
 
     // ---- thread C: stdin -> channel (TTY or pipe) ----
-    const STDIN_CHANNEL_CAP: usize = 8;
     let pipe_eof = Arc::new(AtomicBool::new(false));
     let pipe_eof_sent = Arc::new(AtomicBool::new(false));
-    let stdin_rx: Option<std::sync::mpsc::Receiver<Vec<u8>>> = if stdin_is_tty || stdin_is_pipe {
-        let (tx, rx) = std::sync::mpsc::sync_channel::<Vec<u8>>(STDIN_CHANNEL_CAP);
-        let pipe_eof_reader = pipe_eof.clone();
-        let stdin_is_pipe_reader = stdin_is_pipe;
-        thread::spawn(move || {
-            let mut buf = [0u8; 65536];
-            loop {
-                match std::io::stdin().read(&mut buf) {
-                    Ok(0) => break,
-                    Ok(n) => {
-                        if tx.send(buf[..n].to_vec()).is_err() {
-                            break;
-                        }
-                    }
-                    Err(_) => break,
-                }
-            }
-            if stdin_is_pipe_reader {
-                pipe_eof_reader.store(true, Ordering::Release);
-            }
-        });
-        Some(rx)
-    } else {
-        None
-    };
+    let stdin_rx_slot: Arc<Mutex<Option<std::sync::mpsc::Receiver<Vec<u8>>>>> =
+        Arc::new(Mutex::new(None));
+    if stdin_is_pipe || stdin_is_tty {
+        *stdin_rx_slot.lock().unwrap() = Some(spawn_stdin_reader(
+            pipe_eof.clone(),
+            stdin_is_pipe,
+        ));
+    }
 
     let cap_main = captured.clone();
     let pending_cap_main = pending_capture.clone();
@@ -736,8 +821,23 @@ pub fn run(
     let defer_stdin_main = defer_stdin;
     let bastion_outer_main = bastion_outer_hop;
     let spawn_instant = Instant::now();
+    let raw_mode_main = raw_mode.clone();
+    let stdin_rx_slot_main = stdin_rx_slot.clone();
 
     loop {
+        #[cfg(unix)]
+        if let Some(ref sig) = sigint_forward {
+            if sig.take_pending() {
+                if pending_cap_main.load(Ordering::Acquire) {
+                    pending_cap_main.store(false, Ordering::Release);
+                    let mut g = cap_main.lock().unwrap();
+                    *g = None;
+                }
+                let _ = writer.write_all(&[0x03]);
+                let _ = writer.flush();
+            }
+        }
+
         while let Ok(payload) = inject_rx.try_recv() {
             let _ = writer.write_all(&payload);
             let _ = writer.flush();
@@ -773,8 +873,15 @@ pub fn run(
             }
         }
 
+        let tty_raw_ready = tty_raw_mode_ready(
+            pending_cap_main.load(Ordering::Acquire),
+            pending_inject.load(Ordering::Acquire),
+        );
+        try_enable_interactive_raw(&raw_mode_main, stdin_is_tty, tty_raw_ready);
+
+        let stdin_rx = stdin_rx_slot_main.lock().unwrap();
         if stdin_forward_main.load(Ordering::Acquire) {
-            if let Some(ref rx) = stdin_rx {
+            if let Some(ref rx) = *stdin_rx {
                 while let Ok(data) = rx.try_recv() {
                     if stdin_is_tty {
                         for &b in &data {
@@ -823,7 +930,7 @@ pub fn run(
                         let _ = writer.flush();
                     }
                     if stdin_forward_main.load(Ordering::Acquire) {
-                        if let Some(ref rx) = stdin_rx {
+                        if let Some(ref rx) = *stdin_rx_slot_main.lock().unwrap() {
                             while let Ok(data) = rx.try_recv() {
                                 let _ = writer.write_all(&data);
                                 let _ = writer.flush();
@@ -887,8 +994,8 @@ pub fn run(
 #[cfg(test)]
 mod tests {
     use super::{
-        contains_ascii_case_insensitive, should_arm_vault_inject, ssh_post_auth_indicated,
-        PtyRunOptions, VaultInjectPrompt,
+        contains_ascii_case_insensitive, initial_stdin_forward_enabled, should_arm_vault_inject,
+        ssh_post_auth_indicated, tty_raw_mode_ready, PtyRunOptions, VaultInjectPrompt,
     };
 
     fn pw_prompt(
@@ -1011,5 +1118,20 @@ mod tests {
         let line = b"Configure your account password: ";
         assert!(!ssh_post_auth_indicated(line));
         assert!(contains_ascii_case_insensitive(line, b"password"));
+    }
+
+    #[test]
+    fn interactive_raw_ready_without_capture_or_inject() {
+        assert!(!tty_raw_mode_ready(true, false));
+        assert!(!tty_raw_mode_ready(false, true));
+        assert!(tty_raw_mode_ready(false, false));
+    }
+
+    #[test]
+    fn passive_inner_enables_immediate_stdin_forward() {
+        assert!(!initial_stdin_forward_enabled(true, true, false, false));
+        assert!(initial_stdin_forward_enabled(true, true, true, false));
+        assert!(!initial_stdin_forward_enabled(true, true, true, true));
+        assert!(initial_stdin_forward_enabled(true, false, false, false));
     }
 }

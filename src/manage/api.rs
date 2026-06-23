@@ -357,9 +357,12 @@ fn parse_credential_path(path: &str) -> Option<(String, String, Option<&'static 
 fn bastion_status_json() -> serde_json::Value {
     let key_set = crate::bastion::key::key_is_set();
     let unlocked = crate::bastion::session::is_unlocked();
+    let strict_mode = crate::bastion::policy::strict_mode();
     let mut body = serde_json::json!({
         "key_set": key_set,
         "unlocked": unlocked,
+        "strict_mode": strict_mode,
+        "gate_mode": if strict_mode { "strict" } else { "default" },
     });
     if unlocked {
         if let Ok(Some(session)) = crate::bastion::session::load_session() {
@@ -526,6 +529,47 @@ fn handle_bastion_routes(
             }
             Err(e) => error_response(StatusCode(400), &e.to_string()),
         });
+    }
+
+    if *method == tiny_http::Method::Post && path == "/api/bastion/strict-mode" {
+        if !check_write_auth(state, req) {
+            audit_bastion_manage("bastion/denied", "-");
+            return Some(unauthorized());
+        }
+        let body = match read_body(req) {
+            Ok(b) => b,
+            Err(e) => return Some(error_response(StatusCode(400), &e.to_string())),
+        };
+        #[derive(Deserialize)]
+        struct StrictBody {
+            strict_mode: bool,
+        }
+        let parsed: StrictBody = match serde_json::from_str(&body) {
+            Ok(v) => v,
+            Err(e) => return Some(error_response(StatusCode(400), &e.to_string())),
+        };
+        return Some(
+            match crate::bastion::policy::set_strict_mode(parsed.strict_mode) {
+                Ok(()) => {
+                    let action = if parsed.strict_mode {
+                        "bastion/strict-on"
+                    } else {
+                        "bastion/strict-off"
+                    };
+                    audit_bastion_manage(action, "-");
+                    json_response(
+                        StatusCode(200),
+                        &serde_json::json!({
+                            "ok": true,
+                            "strict_mode": parsed.strict_mode,
+                            "gate_mode": if parsed.strict_mode { "strict" } else { "default" },
+                        })
+                        .to_string(),
+                    )
+                }
+                Err(e) => error_response(StatusCode(500), &e.to_string()),
+            },
+        );
     }
 
     None

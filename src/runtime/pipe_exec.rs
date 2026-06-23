@@ -135,6 +135,77 @@ pub fn run(binary: &str, args: &[String], record_id: Uuid) -> Result<PtyRunResul
     })
 }
 
+/// Policy for bastion inner interactive login (TTY check applied separately).
+pub fn routed_inner_inherited_ssh(
+    profile: &str,
+    routed_inner_passive: bool,
+    trailing_empty: bool,
+) -> bool {
+    let bin = profile
+        .rsplit('/')
+        .next()
+        .unwrap_or(profile)
+        .to_ascii_lowercase();
+    bin == "ssh" && routed_inner_passive && trailing_empty
+}
+
+/// Bastion inner hop (`BROKRE_ROUTED_INNER=1`): inherit the SSH session TTY instead of
+/// wrapping OpenSSH in another PTY (breaks arrow keys / line editing).
+#[cfg(unix)]
+pub fn should_use_inherited_tty_mode(
+    profile: &str,
+    routed_inner_passive: bool,
+    trailing_empty: bool,
+) -> bool {
+    routed_inner_inherited_ssh(profile, routed_inner_passive, trailing_empty)
+        && crate::security::tty::stdin_is_real_tty()
+}
+
+#[cfg(unix)]
+pub fn run_inherited_tty(binary: &str, args: &[String]) -> Result<PtyRunResult> {
+    let bin = which::which(binary)
+        .map_err(|_| BrokreError::Runtime(format!("{}: command not found", binary)))?;
+    let mut cmd = Command::new(bin);
+    for a in args {
+        cmd.arg(a);
+    }
+    if let Ok(cwd) = std::env::current_dir() {
+        cmd.current_dir(cwd);
+    }
+    cmd.stdin(Stdio::inherit())
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit());
+    let status = cmd
+        .spawn()
+        .map_err(|e| BrokreError::Runtime(format!("spawn {}: {}", binary, e)))?
+        .wait()
+        .map_err(BrokreError::Io)?;
+    Ok(PtyRunResult {
+        exit_code: status.code().unwrap_or(-1),
+        captured_password: None,
+        had_prompt: false,
+        injector_pid: None,
+        injector_dur_ms: None,
+        injector_outcome: None,
+    })
+}
+
+#[cfg(not(unix))]
+pub fn run_inherited_tty(_binary: &str, _args: &[String]) -> Result<PtyRunResult> {
+    Err(BrokreError::Runtime(
+        "inherited TTY mode is only supported on Unix".into(),
+    ))
+}
+
+#[cfg(not(unix))]
+pub fn should_use_inherited_tty_mode(
+    _profile: &str,
+    _routed_inner_passive: bool,
+    _trailing_empty: bool,
+) -> bool {
+    false
+}
+
 #[cfg(not(unix))]
 pub fn run(_binary: &str, _args: &[String], _record_id: Uuid) -> Result<PtyRunResult> {
     Err(BrokreError::Runtime(
@@ -145,6 +216,14 @@ pub fn run(_binary: &str, _args: &[String], _record_id: Uuid) -> Result<PtyRunRe
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn inherited_tty_for_routed_inner_interactive_ssh() {
+        assert!(routed_inner_inherited_ssh("ssh", true, true));
+        assert!(!routed_inner_inherited_ssh("ssh", false, true));
+        assert!(!routed_inner_inherited_ssh("ssh", true, false));
+        assert!(!routed_inner_inherited_ssh("mysql", true, true));
+    }
 
     #[test]
     fn pipe_mode_for_scp_and_piped_ssh() {

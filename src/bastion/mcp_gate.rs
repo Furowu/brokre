@@ -1,9 +1,8 @@
 //! MCP-specific bastion gate: URL-mode elicitation, then shared browser poll.
 
 use crate::bastion::gate::{
-    bastion_auth_url, exec_touches_bastion_outbound, fetch_unlocked_status,
-    list_touches_bastion_outbound, manage_unreachable, poll_timeout, refresh_manage_for_gate,
-    BastionAuthContext,
+    bastion_auth_url, fetch_unlocked_status, manage_unreachable, poll_timeout,
+    refresh_manage_for_gate, BastionAuthContext,
 };
 use crate::bastion::session::{gate_required, is_unlocked, load_session};
 use crate::manage::open_browser;
@@ -42,7 +41,7 @@ impl BastionGateInfo {
     }
 
     fn build(applies: bool, unlocked_during_call: bool) -> Self {
-        if !applies {
+        if !gate_required() || !applies {
             return Self {
                 required: false,
                 unlocked_during_call: None,
@@ -66,11 +65,11 @@ impl BastionGateInfo {
 }
 
 pub fn gate_applies_for_list(probe: bool, include_bastions: bool) -> bool {
-    gate_required() && list_touches_bastion_outbound(probe, include_bastions)
+    crate::bastion::gate::gate_applies_to_list(probe, include_bastions)
 }
 
 pub fn gate_applies_for_exec(profile: &str, args: &[String]) -> bool {
-    gate_required() && exec_touches_bastion_outbound(profile, args)
+    crate::bastion::gate::gate_applies_to_exec(profile, args)
 }
 
 pub fn needs_unlock_for_exec(profile: &str, args: &[String]) -> bool {
@@ -221,7 +220,28 @@ mod tests {
     fn bastion_gate_info_required_includes_unlocked_during_call() {
         let info = BastionGateInfo::build(true, true);
         let v = serde_json::to_value(&info).unwrap();
+        // Without a configured bastion key, gate is not active.
+        assert_eq!(v["required"], false);
+    }
+
+    #[test]
+    fn bastion_gate_info_applies_when_key_configured() {
+        let saved = std::env::var_os("BROKRE_HOME");
+        let tmp = tempfile::tempdir().unwrap();
+        std::env::set_var("BROKRE_HOME", tmp.path());
+        std::env::set_var("BROKRE_ALLOW_FILE_KEYCHAIN", "1");
+        crate::bastion::key::set_bastion_key(&crate::security::secret::SecretString::new(
+            "test-key".into(),
+        ))
+        .unwrap();
+        let info = BastionGateInfo::build(true, true);
+        let v = serde_json::to_value(&info).unwrap();
         assert_eq!(v["required"], true);
         assert_eq!(v["unlocked_during_call"], true);
+        std::env::remove_var("BROKRE_ALLOW_FILE_KEYCHAIN");
+        match saved {
+            Some(v) => std::env::set_var("BROKRE_HOME", v),
+            None => std::env::remove_var("BROKRE_HOME"),
+        }
     }
 }

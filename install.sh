@@ -77,6 +77,8 @@ chmod +x "$TMPDIR/brokre"
 USER_BIN="${HOME}/.brokre/bin"
 PATH_MARKER="# brokre CLI (install.sh)"
 PATH_LINE='export PATH="$HOME/.brokre/bin:$PATH"'
+KEYCHAIN_MARKER="# brokre headless vault (install.sh)"
+KEYCHAIN_LINE='export BROKRE_ALLOW_FILE_KEYCHAIN=1'
 
 ensure_brokre_on_path() {
     local rc block
@@ -103,6 +105,26 @@ ensure_brokre_on_path() {
     echo "brokre: added ~/.brokre/bin to PATH in $rc"
 }
 
+ensure_linux_file_keychain() {
+    [[ "$OS" == linux ]] || return 0
+    local rc block
+    block=$(printf '\n%s\n%s\n' "$KEYCHAIN_MARKER" "$KEYCHAIN_LINE")
+    for rc in "${HOME}/.bashrc" "${HOME}/.profile" "${HOME}/.bash_profile" "${HOME}/.zshrc"; do
+        [[ -f "$rc" ]] || continue
+        grep -q 'BROKRE_ALLOW_FILE_KEYCHAIN' "$rc" 2>/dev/null && return 0
+    done
+    for rc in "${HOME}/.bashrc" "${HOME}/.profile" "${HOME}/.bash_profile" "${HOME}/.zshrc"; do
+        if [[ -f "$rc" ]] && ! grep -qF "$KEYCHAIN_MARKER" "$rc" 2>/dev/null; then
+            printf '%s' "$block" >>"$rc"
+            echo "brokre: added BROKRE_ALLOW_FILE_KEYCHAIN=1 to $rc (headless Linux vault)"
+            return 0
+        fi
+    done
+    rc="${HOME}/.bashrc"
+    printf '%s' "$block" >>"$rc"
+    echo "brokre: added BROKRE_ALLOW_FILE_KEYCHAIN=1 to $rc (headless Linux vault)"
+}
+
 install_binary() {
   if mkdir -p "$INSTALL_DIR" 2>/dev/null && [[ -w "$INSTALL_DIR" ]]; then
     mv "$TMPDIR/brokre" "$INSTALL_DIR/brokre"
@@ -119,6 +141,8 @@ install_binary() {
 
 install_binary
 
+ensure_linux_file_keychain
+
 echo "Verifying..."
 brokre --version || "$USER_BIN/brokre" --version || true
 
@@ -127,6 +151,11 @@ if [ "$OS" = "darwin" ]; then
     echo "Note: On macOS brokre stores its master key in ~/.brokre/ (file-based)"
     echo "      instead of the OS Keychain to avoid authorization dialogs on"
     echo "      every run. Set BROKRE_USE_KEYCHAIN=1 if you prefer Keychain."
+elif [ "$OS" = "linux" ]; then
+    echo
+    echo "Note: On Linux servers brokre stores its master key in ~/.brokre/.master_kek"
+    echo "      (file mode 0600) when OS secret-service is unavailable. install.sh"
+    echo "      adds BROKRE_ALLOW_FILE_KEYCHAIN=1 to your shell profile when needed."
 fi
 
 echo "brokre installed successfully."

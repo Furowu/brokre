@@ -143,6 +143,13 @@ pub struct AuditListRequest {
     pub offset: Option<usize>,
 }
 
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct BastionPolicyRequest {
+    /// Set to true for strict gate (all operations), false for default (bastion outbound only). Omit to read.
+    #[serde(default)]
+    pub strict_mode: Option<bool>,
+}
+
 #[derive(Clone)]
 pub struct BrokreMcp {
     manage: Arc<Mutex<Option<ManageServer>>>,
@@ -387,6 +394,26 @@ Reuses a persistent elevated shell by default. BROKRE_MCP_SESSION=0 disables reu
             gate,
         )
         .await
+    }
+
+    #[tool(
+        description = "Read or set bastion gate policy. Default: unlock only for bastion outbound (:: routes, registered bastions). Strict: every brokre exec/list requires unlock. Omit strict_mode to read current policy."
+    )]
+    fn brokre_bastion_policy(
+        &self,
+        Parameters(req): Parameters<BastionPolicyRequest>,
+    ) -> std::result::Result<CallToolResult, McpError> {
+        if let Some(strict) = req.strict_mode {
+            crate::bastion::policy::set_strict_mode(strict).map_err(mcp_err)?;
+        }
+        let strict_mode = crate::bastion::policy::strict_mode();
+        let body = serde_json::json!({
+            "strict_mode": strict_mode,
+            "gate_mode": if strict_mode { "strict" } else { "default" },
+            "key_set": crate::bastion::key::key_is_set(),
+            "unlocked": crate::bastion::session::is_unlocked(),
+        });
+        Ok(text_json_result(&body))
     }
 
     #[tool(
