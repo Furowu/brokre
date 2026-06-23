@@ -273,4 +273,47 @@ mod tests {
         assert!(argv[1].contains("b2"), "argv[1]={}", argv[1]);
         assert!(argv[1].contains("db"));
     }
+
+    #[test]
+    fn build_single_hop_sh_c_complex_script() {
+        let route = BastionRoute {
+            hops: vec!["b150".into()],
+            inner: "db".into(),
+            addr: "b150::db".into(),
+        };
+        let script = "printf '%s\\n' \"it's fine\" > /tmp/f";
+        let trailing = vec!["sh".into(), "-c".into(), script.to_string()];
+        let args = build_routed_local_argv("ssh", &route, &trailing);
+        assert_eq!(args[0], "b150");
+        assert_eq!(args[args.len() - 3], "sh");
+        assert_eq!(args[args.len() - 2], "-c");
+        assert_eq!(args[args.len() - 1], script);
+    }
+
+    #[test]
+    fn build_multi_hop_sh_c_shell_join_escapes_script() {
+        let route = BastionRoute {
+            hops: vec!["b1".into(), "b2".into()],
+            inner: "db".into(),
+            addr: "b1::b2::db".into(),
+        };
+        let script = "echo a > /tmp/f && printf '%s' ok";
+        let trailing = vec!["sh".into(), "-c".into(), script.to_string()];
+        let argv = build_routed_local_argv("ssh", &route, &trailing);
+        assert_eq!(argv[0], "b1");
+        let joined = &argv[1];
+        assert!(joined.contains("sh -c"), "joined={joined}");
+        assert!(
+            joined.contains("echo a > /tmp/f"),
+            "script should survive shell_join: {joined}"
+        );
+    }
+
+    #[test]
+    fn shell_join_quotes_script_with_spaces() {
+        let script = "cat > /tmp/x <<'EOF'\nline\nEOF";
+        let joined = shell_join(&["sh".into(), "-c".into(), script.to_string()]);
+        assert!(joined.starts_with("sh -c "));
+        assert!(joined.contains("cat > /tmp/x"));
+    }
 }

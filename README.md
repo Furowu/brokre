@@ -30,7 +30,7 @@ brokre bastion enable b150
 brokre bastion sync b150 --json          # pull inner alias catalog
 brokre bastion unlock
 brokre list --json                       # b150::db, b150::worker-01, …
-brokre ssh b150::db "systemctl status"   # MCP: brokre_exec with routed alias
+brokre ssh b150::db systemctl status   # MCP: brokre_exec with routed alias
 ```
 
 See [Cross-network list inheritance](#cross-network-list-inheritance-bastion-broker) and [Bastion proxy](#bastion-proxy-cross-network--intranet-entry) below for setup details.
@@ -132,11 +132,36 @@ Use `npx -y brokre@latest` so both the npm launcher and binary stay current. On 
 | MCP tool | Purpose |
 |----------|---------|
 | `brokre_list` | Saved aliases; with bastions: auto-probe, merge routed aliases (`b150::db`), hide unreachable; includes `access`/`availability`/`bastion_gate` |
-| `brokre_exec` | Run **any** saved CLI alias (`binary` + `args`); `ssh` + `sudo`/`su` auto-reuses elevated session |
+| `brokre_exec` | Run **any** saved CLI alias (`binary` + `args`); `ssh` supports `shell_command` for remote scripts; `ssh` + `sudo`/`su` auto-reuses elevated session |
 | `brokre_exec_elevated` | Remote privileged command (`alias`, `command`, `mode`); default `session=reuse` (10 min idle timeout) |
 | `brokre_setup` | Open manage UI in browser for the human to add creds |
 | `brokre_audit_list` | Query audit history (metadata only — args redacted) |
 | `brokre_audit_verify` | Verify tamper-evident audit log chain |
+
+#### MCP vs CLI (essential for AI agents)
+
+brokre is **not** a drop-in for `ssh` / `mysql` — you must prefix with `brokre` for vault injection.
+
+| Task | MCP (in IDE) | CLI (terminal / debugging) |
+|------|--------------|----------------------------|
+| List aliases | `brokre_list` | `brokre list --json` |
+| SSH remote command | `brokre_exec` `binary=ssh`, `args=["prod","uname","-a"]` | `brokre ssh prod uname -a` |
+| Any CLI | `brokre_exec` `binary=mysql`, `args=["prod-db","-e","SHOW TABLES"]` | `brokre mysql prod-db -e "SHOW TABLES"` |
+| Write remote script | `shell_command="…"` (ssh only) | `brokre ssh prod sh -c '…'` (whole script as one `-c` arg) |
+| Privileged exec | `brokre_exec_elevated` `command="…"` | `brokre ssh prod sudo …` (MCP has session pool; CLI uses fresh PTY each time) |
+| Add credentials | `brokre_setup` (opens browser) | `brokre manage --open` |
+| First-time save | **not available** (human TTY required) | `brokre ssh user@10.0.0.1` |
+
+**Common mistakes (AI agents)**
+
+| Wrong | Right |
+|-------|-------|
+| `ssh prod uptime` | `brokre ssh prod uptime` |
+| MCP `args=["prod","uname -a"]` (one shell string) | `args=["prod","uname","-a"]` (argv tokens) |
+| MCP `args=["prod","sh -c 'echo hi'"]` | `shell_command="echo hi"` or `args=["prod","sh","-c","echo hi"]` |
+| bare `mysql -h … -p` | `brokre mysql <saved-alias> …` |
+
+For remote SSH: tokens after the alias are **argv slices**, not one shell command. Use split tokens for simple commands; use `shell_command` for complex scripts.
 
 #### MCP elevated sessions (`sudo` / `su`, Unix)
 
@@ -162,6 +187,18 @@ By default, `brokre mcp` reuses a background elevated shell per `(alias, mode, u
 When the session pool is enabled, responses include `session_reused` and `session_idle_expires_at` in addition to `exit_code` / `stdout` / `stderr`. `session_idle_expires_at` is a **rolling idle-window hint** refreshed on each call, not a fixed expiry timestamp. `stderr` is usually empty on the pool path.
 
 **`brokre_exec`**: `binary=ssh` with `sudo`/`su` in `args` auto-uses the same pool (always `reuse`; no `session=new|close`). Example: `args=["prod","sudo","whoami"]`.
+
+**Writing remote scripts/files** (`shell_command`, `binary=ssh` only): pass only the alias in `args`; put the full shell script in `shell_command` (brokre normalizes to `sh -c`). Do not embed `sh -c '...'` in `args` or split `printf`/redirects across argv tokens. For privileged system paths use `brokre_exec_elevated.command`.
+
+```json
+{
+  "binary": "ssh",
+  "args": ["prod"],
+  "shell_command": "cat > /tmp/deploy.sh <<'EOF'\n#!/bin/sh\necho ok\nEOF"
+}
+```
+
+Bastion routes work the same: `args=["b150::db"]` with `shell_command` as the remote script.
 
 | Control | Default |
 |---------|---------|

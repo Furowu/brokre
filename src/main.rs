@@ -4,20 +4,41 @@ use std::ffi::OsString;
 use tracing::Level;
 use tracing_subscriber::FmtSubscriber;
 
-/// brokre — AI-safe credential broker.
-///
-/// Usage patterns:
-///
-///   brokre ssh root@host           # first time: type password; offered to save.
-///   brokre ssh prod-bastion        # next time: alias auto-injects the password.
-///   brokre ssh prod-bastion uptime # one-shot remote command via saved alias.
-///   brokre list                    # show saved aliases (metadata only).
-///   brokre rm ssh prod-bastion     # delete (requires passphrase or YES).
-///   brokre reveal ssh prod-bastion # show plaintext (TTY + passphrase required).
-///   brokre audit list                # query audit history (metadata only).
-///   brokre audit verify                # verify the tamper-evident audit log.
 #[derive(Parser)]
-#[command(name = "brokre", version, about, long_about = None)]
+#[command(
+    name = "brokre",
+    version,
+    about = "AI-safe credential broker CLI",
+    long_about = "\
+brokre wraps any CLI on your PATH and injects saved passwords at prompts.\n\
+Passwords never appear in environment variables, AI context, or ps output.\n\
+\n\
+PASS-THROUGH (core usage — any CLI):\n\
+  brokre <cli-binary> [args...]\n\
+\n\
+  brokre ssh root@10.0.0.1          # first time: type password; offered to save\n\
+  brokre ssh prod-bastion           # saved alias: password auto-injected\n\
+  brokre ssh prod-bastion uname -a  # one-shot remote command (split argv)\n\
+  brokre mysql prod-db -e \"SHOW TABLES\"\n\
+  brokre <your-cli> <alias> [args...]\n\
+\n\
+REMOTE SSH: argv after the alias are separate tokens, not one shell string.\n\
+  brokre ssh prod docker ps         # good\n\
+  brokre ssh prod sh -c 'script'    # good (script is one -c argument)\n\
+  brokre ssh prod \"docker ps\"       # shell may work locally; prefer split argv\n\
+\n\
+BUILT-IN SUBCOMMANDS:\n\
+  brokre list [--json]              # list saved aliases (metadata only)\n\
+  brokre manage [--open]            # local web UI for credentials\n\
+  brokre mcp                        # MCP server for AI assistants\n\
+  brokre bastion enable <alias>     # bastion broker (see brokre bastion --help)\n\
+  brokre reveal / rm / audit        # human-only or metadata (see --help)\n\
+\n\
+MCP (Cursor, Claude Code, …): use brokre_list / brokre_exec tools — see README.\n\
+  brokre_exec binary=ssh, args=[\"prod\",\"uname\",\"-a\"]  ==  brokre ssh prod uname -a\n\
+\n\
+Run `brokre list --help`, `brokre bastion --help`, etc. for subcommand options."
+)]
 #[command(disable_help_subcommand = true)]
 struct Cli {
     #[command(subcommand)]

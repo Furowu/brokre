@@ -30,7 +30,7 @@ brokre bastion enable b150
 brokre bastion sync b150 --json          # 拉取内网别名目录
 brokre bastion unlock
 brokre list --json                       # b150::db、b150::worker-01 …
-brokre ssh b150::db "systemctl status"   # MCP：brokre_exec 路由别名
+brokre ssh b150::db systemctl status   # MCP：brokre_exec 路由别名
 ```
 
 完整配置见下文 [跨网段列表继承](#跨网段列表继承堡垒代理) 与 [堡垒代理](#堡垒代理跨网段--内网入口)。
@@ -132,11 +132,36 @@ claude mcp add --scope project brokre -- npx -y brokre@latest
 | MCP 工具 | 用途 |
 |----------|------|
 | `brokre_list` | 已保存别名；有堡垒时自动探测、合并路由别名（`b150::db`）、隐藏不可达项；含 `access`/`availability`/`bastion_gate` |
-| `brokre_exec` | 运行**任意**已保存 CLI 别名（`binary` + `args`）；`ssh` + `sudo`/`su` 时自动复用 elevated 会话 |
+| `brokre_exec` | 运行**任意**已保存 CLI 别名（`binary` + `args`）；`ssh` 可用 `shell_command` 写远端脚本；`ssh` + `sudo`/`su` 时自动复用 elevated 会话 |
 | `brokre_exec_elevated` | 远端提权执行（`alias` + `command` + `mode`）；默认 `session=reuse` 复用后台 shell（10 分钟空闲销毁） |
 | `brokre_setup` | 在浏览器打开 manage UI，由人类添加凭据 |
 | `brokre_audit_list` | 查询审计历史（仅元数据 — 参数已脱敏） |
 | `brokre_audit_verify` | 验证防篡改审计链 |
+
+#### MCP 与 CLI 对照（AI 必读）
+
+brokre **不是** `ssh`/`mysql` 的替代品 — 必须加 `brokre` 前缀才会注入 vault 凭据。
+
+| 场景 | MCP（Agent 在 IDE 内） | CLI（终端 / 人类调试） |
+|------|------------------------|------------------------|
+| 列出别名 | `brokre_list` | `brokre list --json` |
+| SSH 远程命令 | `brokre_exec` `binary=ssh`, `args=["prod","uname","-a"]` | `brokre ssh prod uname -a` |
+| 任意 CLI | `brokre_exec` `binary=mysql`, `args=["prod-db","-e","SHOW TABLES"]` | `brokre mysql prod-db -e "SHOW TABLES"` |
+| 写远端脚本 | `shell_command="…"`（仅 ssh） | `brokre ssh prod sh -c '…'`（`-c` 后整段脚本为一个参数） |
+| 提权执行 | `brokre_exec_elevated` `command="…"` | `brokre ssh prod sudo …`（MCP 有会话池；CLI 每次新 PTY） |
+| 添加凭据 | `brokre_setup`（打开浏览器） | `brokre manage --open` |
+| 首次保存别名 | **不可用**（需人类 TTY 输入密码） | `brokre ssh user@10.0.0.1` |
+
+**常见错误（AI 易犯）**
+
+| 错误 | 正确 |
+|------|------|
+| `ssh prod uptime` | `brokre ssh prod uptime` |
+| MCP `args=["prod","uname -a"]`（一条 shell 字符串） | `args=["prod","uname","-a"]`（argv 切片） |
+| MCP `args=["prod","sh -c 'echo hi'"]` | `shell_command="echo hi"` 或 `args=["prod","sh","-c","echo hi"]` |
+| 直接 `mysql -h … -p` | `brokre mysql <已保存别名> …` |
+
+远程 SSH：`alias` 之后的参数是 **argv 切片**，不是一条 shell 命令。简单命令用拆分 token；复杂脚本用 `shell_command`。
 
 #### MCP elevated 会话（`sudo` / `su`，Unix）
 
@@ -162,6 +187,18 @@ claude mcp add --scope project brokre -- npx -y brokre@latest
 启用会话池时，响应除 `exit_code` / `stdout` / `stderr` 外还有 `session_reused`、`session_idle_expires_at`（**滚动空闲窗口参考时间**，每次调用刷新，非固定过期时刻）。会话池路径下 `stderr` 通常为空。
 
 **`brokre_exec`**：`binary=ssh` 且 `args` 含 `sudo`/`su` 时自动走同一会话池（固定 `reuse`，不支持 `session=new|close`）。例：`args=["prod","sudo","whoami"]`。
+
+**写远端脚本/文件**（`shell_command`，仅 `binary=ssh`）：`args` 只含别名，`shell_command` 传整段 shell 脚本（brokre 内部规范化为 `sh -c`）。勿把 `sh -c '...'` 塞进 `args`，勿把 `printf`/重定向拆成多个 argv token。提权写系统路径用 `brokre_exec_elevated.command`。
+
+```json
+{
+  "binary": "ssh",
+  "args": ["prod"],
+  "shell_command": "cat > /tmp/deploy.sh <<'EOF'\n#!/bin/sh\necho ok\nEOF"
+}
+```
+
+堡垒路由同理：`args=["b150::db"]`，`shell_command` 为远端脚本内容。
 
 | 控制项 | 默认 |
 |--------|------|

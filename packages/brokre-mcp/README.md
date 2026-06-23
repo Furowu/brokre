@@ -2,6 +2,29 @@
 
 MCP launcher for [brokre](https://github.com/Furowu/brokre) — a **local credential broker for AI agents**. Use it with Cursor, Claude Code, Kimi Code, Trae, OpenClaw, Hermes Agent, ChatClaw, and other MCP-capable clients to run `ssh` / `mysql` / `psql` and more — **passwords never enter AI context, environment variables, or `ps` output**. Agents list credential aliases and execute saved connections via MCP **without exposing passwords to the AI**.
 
+Developed by [Techinone](https://www.tio.tech) (成都同创合一科技有限公司).
+
+## What's New in 0.2.3 — Bastion for cluster management
+
+**0.2.3** strengthens brokre as a **bastion broker for multi-host / cluster operations**: one laptop, one MCP session, many inner targets — without copying vault passwords into AI context or scattering secrets across jump hosts.
+
+| Advantage | What it means in practice |
+|-----------|----------------------------|
+| **Single control plane** | Register a bastion SSH alias (`b150`), sync inner aliases from remote brokre, and drive the whole cluster from MCP `brokre_list` |
+| **Smart routing** | `b150::db`, `b150::app-01`, multi-hop `b1::b2::inner` — route separator `::`; AI picks `access=via_b150` when direct LAN paths are down |
+| **Secrets stay on the bastion** | Routed exec runs `~/.brokre/bin/brokre` on the jump host; laptop holds metadata and session gate, not inner-host passwords |
+| **Human gate, agent-friendly** | Bastion outbound requires unlock (TTY, `/bastion-auth`, or MCP URL elicitation); gate auth survives manage UI idle expiry so long MCP runs keep working |
+| **Cluster-safe defaults** | Reachability probes with ms timeouts and concurrency caps; unreachable local aliases hidden from default list; loop detection and audit `route`/`bastion` fields |
+| **Privileged ops over routes** | `brokre_exec_elevated` and `sudo`/`sudo -i` paths work through bastions with session reuse and PTY hardening |
+
+Typical MCP flow for a cluster behind one entry host:
+
+```json
+{ "binary": "ssh", "args": ["b150::db", "uname", "-a"] }
+```
+
+See [`brokre_list` — cross-network smart list](#brokre_list--cross-network-smart-list) below for routed alias discovery and execution.
+
 ## Prerequisites
 
 - **Node.js 18+** (for `npx`)
@@ -95,13 +118,43 @@ Disable auto-open: `BROKRE_MCP_NO_AUTO_OPEN=1`
 | Tool | Purpose |
 |------|---------|
 | `brokre_list` | Saved aliases (metadata only); auto smart-list when bastions registered — probe, merge `bastion::inner` routes, hide unreachable |
-| `brokre_exec` | Run a saved connection (`binary` + `args`); `ssh` + `sudo`/`su` auto-reuses elevated session |
+| `brokre_exec` | Run a saved connection (`binary` + `args`); `ssh` + `shell_command` for remote scripts; `ssh` + `sudo`/`su` auto-reuses elevated session |
 | `brokre_exec_elevated` | Remote privileged command (`alias`, `command`, `mode`); default `session=reuse` |
 | `brokre_setup` | Open manage UI in browser for the human |
 | `brokre_audit_list` | Query audit history (metadata only — args redacted) |
 | `brokre_audit_verify` | Verify tamper-evident audit log chain |
 
 **Not exposed:** `reveal`, password export, or manage session tokens.
+
+## CLI basics
+
+The npm package launches MCP, but the underlying tool is the **brokre CLI** (`~/.brokre/bin/brokre` or `PATH`). Humans and agents debugging in a terminal use the same vault.
+
+**Always prefix `brokre`** — bare `ssh prod` / `mysql prod` does **not** inject saved passwords.
+
+```bash
+brokre list --json                    # list aliases (metadata only)
+brokre ssh prod uname -a              # SSH one-shot (split argv after alias)
+brokre mysql prod-db -e "SHOW TABLES"
+brokre ssh prod sh -c 'echo hi > /tmp/f'   # remote script ( -c script is one arg )
+brokre manage --open                  # add credentials in browser
+brokre ssh user@10.0.0.1              # first-time save (TTY; type password when prompted)
+```
+
+Run `brokre --help` for pass-through syntax and subcommands (`list`, `manage`, `mcp`, `bastion`, …).
+
+### MCP ↔ CLI mapping
+
+| Task | MCP | CLI |
+|------|-----|-----|
+| List aliases | `brokre_list` | `brokre list --json` |
+| SSH command | `brokre_exec` `binary=ssh`, `args=["prod","uname","-a"]` | `brokre ssh prod uname -a` |
+| Other CLI | `brokre_exec` `binary=mysql`, `args=[…]` | `brokre mysql <alias> …` |
+| Remote script | `shell_command="…"` | `brokre ssh <alias> sh -c '…'` |
+| Privileged | `brokre_exec_elevated` | `brokre ssh <alias> sudo …` |
+| Setup | `brokre_setup` | `brokre manage --open` |
+
+**AI antipatterns:** `ssh prod cmd` (missing brokre); MCP `args=["prod","cmd arg"]` (use argv tokens or `shell_command`).
 
 ### `brokre_list` — cross-network smart list
 
@@ -174,6 +227,20 @@ Runs a command on a saved SSH host with `sudo`, `sudo -i` environment (`sudo_log
 
 **`brokre_exec` shortcut:** `binary=ssh`, `args=["prod","sudo","systemctl","status","nginx"]` uses the same pool (always `reuse`; cannot pass `session=new|close`).
 
+### Writing remote scripts (`shell_command`)
+
+For scripts or file writes with complex quoting, use `shell_command` (ssh only). Pass only the alias in `args`; brokre runs `sh -c <shell_command>` on the remote host.
+
+```json
+{
+  "binary": "ssh",
+  "args": ["prod"],
+  "shell_command": "cat > /tmp/deploy.sh <<'EOF'\n#!/bin/sh\necho ok\nEOF"
+}
+```
+
+**Do not:** put `sh -c '...'` in `args`, split `printf`/redirects across argv tokens, or rely on line-by-line `echo >>` workarounds. For privileged paths use `brokre_exec_elevated.command`. Bastion routes: `args=["b150::db"]` with the same `shell_command` field.
+
 **Limits:** idle teardown 10 min, max lifetime 30 min, per-command timeout 120 s (configurable via env below). No interactive `sudo -i` without a command, no `vim`/`top`. Sudo password must match vault `password`.
 
 ## Environment
@@ -192,4 +259,4 @@ Runs a command on a saved SSH host with `sudo`, `sudo -i` environment (`sudo_log
 
 ## License
 
-MIT
+MIT · [Techinone](https://www.tio.tech)

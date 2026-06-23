@@ -40,6 +40,8 @@ brokre is an AI-safe credential broker. Rules for agents:\n\
 4. Exec routed aliases: brokre_exec binary=ssh, args=[\"b150::db\", \"uname\", \"-a\"] — credentials inject on the bastion.\n\
 5. Non-privileged remote commands — brokre_exec: binary=ssh, args=[\"alias\", \"uname\", \"-a\"]. \
 Args are argv tokens after the alias (NOT one shell string). Example: args=[\"prod\", \"docker\", \"ps\"].\n\
+5b. Writing remote scripts/files — brokre_exec: binary=ssh, args=[\"alias\"], shell_command=\"cat > /path <<'EOF'\\n...\\nEOF\". \
+Do NOT put sh -c '...' in args or split printf/redirects across argv tokens. For privileged paths use brokre_exec_elevated.command.\n\
 6. Privileged remote commands (sudo/su) — prefer brokre_exec_elevated:\n\
    {\"alias\":\"prod\",\"command\":\"whoami\",\"mode\":\"sudo_login\"} for root login env (like sudo -i).\n\
    mode: sudo (default) | sudo_login (sudo -i env) | su. user: target for su (default root).\n\
@@ -54,7 +56,15 @@ to verify the vault password matches the remote sudo password via brokre manage 
 When gate applies, tell the user to complete bastion unlock in the browser if `bastion_gate.unlocked_during_call` is true or the call blocks waiting.\n\
 12. brokre_list / brokre_exec / brokre_exec_elevated responses include `bastion_gate` \
 (`required`, `unlocked_during_call`, `idle_expires_at`) so agents know unlock state.\n\
-13. brokre_audit_list / brokre_audit_verify: read-only audit metadata (args redacted).";
+13. brokre_audit_list / brokre_audit_verify: read-only audit metadata (args redacted).\n\
+14. CLI equivalents (when the user asks to run in a terminal, or you need to debug MCP):\n\
+   - Always prefix brokre — NEVER bare `ssh prod` / `mysql prod` (no vault injection).\n\
+   - brokre_list ≈ `brokre list --json`\n\
+   - brokre_exec binary=ssh, args=[\"prod\",\"uname\",\"-a\"] ≈ `brokre ssh prod uname -a`\n\
+   - brokre_exec binary=mysql, args=[\"prod-db\",\"-e\",\"SHOW TABLES\"] ≈ `brokre mysql prod-db -e SHOW TABLES`\n\
+   - shell_command=\"…\" ≈ `brokre ssh <alias> sh -c '…'` (script as single -c argument)\n\
+   - brokre_setup ≈ `brokre manage --open` (human adds credentials; no password in MCP response)\n\
+   - First-time save requires human TTY: `brokre ssh user@host` — not available via MCP.";
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct ListRequest {
@@ -78,9 +88,14 @@ pub struct ExecRequest {
     pub binary: String,
     /// Arguments after the binary. First positional must be a saved alias. Remaining tokens are the remote argv \
     /// (split form): [\"prod\", \"df\", \"-h\"] not a single shell string. For sudo use brokre_exec_elevated or \
-    /// [\"alias\", \"sudo\", \"systemctl\", \"status\", \"nginx\"].
+    /// [\"alias\", \"sudo\", \"systemctl\", \"status\", \"nginx\"]. When using shell_command, args should contain \
+    /// only flags and the alias (e.g. [\"prod\"]).
     #[serde(default)]
     pub args: Vec<String>,
+    /// SSH only: run `sh -c <this>` on the remote host after the alias. Mutually exclusive with trailing argv \
+    /// after the alias. Preferred for writing remote scripts/files with complex quoting.
+    #[serde(default)]
+    pub shell_command: Option<String>,
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
@@ -252,7 +267,9 @@ impl BrokreMcp {
     #[tool(
         description = "Run a CLI through brokre with saved credentials (ssh/mysql/psql/…). \
 Requires a saved alias as the first positional arg in args. Args are argv tokens, not a shell string: \
-use [\"prod\",\"uptime\"] not [\"prod\",\"uptime\"]. For remote sudo/su prefer brokre_exec_elevated; \
+use [\"prod\",\"uptime\"] not [\"prod\",\"uptime\"]. For remote scripts/files with complex quoting use \
+shell_command (ssh only): args=[\"prod\"], shell_command=\"cat > /path <<'EOF'\\n...\\nEOF\". \
+For remote sudo/su prefer brokre_exec_elevated; \
 shortcut: binary=ssh, args=[\"alias\",\"sudo\",\"cmd\",...] or args=[\"alias\",\"sudo\",\"-i\",\"whoami\"]. \
 Supports bastion routes like b150::db. Response includes `bastion_gate` unlock metadata. Never returns vault passwords."
     )]
@@ -262,15 +279,21 @@ Supports bastion routes like b150::db. Response includes `bastion_gate` unlock m
         peer: Peer<rmcp::RoleServer>,
     ) -> std::result::Result<CallToolResult, McpError> {
         let source_env = mcp_source_env(&peer, "brokre_exec");
+        let args = crate::mcp::normalize_exec_argv(
+            &req.binary,
+            &req.args,
+            req.shell_command.as_deref(),
+        )
+        .map_err(mcp_err)?;
         let mut unlocked_during_call = false;
-        if needs_unlock_for_exec(&req.binary, &req.args) {
+        if needs_unlock_for_exec(&req.binary, &args) {
             let server = self.ensure_manage_server().map_err(mcp_err)?;
             unlocked_during_call = ensure_bastion_unlocked(&server, &peer, "brokre_exec").await?;
         }
-        let gate = BastionGateInfo::for_exec(&req.binary, &req.args, unlocked_during_call);
+        let gate = BastionGateInfo::for_exec(&req.binary, &args, unlocked_during_call);
         if mcp_session_enabled() && req.binary == "ssh" {
             if let Some((alias, mode, command, user)) =
-                crate::runtime::elevated::ssh_exec_args_to_elevated(&req.args)
+                crate::runtime::elevated::ssh_exec_args_to_elevated(&args)
             {
                 if !alias.contains(crate::bastion::route::ROUTE_SEP) {
                     let key = SessionKey::new(&alias, mode, user.as_deref());
@@ -285,7 +308,7 @@ Supports bastion routes like b150::db. Response includes `bastion_gate` unlock m
                 }
             }
         }
-        run_brokre_cli(&req.binary, &req.args, &source_env, gate).await
+        run_brokre_cli(&req.binary, &args, &source_env, gate).await
     }
 
     #[tool(
