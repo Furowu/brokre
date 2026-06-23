@@ -390,6 +390,7 @@ pub fn section_id_for_profile(profile: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::utils::test_home::with_temp_brokre_home;
 
     #[test]
     fn user_field_mode_ssh_required() {
@@ -456,30 +457,24 @@ mod tests {
 
     #[test]
     fn user_manage_toml_adds_group() {
-        let tmp = tempfile::tempdir().unwrap();
-        let old_home = std::env::var_os("HOME");
-        std::env::set_var("HOME", tmp.path());
-        let brokre = tmp.path().join(".brokre");
-        std::fs::create_dir_all(&brokre).unwrap();
-        std::fs::write(
-            brokre.join("manage.toml"),
-            r#"
+        with_temp_brokre_home(|| {
+            let brokre = crate::utils::paths::brokre_home();
+            std::fs::create_dir_all(&brokre).unwrap();
+            std::fs::write(
+                brokre.join("manage.toml"),
+                r#"
 [[group]]
 id = "gaussdb"
 label = "GaussDB"
 binaries = ["gsql", "gaussdb"]
 "#,
-        )
-        .unwrap();
+            )
+            .unwrap();
 
-        let groups = detect_profile_groups();
-        let gauss = groups.iter().find(|g| g.id == "gaussdb").expect("gaussdb group");
-        assert!(gauss.generic);
-        assert_eq!(gauss.label, "GaussDB");
-
-        match old_home {
-            Some(v) => std::env::set_var("HOME", v),
-            None => std::env::remove_var("HOME"),
-        }
+            let groups = detect_profile_groups();
+            let gauss = groups.iter().find(|g| g.id == "gaussdb").expect("gaussdb group");
+            assert!(gauss.generic);
+            assert_eq!(gauss.label, "GaussDB");
+        });
     }
 }

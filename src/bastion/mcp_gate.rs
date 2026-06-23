@@ -208,6 +208,7 @@ async fn poll_until_unlocked_async(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::utils::test_home::with_temp_brokre_home;
 
     #[test]
     fn bastion_gate_info_not_required_serializes_minimal() {
@@ -226,22 +227,15 @@ mod tests {
 
     #[test]
     fn bastion_gate_info_applies_when_key_configured() {
-        let saved = std::env::var_os("BROKRE_HOME");
-        let tmp = tempfile::tempdir().unwrap();
-        std::env::set_var("BROKRE_HOME", tmp.path());
-        std::env::set_var("BROKRE_ALLOW_FILE_KEYCHAIN", "1");
-        crate::bastion::key::set_bastion_key(&crate::security::secret::SecretString::new(
-            "test-key".into(),
-        ))
-        .unwrap();
-        let info = BastionGateInfo::build(true, true);
-        let v = serde_json::to_value(&info).unwrap();
-        assert_eq!(v["required"], true);
-        assert_eq!(v["unlocked_during_call"], true);
-        std::env::remove_var("BROKRE_ALLOW_FILE_KEYCHAIN");
-        match saved {
-            Some(v) => std::env::set_var("BROKRE_HOME", v),
-            None => std::env::remove_var("BROKRE_HOME"),
-        }
+        with_temp_brokre_home(|| {
+            crate::bastion::key::set_bastion_key(&crate::security::secret::SecretString::new(
+                "test-key".into(),
+            ))
+            .unwrap();
+            let info = BastionGateInfo::build(true, true);
+            let v = serde_json::to_value(&info).unwrap();
+            assert_eq!(v["required"], true);
+            assert_eq!(v["unlocked_during_call"], true);
+        });
     }
 }

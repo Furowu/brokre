@@ -52,22 +52,17 @@ pub fn set_strict_mode(enabled: bool) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::env;
+    use crate::utils::test_home::with_temp_brokre_home;
 
     #[test]
     #[serial_test::serial]
     fn strict_mode_roundtrip() {
-        let saved = env::var_os("BROKRE_HOME");
-        let tmp = tempfile::tempdir().unwrap();
-        env::set_var("BROKRE_HOME", tmp.path());
-        assert!(!strict_mode());
-        set_strict_mode(true).unwrap();
-        assert!(strict_mode());
-        set_strict_mode(false).unwrap();
-        assert!(!strict_mode());
-        match saved {
-            Some(v) => env::set_var("BROKRE_HOME", v),
-            None => env::remove_var("BROKRE_HOME"),
-        }
+        with_temp_brokre_home(|| {
+            assert!(!strict_mode());
+            set_strict_mode(true).unwrap();
+            assert!(strict_mode());
+            set_strict_mode(false).unwrap();
+            assert!(!strict_mode());
+        });
     }
 }

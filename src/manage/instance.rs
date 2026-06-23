@@ -160,6 +160,7 @@ pub fn unregister_instance() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::utils::test_home::with_temp_brokre_home;
 
     #[test]
     fn record_url_format() {
@@ -174,22 +175,17 @@ mod tests {
     #[test]
     #[serial_test::serial]
     fn register_writes_json_for_current_pid() {
-        let tmp = tempfile::tempdir().unwrap();
-        let old = std::env::var_os("HOME");
-        std::env::set_var("HOME", tmp.path());
-        let _guard = ManageStartLock {
-            _lock: acquire_start_lock().unwrap()._lock,
-        };
-        register_instance(56777, "tok").unwrap();
-        let rec = read_record().expect("manage.json");
-        assert_eq!(rec.port, 56777);
-        assert_eq!(rec.token, "tok");
-        assert_eq!(rec.pid, std::process::id());
-        unregister_instance();
-        assert!(read_record().is_none());
-        match old {
-            Some(v) => std::env::set_var("HOME", v),
-            None => std::env::remove_var("HOME"),
-        }
+        with_temp_brokre_home(|| {
+            let _guard = ManageStartLock {
+                _lock: acquire_start_lock().unwrap()._lock,
+            };
+            register_instance(56777, "tok").unwrap();
+            let rec = read_record().expect("manage.json");
+            assert_eq!(rec.port, 56777);
+            assert_eq!(rec.token, "tok");
+            assert_eq!(rec.pid, std::process::id());
+            unregister_instance();
+            assert!(read_record().is_none());
+        });
     }
 }

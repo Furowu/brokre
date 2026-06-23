@@ -124,18 +124,8 @@ pub fn collect_list_items(
 mod tests {
     use super::*;
     use crate::bastion::model::{ListItemKind, ProbeStatus};
+    use crate::utils::test_home::with_temp_brokre_home;
     use serial_test::serial;
-    use std::env;
-    use tempfile::TempDir;
-
-    fn with_temp_home<F: FnOnce()>(f: F) {
-        let dir = TempDir::new().unwrap();
-        env::set_var("BROKRE_HOME", dir.path());
-        env::set_var("BROKRE_ALLOW_FILE_KEYCHAIN", "1");
-        f();
-        env::remove_var("BROKRE_HOME");
-        env::remove_var("BROKRE_ALLOW_FILE_KEYCHAIN");
-    }
 
     fn sample_item(name: &str, reachable: Option<bool>) -> BastionListItem {
         BastionListItem {
@@ -167,7 +157,7 @@ mod tests {
     #[test]
     #[serial]
     fn resolve_auto_enables_when_bastions_registered() {
-        with_temp_home(|| {
+        with_temp_brokre_home(|| {
             use crate::security::secret::SecretString;
             use crate::vault::service::auto_save;
             use crate::vault::store::VaultStore;
@@ -198,7 +188,7 @@ mod tests {
     #[test]
     #[serial]
     fn resolve_no_bastions_fast_local() {
-        with_temp_home(|| {
+        with_temp_brokre_home(|| {
             let eff = resolve_list_options(RawListOptions {
                 probe: false,
                 include_bastions: false,

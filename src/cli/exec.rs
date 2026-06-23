@@ -638,31 +638,10 @@ fn read_line_from_tty() -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::utils::test_home::with_temp_brokre_home;
     use crate::vault::crypto::record::encrypt_record;
     use crate::vault::keychain::get_or_init_master_kek;
     use std::collections::BTreeMap;
-    use std::env;
-
-    fn with_temp_home<F, R>(f: F) -> R
-    where
-        F: FnOnce() -> R,
-    {
-        let tmp = tempfile::tempdir().unwrap();
-        let old_home = env::var_os("HOME");
-        let old_fallback = env::var_os("BROKRE_ALLOW_FILE_KEYCHAIN");
-        env::set_var("HOME", tmp.path());
-        env::set_var("BROKRE_ALLOW_FILE_KEYCHAIN", "1");
-        let result = f();
-        match old_home {
-            Some(v) => env::set_var("HOME", v),
-            None => env::remove_var("HOME"),
-        }
-        match old_fallback {
-            Some(v) => env::set_var("BROKRE_ALLOW_FILE_KEYCHAIN", v),
-            None => env::remove_var("BROKRE_ALLOW_FILE_KEYCHAIN"),
-        }
-        result
-    }
 
     fn sample_ssh_record(name: &str, host: &str) -> SecretRecord {
         let master = get_or_init_master_kek().unwrap();
@@ -697,7 +676,7 @@ mod tests {
     #[test]
     #[serial_test::serial]
     fn scp_resolves_ssh_record_by_host() {
-        with_temp_home(|| {
+        with_temp_brokre_home(|| {
             let store = VaultStore::open().unwrap();
             let rec = sample_ssh_record("lan", "10.0.0.1");
             store.insert(rec).unwrap();
@@ -714,7 +693,7 @@ mod tests {
     #[test]
     #[serial_test::serial]
     fn scp_resolves_ssh_alias_in_remote_spec() {
-        with_temp_home(|| {
+        with_temp_brokre_home(|| {
             let store = VaultStore::open().unwrap();
             let mut rec = sample_ssh_record("dev-host", "10.0.0.1");
             rec.saved_args = vec!["root@10.0.0.1".into()];
@@ -738,7 +717,7 @@ mod tests {
     #[test]
     #[serial_test::serial]
     fn scp_host_match_rewrites_remote_endpoint() {
-        with_temp_home(|| {
+        with_temp_brokre_home(|| {
             let store = VaultStore::open().unwrap();
             let mut rec = sample_ssh_record("lan", "10.0.0.1");
             rec.saved_args = vec!["root@10.0.0.1".into()];
@@ -766,7 +745,7 @@ mod tests {
     #[test]
     #[serial_test::serial]
     fn alias_appends_trailing_remote_command() {
-        with_temp_home(|| {
+        with_temp_brokre_home(|| {
             let store = VaultStore::open().unwrap();
             let mut rec = sample_ssh_record("b150", "198.51.100.2");
             rec.name = "b150".into();
@@ -791,7 +770,7 @@ mod tests {
     #[test]
     #[serial_test::serial]
     fn alias_preserves_leading_flags_before_remote_command() {
-        with_temp_home(|| {
+        with_temp_brokre_home(|| {
             let store = VaultStore::open().unwrap();
             let mut rec = sample_ssh_record("prod", "10.0.0.1");
             rec.saved_args = vec!["deploy@10.0.0.1".into()];
@@ -815,7 +794,7 @@ mod tests {
     #[test]
     #[serial_test::serial]
     fn host_match_appends_trailing_remote_command() {
-        with_temp_home(|| {
+        with_temp_brokre_home(|| {
             let store = VaultStore::open().unwrap();
             let mut rec = sample_ssh_record("root@198.51.100.2", "198.51.100.2");
             rec.saved_args = vec!["root@198.51.100.2".into()];

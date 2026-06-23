@@ -983,29 +983,16 @@ mod tests {
         run_manage_server, run_manage_server_with_state, ManageServerOptions,
     };
     use crate::security::secret::SecretString;
+    use crate::utils::test_home::with_temp_brokre_home;
     use crate::vault::service::create_credential;
     use crate::vault::store::VaultStore;
-    use std::env;
     use std::io::{Read, Write};
     use std::net::TcpStream;
     use std::sync::atomic::Ordering;
     use std::time::Duration;
 
     fn with_temp_home<F: FnOnce()>(f: F) {
-        let tmp = tempfile::tempdir().unwrap();
-        let old_home = env::var_os("HOME");
-        let old_fallback = env::var_os("BROKRE_ALLOW_FILE_KEYCHAIN");
-        env::set_var("HOME", tmp.path());
-        env::set_var("BROKRE_ALLOW_FILE_KEYCHAIN", "1");
-        f();
-        match old_home {
-            Some(v) => env::set_var("HOME", v),
-            None => env::remove_var("HOME"),
-        }
-        match old_fallback {
-            Some(v) => env::set_var("BROKRE_ALLOW_FILE_KEYCHAIN", v),
-            None => env::remove_var("BROKRE_ALLOW_FILE_KEYCHAIN"),
-        }
+        with_temp_brokre_home(f);
     }
 
     fn http_request(

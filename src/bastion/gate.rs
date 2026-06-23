@@ -377,6 +377,7 @@ pub fn fetch_unlocked_status(port: u16, token: &str) -> Result<bool> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::utils::test_home::with_temp_brokre_home;
     use serial_test::serial;
 
     fn with_env_vars<F>(vars: &[(&str, Option<&str>)], f: F)
@@ -477,45 +478,33 @@ mod tests {
     #[test]
     #[serial]
     fn strict_mode_gate_applies_to_any_exec() {
-        let saved = std::env::var_os("BROKRE_HOME");
-        let tmp = tempfile::tempdir().unwrap();
-        std::env::set_var("BROKRE_HOME", tmp.path());
-        crate::bastion::policy::set_strict_mode(true).unwrap();
-        assert!(gate_applies_to_exec("ssh", &["lan07".into()]));
-        crate::bastion::policy::set_strict_mode(false).unwrap();
-        assert!(!gate_applies_to_exec("ssh", &["lan07".into()]));
-        match saved {
-            Some(v) => std::env::set_var("BROKRE_HOME", v),
-            None => std::env::remove_var("BROKRE_HOME"),
-        }
+        with_temp_brokre_home(|| {
+            crate::bastion::policy::set_strict_mode(true).unwrap();
+            assert!(gate_applies_to_exec("ssh", &["lan07".into()]));
+            crate::bastion::policy::set_strict_mode(false).unwrap();
+            assert!(!gate_applies_to_exec("ssh", &["lan07".into()]));
+        });
     }
 
     #[test]
     #[serial]
     fn list_include_bastions_touches_when_registry_nonempty() {
-        let saved = std::env::var_os("BROKRE_HOME");
-        let tmp = tempfile::tempdir().unwrap();
-        std::env::set_var("BROKRE_HOME", tmp.path());
-        std::env::set_var("BROKRE_ALLOW_FILE_KEYCHAIN", "1");
-        use crate::security::secret::SecretString;
-        use crate::vault::service::auto_save;
-        use crate::vault::store::VaultStore;
-        let store = VaultStore::open().unwrap();
-        auto_save(
-            &store,
-            "ssh",
-            &["u@10.0.0.150".into()],
-            SecretString::new("pw".into()),
-            "b150",
-        )
-        .unwrap();
-        crate::bastion::enable_bastion("b150").unwrap();
-        assert!(list_touches_bastion_outbound(false, true));
-        assert!(!list_touches_bastion_outbound(true, false));
-        match saved {
-            Some(v) => std::env::set_var("BROKRE_HOME", v),
-            None => std::env::remove_var("BROKRE_HOME"),
-        }
-        std::env::remove_var("BROKRE_ALLOW_FILE_KEYCHAIN");
+        with_temp_brokre_home(|| {
+            use crate::security::secret::SecretString;
+            use crate::vault::service::auto_save;
+            use crate::vault::store::VaultStore;
+            let store = VaultStore::open().unwrap();
+            auto_save(
+                &store,
+                "ssh",
+                &["u@10.0.0.150".into()],
+                SecretString::new("pw".into()),
+                "b150",
+            )
+            .unwrap();
+            crate::bastion::enable_bastion("b150").unwrap();
+            assert!(list_touches_bastion_outbound(false, true));
+            assert!(!list_touches_bastion_outbound(true, false));
+        });
     }
 }

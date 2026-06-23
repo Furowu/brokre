@@ -161,39 +161,13 @@ pub fn rotate_master_kek() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::utils::test_home::with_temp_brokre_home;
     use std::env;
-
-    fn with_temp_home<F, R>(f: F) -> R
-    where
-        F: FnOnce() -> R,
-    {
-        let tmp = tempfile::tempdir().unwrap();
-        let old_home = env::var_os("HOME");
-        let old_allow = env::var_os("BROKRE_ALLOW_FILE_KEYCHAIN");
-        let old_use = env::var_os("BROKRE_USE_KEYCHAIN");
-        env::set_var("HOME", tmp.path());
-        env::remove_var("BROKRE_ALLOW_FILE_KEYCHAIN");
-        env::remove_var("BROKRE_USE_KEYCHAIN");
-        let result = f();
-        match old_home {
-            Some(v) => env::set_var("HOME", v),
-            None => env::remove_var("HOME"),
-        }
-        match old_allow {
-            Some(v) => env::set_var("BROKRE_ALLOW_FILE_KEYCHAIN", v),
-            None => env::remove_var("BROKRE_ALLOW_FILE_KEYCHAIN"),
-        }
-        match old_use {
-            Some(v) => env::set_var("BROKRE_USE_KEYCHAIN", v),
-            None => env::remove_var("BROKRE_USE_KEYCHAIN"),
-        }
-        result
-    }
 
     #[test]
     fn file_fallback_when_explicitly_allowed() {
-        with_temp_home(|| {
-            env::set_var("BROKRE_ALLOW_FILE_KEYCHAIN", "1");
+        with_temp_brokre_home(|| {
+            std::env::set_var("BROKRE_ALLOW_FILE_KEYCHAIN", "1");
             let k1 = get_or_init_master_kek().unwrap();
             let k2 = get_or_init_master_kek().unwrap();
             assert_eq!(k1, k2);
