@@ -378,7 +378,7 @@ brokre ssh b150::db uname -a
 ```bash
 brokre bastion enable b150        # 提升 ssh 别名 b150 为堡垒
 brokre bastion set-key              # 设定堡垒解锁密钥（TTY）
-brokre bastion unlock               # 解锁出站会话（TTL，默认 10 分钟空闲）
+brokre bastion unlock               # 解锁出站会话（TTL，默认 30 分钟空闲）
 brokre list --json                  # 智能列表：可达性 + 堡垒路由别名
 brokre ssh b150::db uname -a        # 路由执行：经 b150 在远端 brokre 注入 db 凭据
 brokre bastion sync b150 --json     # 仅拉取某堡垒上的别名清单
@@ -428,7 +428,7 @@ brokre bastion strict off       # 默认 — 仅堡垒出站
 
 MCP 读取返回 `strict_mode`、`gate_mode`、`key_set`、`unlocked`。list/exec 响应含 `bastion_gate`（`required`、`unlocked_during_call`、`idle_expires_at`）。
 
-**解锁会话 TTL**（默认）：空闲 **10 分钟**（`BROKRE_BASTION_IDLE_SECS`）、最长 **30 分钟**（`BROKRE_BASTION_MAX_SECS`）。已解锁期间每次门控调用会**续期**空闲窗口。堡垒门控鉴权与 manage UI 会话空闲过期**独立**。MCP 解锁时禁用自动打开浏览器：`BROKRE_BASTION_NO_AUTO_OPEN=1`。
+**解锁会话 TTL**（默认）：空闲 **30 分钟**（`BROKRE_BASTION_IDLE_SECS`）、最长 **8 小时**（`BROKRE_BASTION_MAX_SECS`）。已解锁期间每次门控调用会**续期**空闲窗口（CLI、MCP、manage UI 共享 `~/.brokre/run/bastion_session.json`）。堡垒门控鉴权与 manage UI 会话空闲过期**独立**。MCP 解锁时禁用自动打开浏览器：`BROKRE_BASTION_NO_AUTO_OPEN=1`。
 
 ### Reveal / 删除（仅人类，需真实 TTY）
 

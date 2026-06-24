@@ -4,14 +4,13 @@ use crate::bastion::gate::{
     bastion_auth_url, fetch_unlocked_status, manage_unreachable, poll_timeout,
     refresh_manage_for_gate, BastionAuthContext,
 };
-use crate::bastion::session::{gate_required, is_unlocked, load_session};
-use crate::manage::open_browser;
+use crate::bastion::session::{gate_required, is_unlocked, load_session, touch_session};
+use crate::bastion::unlock_coord::BastionUnlockCoordinator;
 use crate::manage::server::ManageServer;
 use rmcp::model::ElicitationAction;
 use rmcp::service::ElicitationMode;
 use rmcp::{ErrorData as McpError, Peer, RoleServer};
 use serde::Serialize;
-use std::thread;
 use std::time::Duration;
 use uuid::Uuid;
 
@@ -119,7 +118,11 @@ pub async fn ensure_bastion_unlocked(
     peer: &Peer<RoleServer>,
     tool: &str,
 ) -> std::result::Result<bool, McpError> {
-    if !gate_required() || is_unlocked() {
+    if !gate_required() {
+        return Ok(false);
+    }
+    if is_unlocked() {
+        let _ = touch_session();
         return Ok(false);
     }
 
@@ -130,47 +133,52 @@ pub async fn ensure_bastion_unlocked(
     let elicitation_id = Uuid::new_v4().to_string();
     let ctx = auth_context_from_peer(peer, tool, elicitation_id);
     let url = bastion_auth_url(&server, &ctx);
+    let coordinator = BastionUnlockCoordinator::try_acquire().map_err(|e| {
+        McpError::internal_error(format!("bastion unlock coordination failed: {e}"), None)
+    })?;
+    if is_unlocked() {
+        return Ok(false);
+    }
+
     eprintln!(
         "brokre mcp: bastion auth on http://127.0.0.1:{}/bastion-auth (manage.json registry)",
         server.port
     );
 
-    let modes = peer.supported_elicitation_modes();
-    if modes.contains(&ElicitationMode::Url) {
-        let parsed = url::Url::parse(&url)
-            .map_err(|e| McpError::internal_error(format!("bastion auth url: {e}"), None))?;
-        match peer
-            .elicit_url_with_timeout(
-                elicitation_message(&ctx),
-                parsed,
-                &ctx.elicitation_id,
-                Some(poll_timeout()),
-            )
-            .await
-        {
-            Ok(ElicitationAction::Accept) if is_unlocked() => return Ok(true),
-            Ok(ElicitationAction::Accept) => {}
-            Ok(ElicitationAction::Decline) => {
-                return Err(McpError::invalid_request(
-                    "bastion unlock declined by user",
-                    None,
-                ));
+    if coordinator.is_opener() {
+        let modes = peer.supported_elicitation_modes();
+        if modes.contains(&ElicitationMode::Url) {
+            let parsed = url::Url::parse(&url)
+                .map_err(|e| McpError::internal_error(format!("bastion auth url: {e}"), None))?;
+            match peer
+                .elicit_url_with_timeout(
+                    elicitation_message(&ctx),
+                    parsed,
+                    &ctx.elicitation_id,
+                    Some(poll_timeout()),
+                )
+                .await
+            {
+                Ok(ElicitationAction::Accept) if is_unlocked() => return Ok(true),
+                Ok(ElicitationAction::Accept) => {}
+                Ok(ElicitationAction::Decline) => {
+                    return Err(McpError::invalid_request(
+                        "bastion unlock declined by user",
+                        None,
+                    ));
+                }
+                Ok(ElicitationAction::Cancel) => {
+                    return Err(McpError::invalid_request(
+                        "bastion unlock cancelled by user",
+                        None,
+                    ));
+                }
+                Err(_) => {}
             }
-            Ok(ElicitationAction::Cancel) => {
-                return Err(McpError::invalid_request(
-                    "bastion unlock cancelled by user",
-                    None,
-                ));
-            }
-            Err(_) => {}
         }
-    }
 
-    let url_clone = url.clone();
-    thread::spawn(move || {
-        thread::sleep(Duration::from_millis(200));
-        let _ = open_browser(&url_clone);
-    });
+        coordinator.maybe_open_browser(&url);
+    }
 
     poll_until_unlocked_async(&mut server, poll_timeout()).await?;
     Ok(true)
@@ -183,10 +191,14 @@ async fn poll_until_unlocked_async(
     let started = std::time::Instant::now();
     while started.elapsed() < timeout {
         if is_unlocked() {
+            let _ = touch_session();
             return Ok(());
         }
         match fetch_unlocked_status(server.port, &server.token) {
-            Ok(true) => return Ok(()),
+            Ok(true) => {
+                let _ = touch_session();
+                return Ok(());
+            }
             Ok(false) => {}
             Err(e) if manage_unreachable(&e) => {
                 *server = refresh_manage_for_gate(Some(server)).map_err(|e| {

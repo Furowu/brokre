@@ -285,7 +285,7 @@ brokre bastion unlock
 { "strict_mode": true }
 ```
 
-MCP `brokre_bastion_policy` (omit `strict_mode` to read). Unlock TTL defaults: 10 min idle / 30 min max — env `BROKRE_BASTION_IDLE_SECS`, `BROKRE_BASTION_MAX_SECS`. List/exec include `bastion_gate` in responses.
+MCP `brokre_bastion_policy` (omit `strict_mode` to read). Unlock TTL defaults: 30 min idle / 8 h max — env `BROKRE_BASTION_IDLE_SECS`, `BROKRE_BASTION_MAX_SECS`. List/exec include `bastion_gate` in responses.
 
 ### Elevated sessions (`brokre_exec_elevated`)
 
@@ -340,8 +340,8 @@ For scripts or file writes with complex quoting, use `shell_command` (ssh only).
 | `BROKRE_MCP_SESSION_MAX_SECS` | Max session lifetime (default: `1800`) |
 | `BROKRE_MCP_SESSION_CMD_TIMEOUT` | Per remote command timeout in seconds (default: `120`) |
 | `BROKRE_BASTION_NO_AUTO_OPEN` | Set to `1` to skip browser on bastion gate unlock (non-TTY) |
-| `BROKRE_BASTION_IDLE_SECS` | Bastion unlock idle timeout in seconds (default: `600`) |
-| `BROKRE_BASTION_MAX_SECS` | Bastion unlock max session lifetime in seconds (default: `1800`) |
+| `BROKRE_BASTION_IDLE_SECS` | Bastion unlock idle timeout in seconds (default: `1800`) |
+| `BROKRE_BASTION_MAX_SECS` | Bastion unlock max session lifetime in seconds (default: `28800`) |
 
 ## License
 

@@ -68,8 +68,19 @@ impl<'a> PtyCredential<'a> {
 /// that end with `password:` and would otherwise re-trigger the prompt scanner,
 /// wiping an already-captured password buffer before `PtyRunResult` is assembled.
 fn ssh_post_auth_indicated(buf: &[u8]) -> bool {
-    contains_ascii_case_insensitive(buf, b"last login")
+    if contains_ascii_case_insensitive(buf, b"last login")
         || contains_ascii_case_insensitive(buf, b"welcome to ")
+    {
+        return true;
+    }
+    // Common bash/zsh prompt after login (e.g. [root@host ~]#).
+    let lower: Vec<u8> = buf.iter().map(|b| b.to_ascii_lowercase()).collect();
+    lower.windows(3).any(|w| w == b"]# " || w == b"]$ ")
+        || lower.ends_with(b"]#")
+        || lower.ends_with(b"]#\r\n")
+        || lower.ends_with(b"]#\n")
+        || lower.ends_with(b"]# \r\n")
+        || lower.ends_with(b"]# \n")
 }
 
 fn contains_ascii_case_insensitive(haystack: &[u8], needle_lower: &[u8]) -> bool {
@@ -629,7 +640,6 @@ pub fn run(
                 Ok(0) => break,
                 Ok(n) => {
                     let data = &buf[..n];
-                    let mut suppress_auth_transition = false;
 
                     if should_scan {
                         window.extend_from_slice(data);
@@ -637,9 +647,6 @@ pub fn run(
                             let drop_n = window.len() - 2048;
                             window.drain(..drop_n);
                         }
-
-                        suppress_auth_transition =
-                            suppress_until_post_auth_a.load(Ordering::Acquire);
 
                         if track_ssh_post_auth
                             && !post_auth_a.load(Ordering::Acquire)
@@ -658,8 +665,10 @@ pub fn run(
                         arm_prompt_if_needed(&mut window);
                     }
 
-                    let suppress_this_chunk =
-                        suppress_stdout_a.swap(false, Ordering::AcqRel) || suppress_auth_transition;
+                    let suppress_auth_transition = should_scan
+                        && suppress_until_post_auth_a.load(Ordering::Acquire);
+                    let suppress_this_chunk = suppress_stdout_a.swap(false, Ordering::AcqRel)
+                        || suppress_auth_transition;
                     if !suppress_this_chunk {
                         let mut out = stdout.lock();
                         let _ = out.write_all(data);
@@ -752,6 +761,8 @@ pub fn run(
                                     } else {
                                         ssh_login_done_b.store(true, Ordering::Release);
                                     }
+                                    crate::runtime::pty_drain::ensure_pty_echo_on(fd);
+                                    suppress_until_post_auth_b.store(false, Ordering::Release);
                                     if !is_elevation {
                                         let suppress_until = suppress_until_post_auth_b.clone();
                                         thread::spawn(move || {
@@ -1118,6 +1129,11 @@ mod tests {
         let line = b"Configure your account password: ";
         assert!(!ssh_post_auth_indicated(line));
         assert!(contains_ascii_case_insensitive(line, b"password"));
+    }
+
+    #[test]
+    fn post_auth_detects_root_shell_prompt() {
+        assert!(ssh_post_auth_indicated(b"[root@sc ~]# "));
     }
 
     #[test]

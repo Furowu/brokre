@@ -44,3 +44,4 @@
 .claude/
 .kimi/
 bin/brokre
+.local-cargo-home/

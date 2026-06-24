@@ -11,6 +11,9 @@ use uuid::Uuid;
 use crate::security::hardening;
 
 /// Disable PTY echo while injecting so secrets are not reflected to the user terminal.
+///
+/// Only toggles the ECHO bit on the current termios — never restores a full stale snapshot,
+/// which could leave the remote shell with echo permanently off after SSH adjusts termios.
 #[cfg(unix)]
 fn with_pty_echo_off<T>(fd: libc::c_int, f: impl FnOnce() -> Result<T>) -> Result<T> {
     unsafe {
@@ -18,11 +21,13 @@ fn with_pty_echo_off<T>(fd: libc::c_int, f: impl FnOnce() -> Result<T>) -> Resul
         if libc::tcgetattr(fd, &mut term) != 0 {
             return f();
         }
-        let saved = term;
         term.c_lflag &= !libc::ECHO;
-        let _ = libc::tcsetattr(fd, libc::TCSANOW, &term);
+        let echo_off = libc::tcsetattr(fd, libc::TCSANOW, &term) == 0;
         let result = f();
-        let _ = libc::tcsetattr(fd, libc::TCSANOW, &saved);
+        if echo_off {
+            crate::runtime::pty_drain::ensure_pty_echo_on(fd);
+            crate::runtime::pty_drain::drain_pty_master(fd);
+        }
         result
     }
 }

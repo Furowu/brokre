@@ -6,8 +6,8 @@ use std::fs;
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
-const DEFAULT_IDLE_SECS: u64 = 600;
-const DEFAULT_MAX_SECS: u64 = 1800;
+const DEFAULT_IDLE_SECS: u64 = 1800;
+const DEFAULT_MAX_SECS: u64 = 28800;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct BastionSession {
@@ -127,4 +127,25 @@ pub fn gate_required() -> bool {
 
 pub fn ensure_gate_for_outbound() -> Result<()> {
     crate::bastion::gate::ensure_outbound_unlocked()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::utils::test_home::with_temp_brokre_home;
+    use serial_test::serial;
+
+    #[test]
+    #[serial]
+    fn touch_session_extends_idle_window() {
+        with_temp_brokre_home(|| {
+            let session = unlock_session().unwrap();
+            let first_idle = session.idle_expires_at;
+            std::thread::sleep(std::time::Duration::from_millis(20));
+            touch_session().unwrap();
+            let updated = load_session().unwrap().expect("session");
+            assert!(updated.idle_expires_at > first_idle);
+            assert_eq!(updated.expires_at, session.expires_at);
+        });
+    }
 }

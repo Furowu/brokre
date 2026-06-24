@@ -11,7 +11,7 @@ use crate::bastion::policy::strict_mode;
 use crate::bastion::registry::{is_registered_bastion, list_bastions};
 use crate::bastion::route::ROUTE_SEP;
 use crate::bastion::session::{gate_required, is_unlocked, unlock_session};
-use crate::manage::open_browser;
+use crate::bastion::unlock_coord::BastionUnlockCoordinator;
 use crate::manage::server::{
     refresh_live_manage, run_manage_server_with, IdleBehavior, ManageServer, ManageServerOptions,
 };
@@ -322,12 +322,11 @@ pub fn unlock_via_browser_poll(source: &str) -> Result<()> {
         BastionAuthContext::cli(elicitation_id)
     };
     let url = bastion_auth_url(&server, &ctx);
-    eprintln!("brokre: bastion locked — opening auth page in browser…");
-    let url_clone = url.clone();
-    thread::spawn(move || {
-        thread::sleep(Duration::from_millis(200));
-        let _ = open_browser(&url_clone);
-    });
+    let coordinator = BastionUnlockCoordinator::try_acquire()?;
+    if is_unlocked() {
+        return Ok(());
+    }
+    coordinator.maybe_open_browser(&url);
     poll_until_unlocked_sync(&mut server, poll_timeout(), source)
 }
 
@@ -339,11 +338,13 @@ pub fn poll_until_unlocked_sync(
     let started = Instant::now();
     while started.elapsed() < timeout {
         if is_unlocked() {
+            let _ = crate::bastion::session::touch_session();
             audit_bastion("bastion/unlock", source);
             return Ok(());
         }
         match fetch_unlocked_status(server.port, &server.token) {
             Ok(true) => {
+                let _ = crate::bastion::session::touch_session();
                 audit_bastion("bastion/unlock", source);
                 return Ok(());
             }

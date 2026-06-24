@@ -378,7 +378,7 @@ Promote **any** saved SSH alias whose remote host runs brokre into a bastion bro
 ```bash
 brokre bastion enable b150        # register ssh alias b150 as bastion
 brokre bastion set-key              # set bastion unlock key (TTY)
-brokre bastion unlock               # unlock outbound session (TTL, 10 min idle default)
+brokre bastion unlock               # unlock outbound session (TTL, 30 min idle default)
 brokre list --json                  # smart list: reachability + bastion-routed aliases
 brokre ssh b150::db uname -a        # routed exec via b150 remote brokre
 brokre bastion sync b150 --json     # fetch alias list from one bastion
@@ -428,7 +428,7 @@ brokre bastion strict off       # default — bastion outbound only
 
 MCP read response includes `strict_mode`, `gate_mode`, `key_set`, `unlocked`. List/exec responses include `bastion_gate` (`required`, `unlocked_during_call`, `idle_expires_at`).
 
-**Unlock session TTL** (defaults): **10 min idle** (`BROKRE_BASTION_IDLE_SECS`), **30 min max lifetime** (`BROKRE_BASTION_MAX_SECS`). Idle window **renews** on each gated call while unlocked. Bastion gate auth is independent of manage UI session idle expiry. Disable auto-open browser on MCP unlock: `BROKRE_BASTION_NO_AUTO_OPEN=1`.
+**Unlock session TTL** (defaults): **30 min idle** (`BROKRE_BASTION_IDLE_SECS`), **8 h max lifetime** (`BROKRE_BASTION_MAX_SECS`). Idle window **renews** on each gated call while unlocked (shared across CLI, MCP, and manage UI via `~/.brokre/run/bastion_session.json`). Bastion gate auth is independent of manage UI session idle expiry. Disable auto-open browser on MCP unlock: `BROKRE_BASTION_NO_AUTO_OPEN=1`.
 
 ### Reveal / delete (human-only, real TTY)
 
