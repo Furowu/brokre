@@ -34,6 +34,17 @@ pub fn should_use_pipe_mode(
         {
             return false;
         }
+        // Outer hop of bastion::inner: Mac must watch the PTY stream and inject the inner
+        // SSH login from the local vault. Pipe mode breaks nested inject and leaves commands
+        // on the bastion host (same machine-id as the hop).
+        if remote_trailing.is_some_and(crate::runtime::ssh_identity::is_routed_bastion_outer_trailing) {
+            return false;
+        }
+        // Inner brokre on a bastion (`BROKRE_ROUTED_INNER=1`) is spawned headless from the
+        // outer SSH remote command; it still needs vault/ASKPASS inject to reach the inner host.
+        if std::env::var_os("BROKRE_ROUTED_INNER").is_some() {
+            return false;
+        }
         // Remote sudo/su always needs a PTY for password injection — even when stdin
         // is a pipe (CI, IDE agents, scripts). MCP sets BROKRE_MCP_EXEC for the same rule.
         if remote_trailing.is_some_and(crate::runtime::ssh_identity::remote_command_needs_tty) {
@@ -239,6 +250,58 @@ mod tests {
         std::env::set_var("BROKRE_MCP_EXEC", "1");
         assert!(should_use_pipe_mode("ssh", true, Some(&["uptime".into()]),));
         std::env::remove_var("BROKRE_MCP_EXEC");
+    }
+
+    #[test]
+    fn mcp_exec_pty_mode_for_routed_bastion_outer_hop() {
+        std::env::set_var("BROKRE_MCP_EXEC", "1");
+        let token = crate::utils::paths::remote_brokre_shell_token().to_string();
+        let trailing = vec![
+            token,
+            "ssh".into(),
+            "db".into(),
+            "sh".into(),
+            "-c".into(),
+            "hostname".into(),
+        ];
+        assert!(!should_use_pipe_mode("ssh", true, Some(&trailing)));
+        std::env::remove_var("BROKRE_MCP_EXEC");
+    }
+
+    #[test]
+    fn mcp_exec_pipe_mode_for_manual_remote_ssh_chain() {
+        std::env::set_var("BROKRE_MCP_EXEC", "1");
+        std::env::remove_var(crate::bastion::route::ROUTED_INNER_ALIAS_ENV);
+        let trailing = vec![
+            "ssh".into(),
+            "-tt".into(),
+            "root@10.0.0.195".into(),
+            "hostname".into(),
+        ];
+        assert!(should_use_pipe_mode("ssh", true, Some(&trailing)));
+        std::env::remove_var("BROKRE_MCP_EXEC");
+    }
+
+    #[test]
+    fn mcp_exec_pty_mode_for_routed_direct_inner() {
+        std::env::set_var("BROKRE_MCP_EXEC", "1");
+        std::env::set_var(crate::bastion::route::ROUTED_INNER_ALIAS_ENV, "db");
+        let trailing = vec![
+            "ssh".into(),
+            "-tt".into(),
+            "root@10.0.0.195".into(),
+            "hostname".into(),
+        ];
+        assert!(!should_use_pipe_mode("ssh", true, Some(&trailing)));
+        std::env::remove_var("BROKRE_MCP_EXEC");
+        std::env::remove_var(crate::bastion::route::ROUTED_INNER_ALIAS_ENV);
+    }
+
+    #[test]
+    fn routed_inner_forces_pty_even_when_stdin_is_pipe() {
+        std::env::set_var("BROKRE_ROUTED_INNER", "1");
+        assert!(!should_use_pipe_mode("ssh", true, Some(&["hostname".into()])));
+        std::env::remove_var("BROKRE_ROUTED_INNER");
     }
 
     #[test]

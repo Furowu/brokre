@@ -1,6 +1,5 @@
-use crate::bastion::gate::needs_unlock_for_exec;
+use crate::bastion::gate::prepare_outbound_gate_for_exec;
 use crate::bastion::route::{extend_bastion_path, shell_join, visited_bastions, BASTION_PATH_ENV};
-use crate::bastion::session::ensure_gate_for_outbound;
 use crate::utils::errors::{BrokreError, Result};
 use crate::utils::paths::remote_brokre_shell_token;
 use std::process::{Command, Stdio};
@@ -11,9 +10,7 @@ pub fn run_on_bastion(
     bastion_alias: &str,
     remote_args: &[String],
 ) -> Result<(i32, String, String)> {
-    if needs_unlock_for_exec("ssh", &[bastion_alias.to_string()]) {
-        ensure_gate_for_outbound()?;
-    }
+    prepare_outbound_gate_for_exec("ssh", &[bastion_alias.to_string()])?;
 
     let visited = visited_bastions();
     if visited.iter().any(|v| v == bastion_alias) {

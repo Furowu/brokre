@@ -1,8 +1,7 @@
-use crate::bastion::gate::needs_unlock_for_list;
+use crate::bastion::gate::prepare_outbound_gate_for_list;
 use crate::bastion::model::{BastionListItem, ListItemKind};
 use crate::bastion::probe::{probe_items, ProbeOptions};
 use crate::bastion::registry::{list_bastions, max_bastions};
-use crate::bastion::session::ensure_gate_for_outbound;
 use crate::bastion::transport::run_remote_list_json_probe;
 use crate::utils::errors::{BrokreError, Result};
 use crate::vault::model::SecretRecord;
@@ -16,9 +15,7 @@ pub fn discover_remote_items(opts: &DiscoverOptions) -> Result<Vec<BastionListIt
     if !opts.include_bastions {
         return Ok(vec![]);
     }
-    if needs_unlock_for_list(opts.probe, opts.include_bastions) {
-        ensure_gate_for_outbound()?;
-    }
+    prepare_outbound_gate_for_list(opts.probe, opts.include_bastions)?;
     let bastions = list_bastions()?;
     if bastions.is_empty() {
         return Ok(vec![]);

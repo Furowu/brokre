@@ -13,8 +13,11 @@
 //! its own error code to mask a real connection / auth failure.
 
 use crate::audit::logger::{append, exec_audit_source, redact_args, AuditEvent};
-use crate::bastion::gate::{ensure_outbound_unlocked, needs_unlock_for_exec};
-use crate::bastion::route::{build_routed_local_argv, parse_route, BastionRoute};
+use crate::bastion::gate::prepare_outbound_gate_for_exec;
+use crate::bastion::route::{
+    build_routed_direct_inner_argv, build_routed_local_argv, parse_route, BastionRoute,
+    DIRECT_INNER_ENV, ROUTED_INNER_ALIAS_ENV,
+};
 use crate::runtime::prompts::patterns_for;
 use crate::runtime::pty::PtyCredential;
 use crate::security::secret::SecretString;
@@ -203,13 +206,45 @@ fn exec_routed(r: RoutedExec) -> Result<()> {
     let mut gate_args = r.leading.clone();
     gate_args.push(r.route.addr.clone());
     gate_args.extend(r.trailing.clone());
-    if needs_unlock_for_exec(&r.profile, &gate_args) {
-        ensure_outbound_unlocked()?;
-    }
-    let mut argv = build_routed_local_argv(&r.profile, &r.route, &r.trailing);
+    prepare_outbound_gate_for_exec(&r.profile, &gate_args)?;
+    let store = VaultStore::open()?;
+    let inner_record = resolve_routed_inner_record(&store, &r.profile, &r.route)?;
+    let direct_inner = std::env::var_os(DIRECT_INNER_ENV).is_some();
+    let mut argv = if direct_inner {
+        if let Some((_, ref target, ref inner_name)) = inner_record {
+            std::env::set_var(ROUTED_INNER_ALIAS_ENV, inner_name);
+            build_routed_direct_inner_argv(&r.route, target, &r.trailing)
+        } else {
+            std::env::remove_var(ROUTED_INNER_ALIAS_ENV);
+            build_routed_local_argv(&r.profile, &r.route, &r.trailing)
+        }
+    } else {
+        std::env::remove_var(ROUTED_INNER_ALIAS_ENV);
+        build_routed_local_argv(&r.profile, &r.route, &r.trailing)
+    };
     let mut full = r.leading;
     full.append(&mut argv);
     run("ssh".to_string(), full)
+}
+
+/// Mac-vault inner target for a routed exec (`openssh` connection token + alias name).
+fn resolve_routed_inner_record(
+    store: &VaultStore,
+    profile: &str,
+    route: &BastionRoute,
+) -> Result<Option<(Uuid, String, String)>> {
+    let routed_name = format!("{}::{}", route.first_hop(), route.inner);
+    for lp in lookup_profiles(profile) {
+        let rec = store
+            .get(lp, &routed_name)?
+            .or_else(|| store.get(lp, &route.inner).ok().flatten());
+        if let Some(rec) = rec {
+            let target = crate::runtime::ssh_identity::openssh_connection_target(&rec.saved_args)
+                .unwrap_or_else(|| route.inner.clone());
+            return Ok(Some((rec.id, target, route.inner.clone())));
+        }
+    }
+    Ok(None)
 }
 
 /// Resolve a saved record from CLI args. Returns the record plus argv fragments
@@ -301,9 +336,7 @@ fn exec_saved(
         gate_args.push(t.clone());
     }
     gate_args.extend(resolved.trailing.clone());
-    if needs_unlock_for_exec(profile, &gate_args) {
-        ensure_outbound_unlocked()?;
-    }
+    prepare_outbound_gate_for_exec(profile, &gate_args)?;
 
     // Compose final argv: saved_args for same-profile replay; cross-profile borrows password only.
     let mut argv = resolved.compose_argv(&rec, profile);
@@ -344,35 +377,35 @@ fn exec_saved(
                 .any(|w| w[0] == "sudo" && w[1] == "-i");
     #[cfg(unix)]
     let is_bastion_outer_hop =
-        crate::runtime::ssh_identity::is_routed_bastion_trailing(&resolved.trailing);
+        crate::runtime::ssh_identity::is_routed_bastion_outer_trailing(&resolved.trailing);
     #[cfg(unix)]
     let routed_inner_passive = std::env::var_os("BROKRE_ROUTED_INNER").is_some();
     #[cfg(unix)]
     let inner_route = if is_bastion_outer_hop {
-        crate::runtime::ssh_identity::routed_bastion_inner_alias(&resolved.trailing).and_then(
-            |inner_name| {
+        let inner_name = std::env::var(ROUTED_INNER_ALIAS_ENV)
+            .ok()
+            .or_else(|| {
+                crate::runtime::ssh_identity::routed_bastion_inner_alias(&resolved.trailing)
+                    .map(|s| s.to_string())
+            });
+        inner_name.and_then(|inner_name| {
                 let routed_name = format!("{}::{}", rec.name, inner_name);
                 lookup_profiles(profile).into_iter().find_map(|lp| {
                     store
                         .get(lp, &routed_name)
                         .ok()
                         .flatten()
-                        .or_else(|| store.get(lp, inner_name).ok().flatten())
+                        .or_else(|| store.get(lp, &inner_name).ok().flatten())
                         .map(|r| {
-                            let hint = r
-                                .host_alias
-                                .clone()
-                                .or_else(|| {
-                                    crate::runtime::ssh_identity::openssh_connection_target(
-                                        &r.saved_args,
-                                    )
-                                })
-                                .unwrap_or_else(|| inner_name.to_string());
+                            let hint = crate::runtime::ssh_identity::openssh_connection_target(
+                                &r.saved_args,
+                            )
+                            .or(r.host_alias.clone())
+                            .unwrap_or_else(|| inner_name.to_string());
                             (r.id, hint)
                         })
                 })
-            },
-        )
+            })
     } else {
         None
     };
@@ -476,9 +509,7 @@ fn exec_fresh(
         );
     }
 
-    if needs_unlock_for_exec(&profile, &args) {
-        ensure_outbound_unlocked()?;
-    }
+    prepare_outbound_gate_for_exec(&profile, &args)?;
 
     // Pre-collect alias so the user doesn't forget to save after the session ends.
     let pre_alias = if !args.is_empty() && crate::security::tty::stdin_is_real_tty() {

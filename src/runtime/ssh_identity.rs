@@ -199,6 +199,54 @@ pub fn is_routed_bastion_trailing(trailing: &[String]) -> bool {
         .is_some_and(|s| crate::utils::paths::remote_shell_token_passthrough(s))
 }
 
+/// Direct-inner routing is active (`exec_routed` set [`ROUTED_INNER_ALIAS_ENV`]).
+pub fn is_routed_direct_inner_active() -> bool {
+    std::env::var_os(crate::bastion::route::ROUTED_INNER_ALIAS_ENV).is_some()
+}
+
+/// Index of the connection target in `[ssh, (-tt)?, (-o opt)*, target, …]`.
+fn direct_inner_ssh_target_index(trailing: &[String]) -> Option<usize> {
+    if trailing.first().map(String::as_str) != Some("ssh") {
+        return None;
+    }
+    let mut i = 1usize;
+    while i < trailing.len() {
+        match trailing.get(i).map(String::as_str) {
+            Some("-t") | Some("-tt") => i += 1,
+            Some("-o") if i + 1 < trailing.len() => i += 2,
+            Some(t) if !t.starts_with('-') => return Some(i),
+            _ => return None,
+        }
+    }
+    None
+}
+
+/// True when the bastion hop runs plain `ssh <inner_target> …` on the remote host (no remote brokre).
+pub fn is_direct_inner_openssh_trailing(trailing: &[String]) -> bool {
+    let i = match direct_inner_ssh_target_index(trailing) {
+        Some(i) => i,
+        None => return false,
+    };
+    let Some(target) = trailing.get(i).map(String::as_str) else {
+        return false;
+    };
+    target.contains('@')
+        || target.contains('.')
+        || target
+            .chars()
+            .all(|c| c.is_ascii_digit() || matches!(c, '.' | ':'))
+}
+
+/// `ssh <inner_target> …` produced by [`exec_routed`] direct-inner mode (not manual remote `ssh`).
+pub fn is_routed_direct_inner_trailing(trailing: &[String]) -> bool {
+    is_routed_direct_inner_active() && is_direct_inner_openssh_trailing(trailing)
+}
+
+/// Outer bastion hop: remote brokre chain or routed direct inner OpenSSH.
+pub fn is_routed_bastion_outer_trailing(trailing: &[String]) -> bool {
+    is_routed_bastion_trailing(trailing) || is_routed_direct_inner_trailing(trailing)
+}
+
 /// Connection target alias in `bastion::inner` routed argv (`[token, ssh, (-tt)?, inner, …]`).
 pub fn routed_bastion_inner_alias(trailing: &[String]) -> Option<&str> {
     if !is_routed_bastion_trailing(trailing) {
@@ -224,26 +272,30 @@ pub fn routed_bastion_inner_alias(trailing: &[String]) -> Option<&str> {
 
 /// Skip `[token, ssh, (-tt)?, inner]` and return the user command suffix.
 pub fn routed_bastion_user_trailing(trailing: &[String]) -> Option<&[String]> {
-    if !is_routed_bastion_trailing(trailing) {
-        return None;
-    }
-    let mut i = 1usize;
-    if trailing.get(i).map(String::as_str) != Some("ssh") {
-        return None;
-    }
-    i += 1;
-    if matches!(
-        trailing.get(i).map(String::as_str),
-        Some("-t") | Some("-tt")
-    ) {
+    if is_routed_bastion_trailing(trailing) {
+        let mut i = 1usize;
+        if trailing.get(i).map(String::as_str) != Some("ssh") {
+            return None;
+        }
         i += 1;
+        if matches!(
+            trailing.get(i).map(String::as_str),
+            Some("-t") | Some("-tt")
+        ) {
+            i += 1;
+        }
+        let inner = trailing.get(i)?;
+        if inner.starts_with('-') {
+            return None;
+        }
+        i += 1;
+        return Some(&trailing[i..]);
     }
-    let inner = trailing.get(i)?;
-    if inner.starts_with('-') {
-        return None;
+    if is_routed_direct_inner_trailing(trailing) {
+        let i = direct_inner_ssh_target_index(trailing)?;
+        return Some(&trailing[i + 1..]);
     }
-    i += 1;
-    Some(&trailing[i..])
+    None
 }
 
 /// Interactive `brokre ssh bastion::inner` (no user command after the inner alias).
@@ -710,5 +762,45 @@ mod tests {
                 .map(String::from)
                 .collect::<Vec<_>>()
         );
+    }
+
+    #[test]
+    fn direct_inner_openssh_trailing_detects_user_at_host() {
+        let t = vec![
+            "ssh".into(),
+            "-tt".into(),
+            "root@10.0.0.195".into(),
+            "uname".into(),
+            "-a".into(),
+        ];
+        assert!(is_direct_inner_openssh_trailing(&t));
+        std::env::set_var(crate::bastion::route::ROUTED_INNER_ALIAS_ENV, "db");
+        assert!(is_routed_bastion_outer_trailing(&t));
+        assert_eq!(routed_bastion_user_trailing(&t), Some(&t[2..]));
+        std::env::remove_var(crate::bastion::route::ROUTED_INNER_ALIAS_ENV);
+    }
+
+    #[test]
+    fn routed_outer_trailing_requires_direct_inner_env() {
+        let t = vec![
+            "ssh".into(),
+            "-tt".into(),
+            "root@10.0.0.195".into(),
+            "uname".into(),
+            "-a".into(),
+        ];
+        std::env::remove_var(crate::bastion::route::ROUTED_INNER_ALIAS_ENV);
+        assert!(is_direct_inner_openssh_trailing(&t));
+        assert!(!is_routed_bastion_outer_trailing(&t));
+        std::env::set_var(crate::bastion::route::ROUTED_INNER_ALIAS_ENV, "db");
+        assert!(is_routed_bastion_outer_trailing(&t));
+        assert_eq!(routed_bastion_user_trailing(&t), Some(&t[2..]));
+        std::env::remove_var(crate::bastion::route::ROUTED_INNER_ALIAS_ENV);
+    }
+
+    #[test]
+    fn direct_inner_openssh_trailing_rejects_ssh_flags() {
+        let t = vec!["ssh".into(), "-l".into(), "root".into()];
+        assert!(!is_direct_inner_openssh_trailing(&t));
     }
 }

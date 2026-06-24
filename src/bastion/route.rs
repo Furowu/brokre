@@ -5,6 +5,10 @@ use serde::{Deserialize, Serialize};
 
 pub const ROUTE_SEP: &str = "::";
 pub const BASTION_PATH_ENV: &str = "BROKRE_BASTION_PATH";
+/// Set during `exec_routed` direct-inner mode so outer `exec_saved` can resolve the inner vault.
+pub const ROUTED_INNER_ALIAS_ENV: &str = "BROKRE_ROUTED_INNER_ALIAS";
+/// Opt in to `ssh hop ssh -tt user@inner …` from the Mac vault (experimental).
+pub const DIRECT_INNER_ENV: &str = "BROKRE_DIRECT_INNER";
 pub const DEFAULT_MAX_DEPTH: usize = 2;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -172,6 +176,35 @@ pub fn build_routed_local_argv(
     }
 }
 
+/// Build local `brokre ssh <first_hop> ssh <inner_target> …` when the Mac vault owns the inner hop.
+///
+/// Avoids relying on a (possibly stale) `~/.brokre/bin/brokre` on the bastion. Password injection
+/// for both hops is handled on the Mac via PTY (`bastion_outer_hop` + `inner_vault_record`).
+pub fn build_routed_direct_inner_argv(
+    route: &BastionRoute,
+    inner_target: &str,
+    trailing: &[String],
+) -> Vec<String> {
+    let remote_cmd: Vec<String> = std::iter::once("ssh".into())
+        .chain(std::iter::once("-tt".into()))
+        .chain(std::iter::once(inner_target.to_string()))
+        .chain(trailing.iter().cloned())
+        .collect();
+
+    match route.hops.len() {
+        1 => {
+            let mut args = vec![route.hops[0].clone()];
+            args.extend(remote_cmd);
+            args
+        }
+        _ => {
+            let mut args = vec![route.hops[0].clone()];
+            args.push(shell_join(&remote_cmd));
+            args
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -306,6 +339,31 @@ mod tests {
         assert!(
             joined.contains("echo a > /tmp/f"),
             "script should survive shell_join: {joined}"
+        );
+    }
+
+    #[test]
+    fn build_direct_inner_single_hop_argv() {
+        let route = BastionRoute {
+            hops: vec!["b150".into()],
+            inner: "db".into(),
+            addr: "b150::db".into(),
+        };
+        let args = build_routed_direct_inner_argv(
+            &route,
+            "root@10.0.0.195",
+            &["uname".into(), "-a".into()],
+        );
+        assert_eq!(
+            args,
+            vec![
+                "b150",
+                "ssh",
+                "-tt",
+                "root@10.0.0.195",
+                "uname",
+                "-a"
+            ]
         );
     }
 

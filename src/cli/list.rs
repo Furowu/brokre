@@ -1,4 +1,4 @@
-use crate::bastion::gate::{ensure_outbound_unlocked, needs_unlock_for_list};
+use crate::bastion::gate::prepare_outbound_gate_for_list;
 use crate::bastion::list_policy::{
     collect_list_items, format_status_display, resolve_list_options, RawListOptions,
 };
@@ -48,9 +48,7 @@ pub fn run(opts: ListOptions) -> Result<()> {
         show_all: opts.show_all,
         for_mcp: false,
     });
-    if needs_unlock_for_list(effective.probe, effective.include_bastions) {
-        ensure_outbound_unlocked()?;
-    }
+    prepare_outbound_gate_for_list(effective.probe, effective.include_bastions)?;
     let items = collect_list_items(records, &effective)?;
 
     if opts.json {

@@ -112,6 +112,22 @@ pub fn needs_unlock_for_list(probe: bool, include_bastions: bool) -> bool {
     gate_required() && !is_unlocked() && gate_applies_to_list(probe, include_bastions)
 }
 
+/// Gate + sliding idle renewal for bastion-touching exec (unlock if needed, else touch).
+pub fn prepare_outbound_gate_for_exec(profile: &str, args: &[String]) -> Result<()> {
+    if gate_required() && gate_applies_to_exec(profile, args) {
+        ensure_outbound_unlocked()?;
+    }
+    Ok(())
+}
+
+/// Gate + sliding idle renewal for bastion-touching list (unlock if needed, else touch).
+pub fn prepare_outbound_gate_for_list(probe: bool, include_bastions: bool) -> Result<()> {
+    if gate_required() && gate_applies_to_list(probe, include_bastions) {
+        ensure_outbound_unlocked()?;
+    }
+    Ok(())
+}
+
 /// Context shown on the bastion auth page so the user knows who requested unlock.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct BastionAuthContext {
@@ -506,6 +522,26 @@ mod tests {
             crate::bastion::enable_bastion("b150").unwrap();
             assert!(list_touches_bastion_outbound(false, true));
             assert!(!list_touches_bastion_outbound(true, false));
+        });
+    }
+
+    #[test]
+    #[serial]
+    fn prepare_outbound_gate_touches_idle_when_already_unlocked() {
+        with_temp_brokre_home(|| {
+            use crate::security::secret::SecretString;
+            crate::bastion::key::set_bastion_key(&SecretString::new("gate-key".into())).unwrap();
+            crate::bastion::policy::set_strict_mode(true).unwrap();
+            let session = crate::bastion::session::unlock_session().unwrap();
+            let first_idle = session.idle_expires_at;
+            std::thread::sleep(std::time::Duration::from_millis(25));
+            prepare_outbound_gate_for_list(false, false).unwrap();
+            let updated = crate::bastion::session::load_session()
+                .unwrap()
+                .expect("session");
+            assert!(updated.idle_expires_at > first_idle);
+            assert!(!needs_unlock_for_list(false, false));
+            crate::bastion::policy::set_strict_mode(false).unwrap();
         });
     }
 }

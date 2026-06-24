@@ -6,8 +6,9 @@
 use crate::audit::query::{list, verify_with_stats, AuditQuery};
 use crate::bastion::list_policy::{collect_list_items, resolve_list_options, RawListOptions};
 use crate::bastion::mcp_gate::{
-    ensure_bastion_unlocked, needs_unlock_for_exec, needs_unlock_for_list, BastionGateInfo,
+    ensure_bastion_unlocked, gate_applies_for_exec, gate_applies_for_list, BastionGateInfo,
 };
+use crate::bastion::session::gate_required;
 use crate::manage::{
     open_browser, refresh_live_manage, run_manage_server_with, IdleBehavior, ManageServer,
     ManageServerOptions,
@@ -38,8 +39,12 @@ brokre is an AI-safe credential broker. Rules for agents:\n\
 3. Cross-network: when local LAN aliases are unreachable, brokre_list hides them and shows routed entries \
 (e.g. b150::db with access=via_b150, route=[\"b150\"]). Prefer addr containing `::` with availability=available.\n\
 4. Exec routed aliases: brokre_exec binary=ssh, args=[\"b150::db\", \"uname\", \"-a\"] — credentials inject on the bastion.\n\
-5. Non-privileged remote commands — brokre_exec: binary=ssh, args=[\"alias\", \"uname\", \"-a\"]. \
-Args are argv tokens after the alias (NOT one shell string). Example: args=[\"prod\", \"docker\", \"ps\"].\n\
+5. Argv layout for brokre_exec args: [client_flags…, alias, remote_command…]. \
+The alias is the first token that does not start with `-` (connector flags may precede it). \
+Connector flags (ssh -v, mysql -e, …) go BEFORE the alias; remote command tokens go AFTER the alias. \
+Each flag is its own string — never one shell string: [\"prod\",\"uname\",\"-a\"] not [\"prod\",\"uname -a\"]. \
+Wrong: [\"prod\",\"-v\"] (treats -v as remote command). Right: [\"-v\",\"prod\",\"uname\",\"-a\"]. \
+Example: args=[\"prod\", \"docker\", \"ps\"].\n\
 5b. Writing remote scripts/files — brokre_exec: binary=ssh, args=[\"alias\"], shell_command=\"cat > /path <<'EOF'\\n...\\nEOF\". \
 Do NOT put sh -c '...' in args or split printf/redirects across argv tokens. For privileged paths use brokre_exec_elevated.command.\n\
 6. Privileged remote commands (sudo/su) — prefer brokre_exec_elevated:\n\
@@ -61,6 +66,7 @@ When gate applies, tell the user to complete bastion unlock in the browser if `b
    - Always prefix brokre — NEVER bare `ssh prod` / `mysql prod` (no vault injection).\n\
    - brokre_list ≈ `brokre list --json`\n\
    - brokre_exec binary=ssh, args=[\"prod\",\"uname\",\"-a\"] ≈ `brokre ssh prod uname -a`\n\
+   - brokre_exec binary=ssh, args=[\"-v\",\"prod\",\"uname\",\"-a\"] ≈ `brokre ssh -v prod uname -a` (client flags before alias)\n\
    - brokre_exec binary=mysql, args=[\"prod-db\",\"-e\",\"SHOW TABLES\"] ≈ `brokre mysql prod-db -e SHOW TABLES`\n\
    - shell_command=\"…\" ≈ `brokre ssh <alias> sh -c '…'` (script as single -c argument)\n\
    - brokre_setup ≈ `brokre manage --open` (human adds credentials; no password in MCP response)\n\
@@ -77,7 +83,7 @@ pub struct ListRequest {
     /// Include aliases discovered on registered bastions (auto-enabled when bastions are registered).
     #[serde(default)]
     pub include_bastions: bool,
-    /// Include unreachable aliases (default: hidden when probing).
+    /// Include unreachable aliases (default: hidden when probing). Set `all: true` here — not CLI `-a` (terminal: `brokre list --all`).
     #[serde(default)]
     pub all: bool,
 }
@@ -86,10 +92,12 @@ pub struct ListRequest {
 pub struct ExecRequest {
     /// CLI binary / connector (ssh, mysql, psql, …).
     pub binary: String,
-    /// Arguments after the binary. First positional must be a saved alias. Remaining tokens are the remote argv \
-    /// (split form): [\"prod\", \"df\", \"-h\"] not a single shell string. For sudo use brokre_exec_elevated or \
-    /// [\"alias\", \"sudo\", \"systemctl\", \"status\", \"nginx\"]. When using shell_command, args should contain \
-    /// only flags and the alias (e.g. [\"prod\"]).
+    /// Args after the binary: `[client_flags…, alias, remote_command…]`. The alias is the first token that does \
+    /// not start with `-` (connector flags may precede it, e.g. `[\"-v\",\"prod\",\"uname\",\"-a\"]`). Connector \
+    /// flags (`ssh -v`, `mysql -e`, …) before the alias; remote argv after the alias. Each flag is its own token \
+    /// — `[\"prod\",\"uname\",\"-a\"]` not `[\"prod\",\"uname -a\"]`. Wrong: `[\"prod\",\"-v\"]` sends `-v` as a \
+    /// remote command. For sudo use brokre_exec_elevated or `[\"alias\",\"sudo\",…]`. With shell_command, args \
+    /// should be connector flags + alias only (e.g. `[\"-v\",\"prod\"]`).
     #[serde(default)]
     pub args: Vec<String>,
     /// SSH only: run `sh -c <this>` on the remote host after the alias. Mutually exclusive with trailing argv \
@@ -249,7 +257,7 @@ impl BrokreMcp {
             for_mcp: true,
         });
         let mut unlocked_during_call = false;
-        if needs_unlock_for_list(effective.probe, effective.include_bastions) {
+        if gate_required() && gate_applies_for_list(effective.probe, effective.include_bastions) {
             let server = self.ensure_manage_server().map_err(mcp_err)?;
             unlocked_during_call = ensure_bastion_unlocked(&server, &peer, "brokre_list").await?;
         }
@@ -273,8 +281,9 @@ impl BrokreMcp {
 
     #[tool(
         description = "Run a CLI through brokre with saved credentials (ssh/mysql/psql/…). \
-Requires a saved alias as the first positional arg in args. Args are argv tokens, not a shell string: \
-use [\"prod\",\"uptime\"] not [\"prod\",\"uptime\"]. For remote scripts/files with complex quoting use \
+Argv layout in args: [client_flags…, alias, remote_command…] — alias is the first non-flag token; connector flags \
+before alias, remote argv after. Each flag is its own string: [\"prod\",\"uname\",\"-a\"] not [\"prod\",\"uname -a\"]; \
+wrong: [\"prod\",\"-v\"] (remote command). Example: [\"-v\",\"prod\",\"uptime\"]. For remote scripts/files use \
 shell_command (ssh only): args=[\"prod\"], shell_command=\"cat > /path <<'EOF'\\n...\\nEOF\". \
 For remote sudo/su prefer brokre_exec_elevated; \
 shortcut: binary=ssh, args=[\"alias\",\"sudo\",\"cmd\",...] or args=[\"alias\",\"sudo\",\"-i\",\"whoami\"]. \
@@ -293,7 +302,7 @@ Supports bastion routes like b150::db. Response includes `bastion_gate` unlock m
         )
         .map_err(mcp_err)?;
         let mut unlocked_during_call = false;
-        if needs_unlock_for_exec(&req.binary, &args) {
+        if gate_required() && gate_applies_for_exec(&req.binary, &args) {
             let server = self.ensure_manage_server().map_err(mcp_err)?;
             unlocked_during_call = ensure_bastion_unlocked(&server, &peer, "brokre_exec").await?;
         }
@@ -332,7 +341,7 @@ Reuses a persistent elevated shell by default. BROKRE_MCP_SESSION=0 disables reu
     ) -> std::result::Result<CallToolResult, McpError> {
         let source_env = mcp_source_env(&peer, "brokre_exec_elevated");
         let mut unlocked_during_call = false;
-        if needs_unlock_for_exec("ssh", std::slice::from_ref(&req.alias)) {
+        if gate_required() && gate_applies_for_exec("ssh", std::slice::from_ref(&req.alias)) {
             let server = self.ensure_manage_server().map_err(mcp_err)?;
             unlocked_during_call =
                 ensure_bastion_unlocked(&server, &peer, "brokre_exec_elevated").await?;

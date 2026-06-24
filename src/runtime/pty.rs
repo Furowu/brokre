@@ -158,11 +158,14 @@ pub(crate) fn should_arm_vault_inject(
     }
     if options.bastion_outer_hop {
         if prompt.is_ssh_login_prompt {
-            if prompt.is_inner_hop_ssh_prompt {
-                return options.inner_vault_record.is_some() && !prompt.inner_ssh_login_done;
-            }
-            // Routed inner hop pending — do not inject bastion cred into a partial/generic prompt.
             if options.inner_vault_record.is_some() {
+                let second_ssh_hop = prompt.ssh_login_done && !prompt.inner_ssh_login_done;
+                if prompt.is_inner_hop_ssh_prompt || second_ssh_hop {
+                    return !prompt.inner_ssh_login_done;
+                }
+                if !prompt.ssh_login_done {
+                    return true;
+                }
                 return false;
             }
             if !prompt.ssh_login_done {
@@ -171,13 +174,22 @@ pub(crate) fn should_arm_vault_inject(
             return false;
         }
         if options.inner_vault_record.is_some() && prompt.is_elevation_prompt {
-            // Nested sudo/su runs on the bastion-side brokre with local vault inject.
+            // After direct-inner SSH login, sudo/su on the inner host uses the Mac inner vault.
+            if prompt.inner_ssh_login_done {
+                if prompt.elevation_attempts == 0 {
+                    return true;
+                }
+                return prompt.auth_failed_visible && prompt.elevation_attempts == 1;
+            }
+            // Remote brokre on the bastion handles nested elevation locally.
             return false;
         }
         return false;
     }
+    // Headless inner brokre on the bastion (`BROKRE_ROUTED_INNER=1`): inject SSH login from
+    // the bastion vault. Mac outer-hop PTY inject is a separate path on the client.
     if options.passive_inner_ssh && prompt.is_ssh_login_prompt {
-        return false;
+        return !prompt.ssh_login_done;
     }
     if prompt.is_elevation_prompt {
         if prompt.elevation_attempts == 0 {
@@ -463,6 +475,7 @@ pub fn run(
     let passive_inner_ssh = options.passive_inner_ssh;
     let inner_vault_record = options.inner_vault_record;
     let inner_host_hint = options.inner_host_hint.clone();
+    let dual_ssh_inject = options.bastion_outer_hop && options.inner_vault_record.is_some();
 
     let should_scan = !options.inject_disabled && cred.should_scan(stdin_is_tty);
     let preset_some = preset_inject && !options.inject_disabled;
@@ -563,6 +576,13 @@ pub fn run(
                                 .unwrap_or(true);
                             let allow_elevation_reinject =
                                 already && field == "password" && is_elevation_prompt;
+                            let second_ssh_hop = is_ssh_login_prompt
+                                && ssh_done
+                                && !inner_ssh_done;
+                            let allow_bastion_second_ssh = bastion_outer_a
+                                && inner_vault_record_a.is_some()
+                                && second_ssh_hop
+                                && field == "password";
                             if should_arm_vault_inject(
                                 &PtyRunOptions {
                                     bastion_outer_hop: bastion_outer_a,
@@ -582,11 +602,13 @@ pub fn run(
                                     elevation_attempts: elev_attempts,
                                     auth_failed_visible: auth_failed,
                                 },
-                            ) && (!already || allow_elevation_reinject)
+                            ) && (!already || allow_elevation_reinject || allow_bastion_second_ssh)
                             {
                                 let use_inner = bastion_outer_a
                                     && inner_vault_record_a.is_some()
-                                    && (is_inner_hop_ssh || is_elevation_prompt);
+                                    && (is_inner_hop_ssh
+                                        || second_ssh_hop
+                                        || (is_elevation_prompt && inner_ssh_done));
                                 if let Ok(mut rid) = pending_record_id_a.lock() {
                                     *rid = if use_inner {
                                         inner_vault_record_a
@@ -725,6 +747,7 @@ pub fn run(
     let suppress_stdout_b = suppress_stdout.clone();
     let suppress_until_post_auth_b = suppress_until_post_auth.clone();
     let bastion_outer_b = bastion_outer_hop;
+    let dual_ssh_inject_b = dual_ssh_inject;
     let rescan_after_inject_b = rescan_after_inject.clone();
     let injector = thread::spawn(move || {
         while !done_b.load(Ordering::Acquire) {
@@ -778,7 +801,11 @@ pub fn run(
                                     suppress_stdout_b.store(false, Ordering::Release);
                                     rescan_after_inject_b.store(true, Ordering::Release);
                                     let n = inject_done_count_b.fetch_add(1, Ordering::AcqRel) + 1;
-                                    if n >= inject_fields_b.len() {
+                                    let inner_done =
+                                        inner_ssh_login_done_b.load(Ordering::Acquire);
+                                    let dual_hop_pending =
+                                        dual_ssh_inject_b && !inner_done;
+                                    if !dual_hop_pending && n >= inject_fields_b.len() {
                                         inject_completed_b.store(true, Ordering::Release);
                                     }
                                     stdin_forward_b.store(true, Ordering::Release);
@@ -1052,27 +1079,43 @@ mod tests {
         };
         assert!(should_arm_vault_inject(
             &outer_inner,
+            &pw_prompt(false, true, false, false, false, 0, false),
+        ));
+        assert!(should_arm_vault_inject(
+            &outer_inner,
             &pw_prompt(false, true, true, false, false, 0, false),
+        ));
+        assert!(should_arm_vault_inject(
+            &outer_inner,
+            &pw_prompt(false, true, false, true, false, 0, false),
         ));
         assert!(!should_arm_vault_inject(
             &outer_inner,
-            &pw_prompt(false, true, false, false, false, 0, false),
+            &pw_prompt(false, true, false, true, true, 0, false),
         ));
         assert!(!should_arm_vault_inject(
             &outer_inner,
             &pw_prompt(true, false, false, true, false, 0, false),
         ));
+        assert!(should_arm_vault_inject(
+            &outer_inner,
+            &pw_prompt(true, false, false, true, true, 0, false),
+        ));
     }
 
     #[test]
-    fn passive_inner_skips_ssh_but_allows_elevation() {
+    fn passive_inner_injects_headless_ssh_from_bastion_vault() {
         let inner = PtyRunOptions {
             passive_inner_ssh: true,
             ..Default::default()
         };
+        assert!(should_arm_vault_inject(
+            &inner,
+            &pw_prompt(false, true, false, false, false, 0, false),
+        ));
         assert!(!should_arm_vault_inject(
             &inner,
-            &pw_prompt(false, true, true, false, false, 0, false),
+            &pw_prompt(false, true, false, true, false, 0, false),
         ));
         assert!(should_arm_vault_inject(
             &inner,
