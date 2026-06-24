@@ -20,6 +20,52 @@ const REPO = 'Furowu/brokre';
 const INSTALL_DOC =
   'https://raw.githubusercontent.com/Furowu/brokre/main/install.sh';
 
+const LAUNCHER_REALPATH = (() => {
+  try {
+    return fs.realpathSync(__filename);
+  } catch (_) {
+    return __filename;
+  }
+})();
+
+/** True when `binPath` is this npm MCP launcher (not the native Rust CLI). */
+function isLauncherScript(binPath) {
+  if (!binPath) return false;
+  try {
+    return fs.realpathSync(binPath) === LAUNCHER_REALPATH;
+  } catch (_) {
+    return false;
+  }
+}
+
+function printVersionAndExit() {
+  const cached = cachedBrokrePath();
+  if (fs.existsSync(cached) && !isLauncherScript(cached)) {
+    try {
+      const out = execFileSync(cached, ['--version'], {
+        encoding: 'utf8',
+        timeout: 5_000,
+      });
+      process.stdout.write(out.endsWith('\n') ? out : `${out}\n`);
+      process.exit(0);
+    } catch (_) {
+      /* fall through to package version */
+    }
+  }
+  process.stdout.write(`brokre ${PKG_VERSION}\n`);
+  process.exit(0);
+}
+
+function handleEarlyArgv() {
+  const args = process.argv.slice(2);
+  if (
+    args.length === 1 &&
+    (args[0] === '--version' || args[0] === '-V' || args[0] === '-v')
+  ) {
+    printVersionAndExit();
+  }
+}
+
 function redactManageTokens(chunk) {
   return chunk
     .toString()
@@ -39,9 +85,17 @@ function findBrokreOnPath() {
   }
   try {
     const which = process.platform === 'win32' ? 'where' : 'which';
-    const out = execFileSync(which, ['brokre'], { encoding: 'utf8' });
-    const line = out.trim().split(/\r?\n/)[0];
-    if (line) return line;
+    const whichArgs =
+      process.platform === 'win32' ? ['brokre'] : ['-a', 'brokre'];
+    const out = execFileSync(which, whichArgs, { encoding: 'utf8' });
+    const lines = out
+      .trim()
+      .split(/\r?\n/)
+      .map((l) => l.trim())
+      .filter(Boolean);
+    for (const line of lines) {
+      if (!isLauncherScript(line)) return line;
+    }
   } catch (_) {
     /* not on PATH */
   }
@@ -400,8 +454,14 @@ function parseVersion(output) {
 }
 
 function getInstalledVersion(brokrePath) {
+  if (isLauncherScript(brokrePath)) {
+    return null;
+  }
   try {
-    const out = execFileSync(brokrePath, ['--version'], { encoding: 'utf8' });
+    const out = execFileSync(brokrePath, ['--version'], {
+      encoding: 'utf8',
+      timeout: 5_000,
+    });
     return parseVersion(out);
   } catch (_) {
     return null;
@@ -571,8 +631,14 @@ function spawnBrokreMcp(brokre, extraEnv = {}) {
 }
 
 async function main() {
+  handleEarlyArgv();
   try {
     const brokre = await ensureBrokreBinary();
+    if (isLauncherScript(brokre)) {
+      throw new Error(
+        'resolved brokre binary is the npm MCP launcher; install native CLI or set BROKRE_BIN'
+      );
+    }
     const openedManage = await openManageIfVaultEmpty(brokre);
     const mcpEnv = openedManage ? { BROKRE_MCP_NO_AUTO_OPEN: '1' } : {};
     spawnBrokreMcp(brokre, mcpEnv);
