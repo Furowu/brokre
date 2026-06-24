@@ -114,6 +114,26 @@ fn is_openssh_file_transfer(profile: &str) -> bool {
     )
 }
 
+/// SSH-only TTY forwarding flags (`-tt`). Must not run for `scp`/`sftp`: their argv
+/// is `[local…, remote:path]` with an empty remote-command tail, which would otherwise
+/// look like an interactive login and inject `-tt` before the local path — OpenSSH 10.x
+/// then fails locally with `scp: ambiguous target`.
+fn apply_openssh_tty_argv_adjustments(
+    profile: &str,
+    argv: &mut Vec<String>,
+    trailing: &[String],
+) {
+    if !is_openssh_profile(profile) || is_openssh_file_transfer(profile) {
+        return;
+    }
+    if trailing.is_empty() {
+        crate::runtime::ssh_identity::insert_force_tty_for_interactive_login(argv, trailing);
+    } else {
+        crate::runtime::ssh_identity::insert_force_tty_for_privileged_remote(argv, trailing);
+        crate::runtime::ssh_identity::insert_force_tty_for_routed_interactive(argv, trailing);
+    }
+}
+
 /// Vault alias tokens to try for a single scp/sftp positional arg.
 fn scp_alias_lookup_tokens(arg: &str) -> Vec<String> {
     let mut out = vec![arg.to_string()];
@@ -289,23 +309,7 @@ fn exec_saved(
     let mut argv = resolved.compose_argv(&rec, profile);
     let args_for_audit = redact_args(&argv);
     #[cfg(unix)]
-    if is_openssh_profile(profile) {
-        if resolved.trailing.is_empty() {
-            crate::runtime::ssh_identity::insert_force_tty_for_interactive_login(
-                &mut argv,
-                &resolved.trailing,
-            );
-        } else {
-            crate::runtime::ssh_identity::insert_force_tty_for_privileged_remote(
-                &mut argv,
-                &resolved.trailing,
-            );
-            crate::runtime::ssh_identity::insert_force_tty_for_routed_interactive(
-                &mut argv,
-                &resolved.trailing,
-            );
-        }
-    }
+    apply_openssh_tty_argv_adjustments(profile, &mut argv, &resolved.trailing);
     #[cfg(unix)]
     let _key_guard = if is_openssh_profile(profile) {
         crate::runtime::ssh_identity::insert_mux_options(&mut argv);
@@ -732,6 +736,29 @@ mod tests {
                 vec!["/etc/hosts".to_string(), "root@10.0.0.1:/tmp/x".to_string()]
             );
         });
+    }
+
+    #[test]
+    fn scp_argv_skips_interactive_tty_insert() {
+        let mut argv = vec![
+            "./local.bin".into(),
+            "root@10.0.0.1:/remote/path".into(),
+        ];
+        apply_openssh_tty_argv_adjustments("scp", &mut argv, &[]);
+        assert_eq!(
+            argv,
+            vec![
+                "./local.bin".to_string(),
+                "root@10.0.0.1:/remote/path".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn ssh_interactive_login_still_gets_force_tty() {
+        let mut argv = vec!["root@10.0.0.1".into()];
+        apply_openssh_tty_argv_adjustments("ssh", &mut argv, &[]);
+        assert_eq!(argv, vec!["-tt".to_string(), "root@10.0.0.1".to_string()]);
     }
 
     #[test]

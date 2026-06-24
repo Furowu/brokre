@@ -1,7 +1,7 @@
 {
   "name": "brokre",
   "mcpName": "io.github.Furowu/brokre",
-  "version": "0.2.10",
+  "version": "0.2.11",
   "description": "MCP launcher for brokre — local credential broker for Cursor, Claude Code, Kimi Code, Trae, OpenClaw, Hermes Agent, ChatClaw, and other MCP clients",
   "license": "MIT",
   "author": "brokre contributors",
@@ -21,6 +21,7 @@
     "claude"
   ],
   "bin": {
+    "brokre": "index.js",
     "brokre-mcp": "index.js",
     "brokre-setup-mcp": "setup-mcp.js"
   },

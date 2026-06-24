@@ -22,8 +22,9 @@ npm install -g brokre          # 或：npx -y brokre@latest
 
 | 能力 | 说明 |
 |------|------|
-| **自动 MCP 注册** | `postinstall` 执行 `brokre-setup-mcp` — 仅检测**已安装**的 IDE（应用、CLI 或真实使用痕迹），向各客户端全局 MCP 配置合并 `npx -y brokre@latest`。**不会**为未安装的软件创建配置文件。补注册：`brokre mcp setup` 或 `npx brokre-setup-mcp`（`--dry-run` 预览 / `--force` 覆盖）。跳过：`BROKRE_MCP_SKIP_SETUP=1`。 |
-| **二进制自动升级** | 每次 MCP 启动对比 npm 包版本与 `PATH` / `~/.brokre/bin/brokre`；缺失或更旧时从 [GitHub Release](https://github.com/Furowu/brokre/releases) 下载匹配版本。 |
+| **自动 MCP 注册** | `postinstall` 执行 `brokre-setup-mcp` — 仅检测已安装 IDE 并合并 `npx -y brokre@latest`。补注册：`brokre mcp setup` 或 `npx brokre-setup-mcp`。跳过：`BROKRE_MCP_SKIP_SETUP=1`。 |
+| **二进制自动升级** | 每次 MCP 启动对比 npm 包与 `PATH` / `~/.brokre/bin/brokre`，更旧时从 [GitHub Release](https://github.com/Furowu/brokre/releases) 下载。 |
+| **无 npm 的 CLI** | install.sh 用户用 `brokre version` / `brokre upgrade`；装 IDE 后用 `brokre mcp setup` 补注册 MCP。 |
 | **支持的 IDE** | Cursor、VS Code、VS Code Insiders、Claude Code、Claude Desktop、Trae、Kimi Code、Windsurf、OpenClaw — 详见 [packages/brokre-mcp/README.md](packages/brokre-mcp/README.md)。 |
 
 推荐 MCP 配置（自动注册也会写入相同内容）：
@@ -110,62 +111,114 @@ brokre my-internal-tool --host db.internal
 
 ## 安装（优先 MCP — 推荐给 AI 场景）
 
-npm 包 [`brokre`](https://www.npmjs.com/package/brokre) 是面向 Cursor、Claude Code、Kimi Code、Trae、OpenClaw（龙虾）、Hermes Agent、ChatClaw（小龙虾）等 **MCP 客户端**的启动器，通过 stdio 拉起本地 `brokre mcp` 服务。凡支持 stdio MCP 的 Agent / IDE，均可按同样方式接入。
+npm 包 [`brokre`](https://www.npmjs.com/package/brokre) 通过 stdio 为 Cursor、Claude Code、Kimi Code、Trae、OpenClaw、Windsurf、VS Code 等 MCP 客户端拉起本地 `brokre mcp` 服务。
 
-### 1. 将 brokre 接入 AI 编辑器
+### 选择安装方式
 
-**Cursor** — 一键安装（在 Cursor 中打开并添加 MCP 服务器）：
+| 方式 | 适用场景 | 安装命令 | IDE 注册 MCP | CLI 升级 |
+|------|----------|----------|--------------|----------|
+| **npm**（推荐） | AI 用户；一条命令搞定 | `npm install -g brokre` | 安装时**自动**（`postinstall`） | npm + 每次 MCP 启动自动拉二进制 |
+| **install.sh / Homebrew** | 生产环境；日常不用 Node | `curl … \| bash` 或 `brew install brokre` | 装 IDE 后执行 `brokre mcp setup` | `brokre version` / `brokre upgrade` |
+| **手动改 MCP JSON** | 仅特殊定制 | 已有 CLI 或 npm | 手改各 IDE 配置 | 取决于 CLI 安装方式 |
 
-[在 Cursor 中安装 brokre](cursor://anysphere.cursor-deeplink/mcp/install?name=brokre&config=eyJicm9rcmUiOnsiY29tbWFuZCI6Im5weCIsImFyZ3MiOlsiLXkiLCJicm9rcmVAbGF0ZXN0Il19fQ==)
-
-或手动写入 `~/.cursor/mcp.json` 或项目 `.cursor/mcp.json`：
-
-```json
-{
-  "mcpServers": {
-    "brokre": {
-      "command": "npx",
-      "args": ["-y", "brokre@latest"]
-    }
-  }
-}
-```
-
-**Claude Code** — 项目 `.mcp.json`：
+**推荐 MCP 配置**（自动注册也会写入相同内容）：
 
 ```json
-{
-  "mcpServers": {
-    "brokre": {
-      "type": "stdio",
-      "command": "npx",
-      "args": ["-y", "brokre@latest"]
-    }
-  }
-}
+{ "command": "npx", "args": ["-y", "brokre@latest"] }
 ```
 
-或命令行：
+无 Node 时可直接指向原生二进制：`{ "command": "brokre", "args": ["mcp"] }`。
 
-```bash
-claude mcp add --scope project brokre -- npx -y brokre@latest
-```
-
-推荐 `npx -y brokre@latest`：npm 启动器与二进制均会自动保持最新。每次 MCP 启动时，若本地 `brokre`（`PATH` 或 `~/.brokre/bin/`）版本低于 npm 包版本，会自动从 GitHub Release 下载并覆盖 `~/.brokre/bin/`。
-
-**一行安装 + IDE 自动配置**（npm **0.2.8+**）：
+### 路径 A — npm 一行安装（0.2.8+）
 
 ```bash
 npm install -g brokre
+# 或不全局安装：
+npx -y brokre@latest
 ```
 
-安装 MCP 启动器、执行 `brokre-setup-mcp` 向**已检测到**的 IDE 注册 brokre（Cursor、VS Code、Claude Code、Trae、Kimi Code、Windsurf、OpenClaw 等），并在每次 MCP 连接时保持 CLI 二进制同步。**仅用 `install.sh` 装了 CLI、后来才装 IDE？** 运行 `brokre mcp setup` 补注册。npm 方式：`npx brokre-setup-mcp`。跳过自动注册：`BROKRE_MCP_SKIP_SETUP=1`。
+`npm install` 后自动完成三件事：
 
-**无需 Node** — MCP 直接指向原生二进制：
+1. **MCP 启动器** — `brokre-mcp` / `npx -y brokre@latest` 拉起 `brokre mcp`。
+2. **IDE 自动注册** — `postinstall` 执行 `brokre-setup-mcp`：仅检测**已安装**的 IDE（应用、CLI 或真实使用痕迹，非空目录），向各客户端全局配置合并上述 MCP 条目。幂等；保留你已有的其他 MCP。
+3. **二进制自动升级** — 每次 MCP 启动时，若 `PATH` 或 `~/.brokre/bin/brokre` 版本低于 npm 包，从 [GitHub Release](https://github.com/Furowu/brokre/releases) 下载匹配版本。
+
+**自动注册覆盖的 IDE**
+
+| IDE | 全局配置文件 |
+|-----|----------------|
+| Cursor | `~/.cursor/mcp.json` |
+| VS Code / Insiders | `…/Code/User/mcp.json` |
+| Claude Code | `~/.claude.json` |
+| Claude Desktop | `…/Claude/claude_desktop_config.json` |
+| Trae | `…/Trae/User/mcp.json` |
+| Kimi Code | `~/.kimi-code/mcp.json` |
+| Windsurf | `~/.codeium/windsurf/mcp_config.json` |
+| OpenClaw | `~/.openclaw/openclaw.json`（`mcp.servers`） |
+
+**补注册**（例如先装了 brokre、后装 Cursor）：
+
+```bash
+brokre mcp setup              # CLI 方式 — 与 postinstall 相同逻辑
+npx brokre-setup-mcp          # npm 方式
+brokre mcp setup --dry-run    # 仅预览
+brokre mcp setup --force      # 强制覆盖已有 brokre 条目
+```
+
+跳过 `npm install` 自动注册：`BROKRE_MCP_SKIP_SETUP=1`。禁用二进制自动下载：`BROKRE_SKIP_AUTO_INSTALL=1`。固定二进制：`BROKRE_BIN=/path/to/brokre`。
+
+需要 **Node.js 18+**（npm 路径）。
+
+### 路径 B — 原生 CLI（install.sh / Homebrew，无 npm）
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Furowu/brokre/main/install.sh | bash
+```
+
+```bash
+brew tap Furowu/brokre
+brew install brokre
+```
+
+**版本与升级**（CLI 内置，无需 npm）：
+
+```bash
+brokre version                # 版本、二进制路径、安装方式
+brokre version --check        # 与 GitHub 最新 release 对比
+brokre version --check --json
+brokre upgrade                # 下载最新 release（curl + tar）
+brokre upgrade --check        # 有更新时 exit 1
+brokre upgrade 0.2.10         # 安装指定版本
+brokre upgrade --force        # 已是最新也强制重装
+```
+
+重复执行 `install.sh` 同样会在有新版本时升级。
+
+**CLI 安装后注册 MCP**（需要 Node 跑 setup 脚本，或走 `npx` 回退）：
+
+```bash
+brokre mcp setup
+```
+
+### 手动按 IDE 配置（可选）
+
+仅在跳过自动注册或需要项目级配置时使用。
+
+**Cursor** — [一键安装](cursor://anysphere.cursor-deeplink/mcp/install?name=brokre&config=eyJicm9rcmUiOnsiY29tbWFuZCI6Im5weCIsImFyZ3MiOlsiLXkiLCJicm9rcmVAbGF0ZXN0Il19fQ==)，或写入 `~/.cursor/mcp.json`：
 
 ```json
-{ "command": "brokre", "args": ["mcp"] }
+{
+  "mcpServers": {
+    "brokre": { "command": "npx", "args": ["-y", "brokre@latest"] }
+  }
+}
 ```
+
+**Claude Code** — 用户级 `~/.claude.json`，或 `claude mcp add --scope user brokre -- npx -y brokre@latest`。项目级：`.mcp.json` 并加 `"type": "stdio"`。
+
+更多客户端与环境变量：[packages/brokre-mcp/README.md](packages/brokre-mcp/README.md)。[MCP Registry](https://registry.modelcontextprotocol.io) ID：`io.github.Furowu/brokre`。
+
+### MCP 工具与用法
 
 | MCP 工具 | 用途 |
 |----------|------|
@@ -255,29 +308,6 @@ brokre **不是** `ssh`/`mysql` 的替代品 — 必须加 `brokre` 前缀才会
 仍不支持：无 `command` 的纯交互 `sudo -i` / `vim` / `top`；sudo 密码须与 vault 中 `password` 字段相同。详见 [THREAT_MODEL.md](THREAT_MODEL.md) T12。
 
 首次连接且**保险库为空**时，brokre 会在浏览器打开 **manage**（`http://127.0.0.1:56777/?t=…`）。会话 token 留在本机 — 不返回给 AI。设置 `BROKRE_MCP_NO_AUTO_OPEN=1` 可禁用自动打开。
-
-**无需单独安装 CLI**：`npx -y brokre@latest` 会在需要时从 GitHub Release 下载或升级 `~/.brokre/bin/brokre`（需 Node 18+），即使 `PATH` 上已有旧版也会自动更新。禁用自动下载：`BROKRE_SKIP_AUTO_INSTALL=1`；固定二进制：`BROKRE_BIN=/path/to/brokre`。
-
-更多说明：[packages/brokre-mcp/README.md](packages/brokre-mcp/README.md)。
-
-[MCP Registry](https://registry.modelcontextprotocol.io) 元数据 ID：`io.github.Furowu/brokre` — 执行 `./d npm` / `./d release` 时自动发布（或 npm 后单独 `./d registry`；设 `BROKRE_SKIP_MCP_REGISTRY=1` 可跳过）。
-
-### 2. 安装 brokre CLI（可选 — MCP 可自动下载）
-
-也可手动安装 CLI（系统级 `PATH`，推荐生产环境）：
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/Furowu/brokre/main/install.sh | bash
-```
-
-重复执行同一命令可升级；脚本会检测已安装版本，有新版时自动重装，已是最新则跳过。
-
-或通过 Homebrew（macOS / Linux）：
-
-```bash
-brew tap Furowu/brokre
-brew install brokre
-```
 
 ## 快速开始
 

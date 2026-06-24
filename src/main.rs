@@ -32,6 +32,8 @@ BUILT-IN SUBCOMMANDS:\n\
   brokre manage [--open]            # local web UI for credentials\n\
   brokre mcp                        # MCP server for AI assistants\n\
   brokre mcp setup                  # register brokre MCP in detected IDEs\n\
+  brokre version [--check]          # show version; query GitHub for updates\n\
+  brokre upgrade                    # upgrade CLI from GitHub Releases\n\
   brokre bastion enable <alias>     # bastion broker (see brokre bastion --help)\n\
   brokre reveal / rm / audit        # human-only or metadata (see --help)\n\
 \n\
@@ -107,6 +109,27 @@ enum Commands {
     Bastion {
         #[command(subcommand)]
         action: BastionCmd,
+    },
+    /// Show brokre version and install location.
+    Version {
+        /// Query GitHub for the latest release.
+        #[arg(long, short = 'c')]
+        check: bool,
+        /// Machine-readable JSON output.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Download and install a brokre release from GitHub (install.sh parity).
+    Upgrade {
+        /// Install a specific version (e.g. 0.2.10) instead of latest.
+        #[arg(value_name = "VERSION")]
+        version: Option<String>,
+        /// Reinstall even when already on the target version.
+        #[arg(long)]
+        force: bool,
+        /// Only report whether an upgrade is available (exit 1 if yes).
+        #[arg(long)]
+        check: bool,
     },
     /// Any other word is treated as `<cli> [args...]` — the transparent
     /// pass-through that's the whole point of brokre.
@@ -295,6 +318,12 @@ fn main() {
             None => cli::mcp::run(),
             Some(McpCmd::Setup { dry_run, force }) => cli::mcp::run_setup(dry_run, force),
         },
+        Some(Commands::Version { check, json }) => cli::upgrade::run_version(json, check),
+        Some(Commands::Upgrade {
+            version,
+            force,
+            check,
+        }) => cli::upgrade::run_upgrade(version, force, check),
         Some(Commands::External(raw)) => {
             // raw[0] is the binary name (e.g. "ssh"), raw[1..] are args.
             let mut it = raw.into_iter();
@@ -358,6 +387,8 @@ fn print_usage() {
     eprintln!("  brokre manage [--onboard] [--open]    local credential manager (web UI)");
     eprintln!("  brokre mcp                          MCP server for Cursor / Claude Code");
     eprintln!("  brokre mcp setup [--dry-run]        register MCP in detected IDEs");
+    eprintln!("  brokre version [--check] [--json]   show version / check for updates");
+    eprintln!("  brokre upgrade [VERSION] [--force]  upgrade from GitHub Releases");
     eprintln!();
     eprintln!("Examples:");
     eprintln!("  brokre ssh root@10.0.0.1            first-time, type password, then save");

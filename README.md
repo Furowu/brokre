@@ -22,8 +22,9 @@ npm install -g brokre          # or: npx -y brokre@latest
 
 | Capability | What happens |
 |------------|----------------|
-| **Auto MCP registration** | `postinstall` runs `brokre-setup-mcp` — detects **installed** IDEs only (app, CLI, or real usage artifacts) and merges `npx -y brokre@latest` into each global MCP config. Does **not** write configs for software you don't have. Re-run: `brokre mcp setup` or `npx brokre-setup-mcp` (`--dry-run` / `--force`). Skip: `BROKRE_MCP_SKIP_SETUP=1`. |
+| **Auto MCP registration** | `postinstall` runs `brokre-setup-mcp` — detects **installed** IDEs only and merges `npx -y brokre@latest` into each global MCP config. Re-run: `brokre mcp setup` or `npx brokre-setup-mcp`. Skip: `BROKRE_MCP_SKIP_SETUP=1`. |
 | **Auto binary upgrade** | On each MCP start, compares npm package version with `PATH` / `~/.brokre/bin/brokre`; downloads matching [GitHub Release](https://github.com/Furowu/brokre/releases) when missing or older. |
+| **CLI without npm** | `brokre version` / `brokre upgrade` for install.sh users; `brokre mcp setup` to register MCP after installing IDEs. |
 | **Supported IDEs** | Cursor, VS Code, VS Code Insiders, Claude Code, Claude Desktop, Trae, Kimi Code, Windsurf, OpenClaw — see [packages/brokre-mcp/README.md](packages/brokre-mcp/README.md). |
 
 Recommended MCP config (also applied by auto-setup):
@@ -110,62 +111,114 @@ Built-in manage UI tabs (when the binary is installed) include SSH, FTP, MySQL, 
 
 ## Install (MCP first — recommended for AI)
 
-The npm package [`brokre`](https://www.npmjs.com/package/brokre) is the MCP launcher for Cursor, Claude Code, Kimi Code, Trae, OpenClaw, Hermes Agent, ChatClaw, and other **MCP clients**. It spawns the local `brokre mcp` server over stdio. Any agent or IDE with stdio MCP support can use the same setup.
+The npm package [`brokre`](https://www.npmjs.com/package/brokre) launches the local `brokre mcp` server over stdio for Cursor, Claude Code, Kimi Code, Trae, OpenClaw, Windsurf, VS Code, and other MCP clients.
 
-### 1. Add brokre to your AI editor
+### Choose your install path
 
-**Cursor** — one-click install (opens Cursor and adds the MCP server):
+| Path | Best for | Install | MCP in IDEs | CLI upgrade |
+|------|----------|---------|-------------|-------------|
+| **npm** (recommended) | AI users; want one command | `npm install -g brokre` | **Automatic** on install (`postinstall`) | npm + auto-download on each MCP start |
+| **install.sh / Homebrew** | Production; no Node for daily use | `curl … \| bash` or `brew install brokre` | Run `brokre mcp setup` after IDE install | `brokre version` / `brokre upgrade` |
+| **Manual MCP JSON** | Custom layouts only | CLI or npm already present | Edit IDE config by hand | Depends on how CLI was installed |
 
-[Install brokre in Cursor](cursor://anysphere.cursor-deeplink/mcp/install?name=brokre&config=eyJicm9rcmUiOnsiY29tbWFuZCI6Im5weCIsImFyZ3MiOlsiLXkiLCJicm9rcmVAbGF0ZXN0Il19fQ==)
-
-Or add manually to `~/.cursor/mcp.json` or project `.cursor/mcp.json`:
-
-```json
-{
-  "mcpServers": {
-    "brokre": {
-      "command": "npx",
-      "args": ["-y", "brokre@latest"]
-    }
-  }
-}
-```
-
-**Claude Code** — project `.mcp.json`:
+**Recommended MCP entry** (also what auto-setup writes):
 
 ```json
-{
-  "mcpServers": {
-    "brokre": {
-      "type": "stdio",
-      "command": "npx",
-      "args": ["-y", "brokre@latest"]
-    }
-  }
-}
+{ "command": "npx", "args": ["-y", "brokre@latest"] }
 ```
 
-Or via CLI:
+No Node — point MCP at the native binary: `{ "command": "brokre", "args": ["mcp"] }`.
 
-```bash
-claude mcp add --scope project brokre -- npx -y brokre@latest
-```
-
-Use `npx -y brokre@latest` so both the npm launcher and binary stay current. On each MCP start, if the local `brokre` (`PATH` or `~/.brokre/bin/`) is older than the npm package version, a matching release is downloaded into `~/.brokre/bin/` — even when an older `brokre` is already on `PATH`.
-
-**One-line install + IDE setup** (npm **0.2.8+**):
+### Path A — npm one-liner (0.2.8+)
 
 ```bash
 npm install -g brokre
+# or without global install:
+npx -y brokre@latest
 ```
 
-This installs the MCP launcher, runs `brokre-setup-mcp` to register brokre in **detected** IDEs (Cursor, VS Code, Claude Code, Trae, Kimi Code, Windsurf, OpenClaw, …), and keeps the CLI binary in sync on each MCP connect. **Installed brokre via `install.sh` only?** After adding IDEs later, run `brokre mcp setup`. Same via npm: `npx brokre-setup-mcp`. Skip auto-registration: `BROKRE_MCP_SKIP_SETUP=1`.
+On `npm install`, three things happen automatically:
 
-**No Node** — point MCP directly at the native binary:
+1. **MCP launcher** — `brokre-mcp` / `npx -y brokre@latest` spawns `brokre mcp`.
+2. **IDE auto-registration** — `postinstall` runs `brokre-setup-mcp`: detects **installed** IDEs only (app, CLI, or real usage artifacts — not empty folders) and merges the MCP entry above into each global config. Idempotent; preserves your other MCP servers.
+3. **Binary auto-upgrade** — on each MCP start, if `PATH` or `~/.brokre/bin/brokre` is older than the npm package, the matching [GitHub Release](https://github.com/Furowu/brokre/releases) is downloaded.
+
+**IDEs covered by auto-setup**
+
+| IDE | Global config |
+|-----|----------------|
+| Cursor | `~/.cursor/mcp.json` |
+| VS Code / Insiders | `…/Code/User/mcp.json` |
+| Claude Code | `~/.claude.json` |
+| Claude Desktop | `…/Claude/claude_desktop_config.json` |
+| Trae | `…/Trae/User/mcp.json` |
+| Kimi Code | `~/.kimi-code/mcp.json` |
+| Windsurf | `~/.codeium/windsurf/mcp_config.json` |
+| OpenClaw | `~/.openclaw/openclaw.json` (`mcp.servers`) |
+
+**Re-run registration** (e.g. you installed brokre before Cursor, then installed Cursor later):
+
+```bash
+brokre mcp setup              # via CLI — same logic as postinstall
+npx brokre-setup-mcp          # via npm
+brokre mcp setup --dry-run    # preview only
+brokre mcp setup --force      # overwrite existing brokre entry
+```
+
+Skip auto-registration on `npm install`: `BROKRE_MCP_SKIP_SETUP=1`. Disable binary auto-download: `BROKRE_SKIP_AUTO_INSTALL=1`. Pin a binary: `BROKRE_BIN=/path/to/brokre`.
+
+Requires **Node.js 18+** for the npm path.
+
+### Path B — Native CLI (install.sh / Homebrew, no npm)
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Furowu/brokre/main/install.sh | bash
+```
+
+```bash
+brew tap Furowu/brokre
+brew install brokre
+```
+
+**Version and upgrade** (built into the CLI — no npm required):
+
+```bash
+brokre version                # version, binary path, install type
+brokre version --check        # compare with latest GitHub release
+brokre version --check --json
+brokre upgrade                # download latest release (curl + tar)
+brokre upgrade --check        # exit 1 if an update is available
+brokre upgrade 0.2.10         # install a specific version
+brokre upgrade --force        # reinstall even when up to date
+```
+
+Re-run `install.sh` also upgrades when a newer release exists.
+
+**Register MCP after CLI install** (needs Node for the setup script, or `npx` fallback):
+
+```bash
+brokre mcp setup
+```
+
+### Manual per-IDE setup (optional)
+
+Use this only if you skip auto-setup or need project-scoped config.
+
+**Cursor** — [one-click install](cursor://anysphere.cursor-deeplink/mcp/install?name=brokre&config=eyJicm9rcmUiOnsiY29tbWFuZCI6Im5weCIsImFyZ3MiOlsiLXkiLCJicm9rcmVAbGF0ZXN0Il19fQ==), or `~/.cursor/mcp.json`:
 
 ```json
-{ "command": "brokre", "args": ["mcp"] }
+{
+  "mcpServers": {
+    "brokre": { "command": "npx", "args": ["-y", "brokre@latest"] }
+  }
+}
 ```
+
+**Claude Code** — user scope in `~/.claude.json` or `claude mcp add --scope user brokre -- npx -y brokre@latest`. Project scope: `.mcp.json` with `"type": "stdio"`.
+
+More clients and env vars: [packages/brokre-mcp/README.md](packages/brokre-mcp/README.md). [MCP Registry](https://registry.modelcontextprotocol.io) ID: `io.github.Furowu/brokre`.
+
+### MCP tools and usage
 
 | MCP tool | Purpose |
 |----------|---------|
@@ -256,30 +309,7 @@ Not supported: interactive `sudo -i` without a command, `vim`/`top`, or sudo pas
 
 On first connect with an **empty vault**, brokre opens **manage** in your browser (`http://127.0.0.1:56777/?t=…`). Session tokens stay on localhost — never returned to the AI. Set `BROKRE_MCP_NO_AUTO_OPEN=1` to disable auto-open.
 
-**No separate CLI install required**: `npx -y brokre@latest` downloads or upgrades `~/.brokre/bin/brokre` from GitHub Releases when needed (Node 18+), including when an older `brokre` is on `PATH`. Disable auto-download: `BROKRE_SKIP_AUTO_INSTALL=1`; pin a binary: `BROKRE_BIN=/path/to/brokre`.
-
-More detail: [packages/brokre-mcp/README.md](packages/brokre-mcp/README.md).
-
-[MCP Registry](https://registry.modelcontextprotocol.io) metadata: `io.github.Furowu/brokre` — published automatically with `./d npm` / `./d release` (or `./d registry` after npm; set `BROKRE_SKIP_MCP_REGISTRY=1` to skip).
-
-### 2. Install the brokre CLI (optional — MCP can auto-download)
-
-You can also install the CLI system-wide (recommended for production):
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/Furowu/brokre/main/install.sh | bash
-```
-
-Re-run the same command to upgrade; the script detects the installed version, reinstalls when a newer release is available, and skips when already up to date.
-
-Or via Homebrew (macOS / Linux):
-
-```bash
-brew tap Furowu/brokre
-brew install brokre
-```
-
-## Quick Start
+| MCP tool | Purpose |
 
 ### Add credentials
 
