@@ -22,7 +22,7 @@ npm install -g brokre          # 或：npx -y brokre@latest
 
 | 能力 | 说明 |
 |------|------|
-| **自动 MCP 注册** | `postinstall` 执行 `brokre-setup-mcp` — 仅检测**已安装**的 IDE（应用、CLI 或真实使用痕迹），向各客户端全局 MCP 配置合并 `npx -y brokre@latest`。**不会**为未安装的软件创建配置文件。手动重跑：`npx brokre-setup-mcp`（`--dry-run` 预览 / `--force` 覆盖）。跳过：`BROKRE_MCP_SKIP_SETUP=1`。 |
+| **自动 MCP 注册** | `postinstall` 执行 `brokre-setup-mcp` — 仅检测**已安装**的 IDE（应用、CLI 或真实使用痕迹），向各客户端全局 MCP 配置合并 `npx -y brokre@latest`。**不会**为未安装的软件创建配置文件。补注册：`brokre mcp setup` 或 `npx brokre-setup-mcp`（`--dry-run` 预览 / `--force` 覆盖）。跳过：`BROKRE_MCP_SKIP_SETUP=1`。 |
 | **二进制自动升级** | 每次 MCP 启动对比 npm 包版本与 `PATH` / `~/.brokre/bin/brokre`；缺失或更旧时从 [GitHub Release](https://github.com/Furowu/brokre/releases) 下载匹配版本。 |
 | **支持的 IDE** | Cursor、VS Code、VS Code Insiders、Claude Code、Claude Desktop、Trae、Kimi Code、Windsurf、OpenClaw — 详见 [packages/brokre-mcp/README.md](packages/brokre-mcp/README.md)。 |
 
@@ -159,7 +159,7 @@ claude mcp add --scope project brokre -- npx -y brokre@latest
 npm install -g brokre
 ```
 
-安装 MCP 启动器、执行 `brokre-setup-mcp` 向**已检测到**的 IDE 注册 brokre（Cursor、VS Code、Claude Code、Trae、Kimi Code、Windsurf、OpenClaw 等），并在每次 MCP 连接时保持 CLI 二进制同步。手动重跑：`npx brokre-setup-mcp`。跳过自动注册：`BROKRE_MCP_SKIP_SETUP=1`。
+安装 MCP 启动器、执行 `brokre-setup-mcp` 向**已检测到**的 IDE 注册 brokre（Cursor、VS Code、Claude Code、Trae、Kimi Code、Windsurf、OpenClaw 等），并在每次 MCP 连接时保持 CLI 二进制同步。**仅用 `install.sh` 装了 CLI、后来才装 IDE？** 运行 `brokre mcp setup` 补注册。npm 方式：`npx brokre-setup-mcp`。跳过自动注册：`BROKRE_MCP_SKIP_SETUP=1`。
 
 **无需 Node** — MCP 直接指向原生二进制：
 

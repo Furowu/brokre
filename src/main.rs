@@ -31,6 +31,7 @@ BUILT-IN SUBCOMMANDS:\n\
   brokre list [--json]              # list saved aliases (metadata only)\n\
   brokre manage [--open]            # local web UI for credentials\n\
   brokre mcp                        # MCP server for AI assistants\n\
+  brokre mcp setup                  # register brokre MCP in detected IDEs\n\
   brokre bastion enable <alias>     # bastion broker (see brokre bastion --help)\n\
   brokre reveal / rm / audit        # human-only or metadata (see --help)\n\
 \n\
@@ -98,7 +99,10 @@ enum Commands {
         open: bool,
     },
     /// Model Context Protocol server for AI assistants (Cursor, Claude Code, …).
-    Mcp,
+    Mcp {
+        #[command(subcommand)]
+        action: Option<McpCmd>,
+    },
     /// Bastion proxy: promote SSH aliases as credential brokers.
     Bastion {
         #[command(subcommand)]
@@ -108,6 +112,19 @@ enum Commands {
     /// pass-through that's the whole point of brokre.
     #[command(external_subcommand)]
     External(Vec<OsString>),
+}
+
+#[derive(Subcommand)]
+enum McpCmd {
+    /// Register brokre in detected IDEs (same flow as `npm i brokre` postinstall).
+    Setup {
+        /// Preview changes without writing IDE config files.
+        #[arg(long)]
+        dry_run: bool,
+        /// Overwrite existing brokre MCP entries.
+        #[arg(long)]
+        force: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -274,7 +291,10 @@ fn main() {
             BastionCmd::Sync { alias, json } => cli::bastion::run_sync(alias, json),
             BastionCmd::Strict { mode } => cli::bastion::run_strict(mode),
         },
-        Some(Commands::Mcp) => cli::mcp::run(),
+        Some(Commands::Mcp { action }) => match action {
+            None => cli::mcp::run(),
+            Some(McpCmd::Setup { dry_run, force }) => cli::mcp::run_setup(dry_run, force),
+        },
         Some(Commands::External(raw)) => {
             // raw[0] is the binary name (e.g. "ssh"), raw[1..] are args.
             let mut it = raw.into_iter();
@@ -337,6 +357,7 @@ fn print_usage() {
     eprintln!("  brokre audit verify [--json]            verify tamper-evident log");
     eprintln!("  brokre manage [--onboard] [--open]    local credential manager (web UI)");
     eprintln!("  brokre mcp                          MCP server for Cursor / Claude Code");
+    eprintln!("  brokre mcp setup [--dry-run]        register MCP in detected IDEs");
     eprintln!();
     eprintln!("Examples:");
     eprintln!("  brokre ssh root@10.0.0.1            first-time, type password, then save");

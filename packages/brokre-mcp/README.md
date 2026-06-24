@@ -20,7 +20,7 @@ npx -y brokre@latest
 |---------|----------|
 | **Auto MCP registration** | `postinstall` → `brokre-setup-mcp`. Detects **installed** IDEs only; merges `npx -y brokre@latest` into global MCP config. Idempotent — no duplicate entries, no writes for missing software. |
 | **Auto binary upgrade** | Each MCP start compares npm version vs `~/.brokre/bin/brokre` / `PATH`; downloads matching release when needed. |
-| **Manual controls** | `npx brokre-setup-mcp` · `--dry-run` · `--force` · skip: `BROKRE_MCP_SKIP_SETUP=1` |
+| **Manual controls** | `brokre mcp setup` · `npx brokre-setup-mcp` · `--dry-run` · `--force` · skip: `BROKRE_MCP_SKIP_SETUP=1` |
 
 **IDEs with auto-setup** (global config paths):
 
@@ -160,7 +160,7 @@ On `npm install brokre` (local or global), `postinstall` runs `brokre-setup-mcp`
 | Windsurf | `~/.codeium/windsurf/mcp_config.json` |
 | OpenClaw | `~/.openclaw/openclaw.json` (`mcp.servers`) |
 
-Manual re-run: `npx brokre-setup-mcp` (add `--dry-run` to preview, `--force` to overwrite). Skip on install: `BROKRE_MCP_SKIP_SETUP=1`.
+Manual re-run: `brokre mcp setup` or `npx brokre-setup-mcp` (add `--dry-run` to preview, `--force` to overwrite). Skip on install: `BROKRE_MCP_SKIP_SETUP=1`.
 
 **CLI on PATH:** On first download, `brokre-mcp` adds `~/.brokre/bin` to your shell profile (`~/.zshrc`, etc.) and tries to symlink `/usr/local/bin/brokre` when writable. Open a **new terminal** (or `source ~/.zshrc`) so `brokre manage` works.
 

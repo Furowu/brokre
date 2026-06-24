@@ -22,7 +22,7 @@ npm install -g brokre          # or: npx -y brokre@latest
 
 | Capability | What happens |
 |------------|----------------|
-| **Auto MCP registration** | `postinstall` runs `brokre-setup-mcp` — detects **installed** IDEs only (app, CLI, or real usage artifacts) and merges `npx -y brokre@latest` into each global MCP config. Does **not** write configs for software you don't have. Re-run: `npx brokre-setup-mcp` (`--dry-run` / `--force`). Skip: `BROKRE_MCP_SKIP_SETUP=1`. |
+| **Auto MCP registration** | `postinstall` runs `brokre-setup-mcp` — detects **installed** IDEs only (app, CLI, or real usage artifacts) and merges `npx -y brokre@latest` into each global MCP config. Does **not** write configs for software you don't have. Re-run: `brokre mcp setup` or `npx brokre-setup-mcp` (`--dry-run` / `--force`). Skip: `BROKRE_MCP_SKIP_SETUP=1`. |
 | **Auto binary upgrade** | On each MCP start, compares npm package version with `PATH` / `~/.brokre/bin/brokre`; downloads matching [GitHub Release](https://github.com/Furowu/brokre/releases) when missing or older. |
 | **Supported IDEs** | Cursor, VS Code, VS Code Insiders, Claude Code, Claude Desktop, Trae, Kimi Code, Windsurf, OpenClaw — see [packages/brokre-mcp/README.md](packages/brokre-mcp/README.md). |
 
@@ -159,7 +159,7 @@ Use `npx -y brokre@latest` so both the npm launcher and binary stay current. On 
 npm install -g brokre
 ```
 
-This installs the MCP launcher, runs `brokre-setup-mcp` to register brokre in **detected** IDEs (Cursor, VS Code, Claude Code, Trae, Kimi Code, Windsurf, OpenClaw, …), and keeps the CLI binary in sync on each MCP connect. Manual re-run: `npx brokre-setup-mcp`. Skip auto-registration: `BROKRE_MCP_SKIP_SETUP=1`.
+This installs the MCP launcher, runs `brokre-setup-mcp` to register brokre in **detected** IDEs (Cursor, VS Code, Claude Code, Trae, Kimi Code, Windsurf, OpenClaw, …), and keeps the CLI binary in sync on each MCP connect. **Installed brokre via `install.sh` only?** After adding IDEs later, run `brokre mcp setup`. Same via npm: `npx brokre-setup-mcp`. Skip auto-registration: `BROKRE_MCP_SKIP_SETUP=1`.
 
 **No Node** — point MCP directly at the native binary:
 

@@ -506,6 +506,7 @@ function main() {
 
 Usage:
   npx brokre-setup-mcp [--dry-run] [--force]
+  brokre mcp setup [--dry-run] [--force]
 
 Options:
   --dry-run   Show what would change without writing files
