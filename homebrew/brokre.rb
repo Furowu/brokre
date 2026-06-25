@@ -1,20 +1,20 @@
 class Brokre < Formula
   desc "AI-safe credential broker CLI"
   homepage "https://github.com/Furowu/brokre"
-  version "0.2.16"
+  version "0.2.17"
 
   if OS.mac? && Hardware::CPU.intel?
-    url "https://github.com/Furowu/brokre/releases/download/v0.2.16/brokre-x86_64-apple-darwin.tar.gz"
-    sha256 "7bf48dbb3b66e0a164e1327010e71e431186989d2529d29e2fd3090455fa2590"
+    url "https://github.com/Furowu/brokre/releases/download/v0.2.17/brokre-x86_64-apple-darwin.tar.gz"
+    sha256 "0f13ddf2587432fed96ff35bf8eae8fcf50275f40dc84dd2b18ea760e5c0b32f"
   elsif OS.mac? && Hardware::CPU.arm?
-    url "https://github.com/Furowu/brokre/releases/download/v0.2.16/brokre-aarch64-apple-darwin.tar.gz"
-    sha256 "04df583ef15180e24171851392f025b52656df20258d40fe1d0af95ad663e413"
+    url "https://github.com/Furowu/brokre/releases/download/v0.2.17/brokre-aarch64-apple-darwin.tar.gz"
+    sha256 "1b9a180c890910160c38d1fc11f521e67fd6e55f30a413748b918a78c22230c1"
   elsif OS.linux? && Hardware::CPU.intel?
-    url "https://github.com/Furowu/brokre/releases/download/v0.2.16/brokre-x86_64-unknown-linux-gnu.tar.gz"
-    sha256 "b0a545ec834a3509a99ce8709799cde2054e4ad0c8947b71bbbaa11aa0d70192"
+    url "https://github.com/Furowu/brokre/releases/download/v0.2.17/brokre-x86_64-unknown-linux-gnu.tar.gz"
+    sha256 "4b38b009e8d2918d6fa604171968b0fe26f547050d0343c5de8f179de0da445b"
   elsif OS.linux? && Hardware::CPU.arm?
-    url "https://github.com/Furowu/brokre/releases/download/v0.2.16/brokre-aarch64-unknown-linux-gnu.tar.gz"
-    sha256 "f6be5d31554e874fd243c1052da6541a41675e5f33855addb14f371d9bb47557"
+    url "https://github.com/Furowu/brokre/releases/download/v0.2.17/brokre-aarch64-unknown-linux-gnu.tar.gz"
+    sha256 "98f810029e8808e2bf3033e3371d917aadf21d89734c487749b10bb64f5319ed"
   end
 
   def install

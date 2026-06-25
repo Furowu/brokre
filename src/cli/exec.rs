@@ -431,11 +431,11 @@ fn exec_saved(
         resolved.trailing.is_empty(),
     ) {
         crate::runtime::pipe_exec::run_inherited_tty(profile, &argv)?
-    } else if crate::runtime::pipe_exec::should_use_askpass_inherited_tty_mode(
+    } else if crate::runtime::pipe_exec::should_use_mux_inherited_tty_mode(
         profile,
         remote_trailing,
     ) {
-        crate::runtime::pipe_exec::run_askpass_inherited_tty(profile, &argv, rec.id)?
+        crate::runtime::pipe_exec::run_interactive_routed_mux_tty(profile, &argv, rec.id)?
     } else if crate::runtime::pipe_exec::should_use_pipe_mode(
         profile,
         crate::security::tty::stdin_is_pipe(),

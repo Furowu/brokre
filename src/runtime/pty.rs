@@ -591,6 +591,7 @@ pub fn run(
                                     inner_host_hint: inner_host_hint_a.clone(),
                                     inject_disabled: false,
                                     passive_inner_ssh: passive_inner_ssh_a,
+                                    ..Default::default()
                                 },
                                 &VaultInjectPrompt {
                                     is_elevation_prompt,

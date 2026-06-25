@@ -13,6 +13,8 @@ use std::collections::BTreeMap;
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::PathBuf;
+#[cfg(unix)]
+use std::process::{Command, Stdio};
 
 pub struct SecureKeyFile {
     pub path: PathBuf,
@@ -190,6 +192,89 @@ pub fn insert_mux_options(argv: &mut Vec<String>) {
         argv.insert(pos, val.clone());
         argv.insert(pos, (*flag).into());
     }
+}
+
+/// Connection target from an OpenSSH argv slice (flags + `user@host` + optional remote command).
+pub fn openssh_argv_connection_target(argv: &[String]) -> Option<String> {
+    let idx = connection_target_index(argv);
+    argv.get(idx).cloned()
+}
+
+/// `ControlPath` from `-o ControlPath=…` in an OpenSSH argv slice.
+pub fn mux_control_path_from_argv(argv: &[String]) -> Option<String> {
+    let mut i = 0;
+    while i + 1 < argv.len() {
+        if argv[i] == "-o" && argv[i + 1].starts_with("ControlPath=") {
+            return Some(argv[i + 1]["ControlPath=".len()..].to_string());
+        }
+        i += 1;
+    }
+    None
+}
+
+/// Argv for `ssh -N -f` mux master (hop auth only; no remote command).
+pub fn build_mux_master_argv(argv: &[String]) -> Vec<String> {
+    let target_idx = connection_target_index(argv);
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < target_idx {
+        match argv[i].as_str() {
+            "-t" | "-tt" => {
+                i += 1;
+            }
+            "-o" if i + 1 < target_idx => {
+                let val = &argv[i + 1];
+                if val.starts_with("ControlMaster=") {
+                    out.push("-o".into());
+                    out.push("ControlMaster=yes".into());
+                } else {
+                    out.push("-o".into());
+                    out.push(val.clone());
+                }
+                i += 2;
+            }
+            other => {
+                out.push(other.into());
+                i += 1;
+            }
+        }
+    }
+    if let Some(target) = argv.get(target_idx) {
+        out.push(target.clone());
+    }
+    out.push("-N".into());
+    out.push("-f".into());
+    out
+}
+
+/// True when an OpenSSH mux control socket is already authenticated for this argv.
+#[cfg(unix)]
+pub fn mux_master_alive(binary: &str, argv: &[String]) -> Result<bool> {
+    let Some(path) = mux_control_path_from_argv(argv) else {
+        return Ok(false);
+    };
+    let Some(target) = openssh_argv_connection_target(argv) else {
+        return Ok(false);
+    };
+    let bin = which::which(binary)
+        .map_err(|_| BrokreError::Runtime(format!("{}: command not found", binary)))?;
+    let status = Command::new(bin)
+        .arg("-O")
+        .arg("check")
+        .arg("-o")
+        .arg(format!("ControlPath={path}"))
+        .arg(target)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map_err(BrokreError::Io)?;
+    Ok(status.success())
+}
+
+#[cfg(not(unix))]
+pub fn mux_master_alive(_binary: &str, _argv: &[String]) -> Result<bool> {
+    Ok(false)
 }
 
 /// True when argv after the connection target is a bastion-routed remote brokre exec.
@@ -597,6 +682,50 @@ pub fn build_ssh_secret_fields(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn build_mux_master_argv_strips_remote_command_and_tty_flags() {
+        let token = crate::utils::paths::remote_brokre_shell_token().to_string();
+        let argv = vec![
+            "-o".into(),
+            "ControlPersist=300".into(),
+            "-o".into(),
+            "ControlPath=/tmp/ssh-%C.sock".into(),
+            "-o".into(),
+            "ControlMaster=auto".into(),
+            "-tt".into(),
+            "out150".into(),
+            token,
+            "ssh".into(),
+            "-tt".into(),
+            "lan07".into(),
+        ];
+        assert_eq!(
+            build_mux_master_argv(&argv),
+            vec![
+                "-o",
+                "ControlPersist=300",
+                "-o",
+                "ControlPath=/tmp/ssh-%C.sock",
+                "-o",
+                "ControlMaster=yes",
+                "out150",
+                "-N",
+                "-f",
+            ]
+            .into_iter()
+            .map(String::from)
+            .collect::<Vec<_>>()
+        );
+        assert_eq!(
+            mux_control_path_from_argv(&argv).as_deref(),
+            Some("/tmp/ssh-%C.sock")
+        );
+        assert_eq!(
+            openssh_argv_connection_target(&argv).as_deref(),
+            Some("out150")
+        );
+    }
 
     #[test]
     fn validates_pem_markers() {

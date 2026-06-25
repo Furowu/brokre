@@ -29,7 +29,7 @@ pub fn should_use_pipe_mode(
         return true;
     }
     if bin == "ssh" {
-        // Interactive bastion routes on a real TTY use askpass + inherited stdio (no local PTY/raw).
+        // Interactive bastion routes: mux pre-auth (askpass) + inherited TTY (native multi-hop).
         if remote_trailing.is_some_and(crate::runtime::ssh_identity::is_routed_interactive_trailing)
         {
             return false;
@@ -86,70 +86,6 @@ fn configure_askpass(cmd: &mut Command, record_id: Uuid) -> Result<std::path::Pa
     cmd.env("BROKRE_ASKPASS_STATE", &state_path);
     cmd.env("BROKRE_ASKPASS_OWNER", &owner_pid);
     Ok(state_path)
-}
-
-/// Policy for Mac-side interactive bastion routes (TTY check applied separately).
-pub fn askpass_inherited_routed_ssh(
-    profile: &str,
-    remote_trailing: Option<&[String]>,
-) -> bool {
-    let bin = profile
-        .rsplit('/')
-        .next()
-        .unwrap_or(profile)
-        .to_ascii_lowercase();
-    bin == "ssh"
-        && std::env::var_os("BROKRE_ROUTED_INNER").is_none()
-        && remote_trailing.is_some_and(crate::runtime::ssh_identity::is_routed_interactive_trailing)
-}
-
-/// Interactive `bastion::inner` on the Mac: inherit the real TTY like plain `ssh`, inject via askpass.
-#[cfg(unix)]
-pub fn should_use_askpass_inherited_tty_mode(
-    profile: &str,
-    remote_trailing: Option<&[String]>,
-) -> bool {
-    askpass_inherited_routed_ssh(profile, remote_trailing)
-        && crate::security::tty::stdin_is_real_tty()
-}
-
-/// OpenSSH with askpass vault inject and inherited stdio — native TTY for nested interactive routes.
-#[cfg(unix)]
-pub fn run_askpass_inherited_tty(
-    binary: &str,
-    args: &[String],
-    record_id: Uuid,
-) -> Result<PtyRunResult> {
-    let bin = which::which(binary)
-        .map_err(|_| BrokreError::Runtime(format!("{}: command not found", binary)))?;
-    let mut cmd = Command::new(bin);
-    for a in args {
-        cmd.arg(a);
-    }
-    if let Ok(cwd) = std::env::current_dir() {
-        cmd.current_dir(cwd);
-    }
-
-    let state_path = configure_askpass(&mut cmd, record_id)?;
-    cmd.stdin(Stdio::inherit())
-        .stdout(Stdio::inherit())
-        .stderr(Stdio::inherit());
-
-    let status = cmd
-        .spawn()
-        .map_err(|e| BrokreError::Runtime(format!("spawn {}: {}", binary, e)))?
-        .wait()
-        .map_err(BrokreError::Io)?;
-    let _ = std::fs::remove_file(&state_path);
-
-    Ok(PtyRunResult {
-        exit_code: status.code().unwrap_or(-1),
-        captured_password: None,
-        had_prompt: true,
-        injector_pid: None,
-        injector_dur_ms: None,
-        injector_outcome: Some("askpass".into()),
-    })
 }
 
 /// Run OpenSSH with `SSH_ASKPASS` for vault injection and optional stdin pipe forwarding.
@@ -217,6 +153,62 @@ pub fn run(binary: &str, args: &[String], record_id: Uuid) -> Result<PtyRunResul
     })
 }
 
+/// Policy for Mac-side interactive bastion routes (TTY check applied separately).
+pub fn routed_interactive_native_tty(
+    profile: &str,
+    remote_trailing: Option<&[String]>,
+) -> bool {
+    let bin = profile
+        .rsplit('/')
+        .next()
+        .unwrap_or(profile)
+        .to_ascii_lowercase();
+    bin == "ssh"
+        && std::env::var_os("BROKRE_ROUTED_INNER").is_none()
+        && remote_trailing.is_some_and(crate::runtime::ssh_identity::is_routed_interactive_trailing)
+}
+
+/// Interactive `bastion::inner` on the Mac: mux pre-auth + inherited TTY (same as native `ssh` multi-hop).
+#[cfg(unix)]
+pub fn should_use_mux_inherited_tty_mode(
+    profile: &str,
+    remote_trailing: Option<&[String]>,
+) -> bool {
+    routed_interactive_native_tty(profile, remote_trailing)
+        && crate::security::tty::stdin_is_real_tty()
+}
+
+/// Askpass mux master, then run OpenSSH on the real terminal (no local PTY wrapper).
+#[cfg(unix)]
+pub fn run_interactive_routed_mux_tty(
+    binary: &str,
+    args: &[String],
+    record_id: Uuid,
+) -> Result<PtyRunResult> {
+    ensure_ssh_mux_master(binary, args, record_id)?;
+    let mut result = run_inherited_tty(binary, args)?;
+    result.had_prompt = true;
+    result.injector_outcome = Some("mux+inherited".into());
+    Ok(result)
+}
+
+/// Establish mux master with askpass (stdin null); reused by interactive sessions on inherited TTY.
+#[cfg(unix)]
+fn ensure_ssh_mux_master(binary: &str, argv: &[String], record_id: Uuid) -> Result<()> {
+    if crate::runtime::ssh_identity::mux_master_alive(binary, argv)? {
+        return Ok(());
+    }
+    let master_argv = crate::runtime::ssh_identity::build_mux_master_argv(argv);
+    let result = run(binary, &master_argv, record_id)?;
+    if result.exit_code != 0 {
+        return Err(BrokreError::Runtime(format!(
+            "ssh multiplex pre-authentication failed (exit {})",
+            result.exit_code
+        )));
+    }
+    Ok(())
+}
+
 /// Policy for bastion inner interactive login (TTY check applied separately).
 pub fn routed_inner_inherited_ssh(
     profile: &str,
@@ -280,16 +272,7 @@ pub fn run_inherited_tty(_binary: &str, _args: &[String]) -> Result<PtyRunResult
 }
 
 #[cfg(not(unix))]
-pub fn should_use_inherited_tty_mode(
-    _profile: &str,
-    _routed_inner_passive: bool,
-    _trailing_empty: bool,
-) -> bool {
-    false
-}
-
-#[cfg(not(unix))]
-pub fn should_use_askpass_inherited_tty_mode(
+pub fn should_use_mux_inherited_tty_mode(
     _profile: &str,
     _remote_trailing: Option<&[String]>,
 ) -> bool {
@@ -297,14 +280,23 @@ pub fn should_use_askpass_inherited_tty_mode(
 }
 
 #[cfg(not(unix))]
-pub fn run_askpass_inherited_tty(
+pub fn run_interactive_routed_mux_tty(
     _binary: &str,
     _args: &[String],
     _record_id: Uuid,
 ) -> Result<PtyRunResult> {
     Err(BrokreError::Runtime(
-        "askpass inherited TTY mode is only supported on Unix".into(),
+        "mux inherited TTY mode is only supported on Unix".into(),
     ))
+}
+
+#[cfg(not(unix))]
+pub fn should_use_inherited_tty_mode(
+    _profile: &str,
+    _routed_inner_passive: bool,
+    _trailing_empty: bool,
+) -> bool {
+    false
 }
 
 #[cfg(not(unix))]
@@ -319,13 +311,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn askpass_inherited_for_interactive_routed_trailing() {
+    fn routed_interactive_native_tty_policy() {
         std::env::remove_var("BROKRE_ROUTED_INNER");
         let token = crate::utils::paths::remote_brokre_shell_token().to_string();
         let trailing = vec![token, "ssh".into(), "-tt".into(), "db".into()];
-        assert!(askpass_inherited_routed_ssh("ssh", Some(&trailing)));
-        assert!(!askpass_inherited_routed_ssh("ssh", Some(&["uptime".into()])));
-        assert!(!askpass_inherited_routed_ssh("mysql", Some(&trailing)));
+        assert!(routed_interactive_native_tty("ssh", Some(&trailing)));
+        assert!(!routed_interactive_native_tty("ssh", Some(&["uptime".into()])));
     }
 
     #[test]
