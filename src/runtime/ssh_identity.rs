@@ -776,7 +776,7 @@ mod tests {
         assert!(is_direct_inner_openssh_trailing(&t));
         std::env::set_var(crate::bastion::route::ROUTED_INNER_ALIAS_ENV, "db");
         assert!(is_routed_bastion_outer_trailing(&t));
-        assert_eq!(routed_bastion_user_trailing(&t), Some(&t[2..]));
+        assert_eq!(routed_bastion_user_trailing(&t), Some(&t[3..]));
         std::env::remove_var(crate::bastion::route::ROUTED_INNER_ALIAS_ENV);
     }
 
@@ -794,7 +794,7 @@ mod tests {
         assert!(!is_routed_bastion_outer_trailing(&t));
         std::env::set_var(crate::bastion::route::ROUTED_INNER_ALIAS_ENV, "db");
         assert!(is_routed_bastion_outer_trailing(&t));
-        assert_eq!(routed_bastion_user_trailing(&t), Some(&t[2..]));
+        assert_eq!(routed_bastion_user_trailing(&t), Some(&t[3..]));
         std::env::remove_var(crate::bastion::route::ROUTED_INNER_ALIAS_ENV);
     }
 

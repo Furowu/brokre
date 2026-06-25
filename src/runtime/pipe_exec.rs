@@ -29,7 +29,7 @@ pub fn should_use_pipe_mode(
         return true;
     }
     if bin == "ssh" {
-        // Interactive bastion routes need a PTY end-to-end (`ssh -tt hop brokre ssh -tt inner`).
+        // Interactive bastion routes on a real TTY use askpass + inherited stdio (no local PTY/raw).
         if remote_trailing.is_some_and(crate::runtime::ssh_identity::is_routed_interactive_trailing)
         {
             return false;
@@ -60,7 +60,7 @@ pub fn should_use_pipe_mode(
 
 /// Run OpenSSH with `SSH_ASKPASS` for vault injection and optional stdin pipe forwarding.
 #[cfg(unix)]
-pub fn run(binary: &str, args: &[String], record_id: Uuid) -> Result<PtyRunResult> {
+fn configure_askpass(cmd: &mut Command, record_id: Uuid) -> Result<std::path::PathBuf> {
     if std::env::var_os("BROKRE_DISABLE_HARDENING").is_some() {
         return Err(BrokreError::Runtime(
             "BROKRE_DISABLE_HARDENING=1 — cannot inject password in pipe mode".into(),
@@ -77,6 +77,84 @@ pub fn run(binary: &str, args: &[String], record_id: Uuid) -> Result<PtyRunResul
     std::fs::write(&state_path, "0").map_err(BrokreError::Io)?;
 
     let owner_pid = std::process::id().to_string();
+    cmd.env("SSH_ASKPASS", &exe);
+    cmd.env("SSH_ASKPASS_REQUIRE", "force");
+    cmd.env("DISPLAY", ":0");
+    cmd.env("BROKRE_INTERNAL_ASKPASS", "1");
+    cmd.env("BROKRE_ASKPASS_RECORD_ID", record_id.to_string());
+    cmd.env("BROKRE_ASKPASS_TOKEN", &token);
+    cmd.env("BROKRE_ASKPASS_STATE", &state_path);
+    cmd.env("BROKRE_ASKPASS_OWNER", &owner_pid);
+    Ok(state_path)
+}
+
+/// Policy for Mac-side interactive bastion routes (TTY check applied separately).
+pub fn askpass_inherited_routed_ssh(
+    profile: &str,
+    remote_trailing: Option<&[String]>,
+) -> bool {
+    let bin = profile
+        .rsplit('/')
+        .next()
+        .unwrap_or(profile)
+        .to_ascii_lowercase();
+    bin == "ssh"
+        && std::env::var_os("BROKRE_ROUTED_INNER").is_none()
+        && remote_trailing.is_some_and(crate::runtime::ssh_identity::is_routed_interactive_trailing)
+}
+
+/// Interactive `bastion::inner` on the Mac: inherit the real TTY like plain `ssh`, inject via askpass.
+#[cfg(unix)]
+pub fn should_use_askpass_inherited_tty_mode(
+    profile: &str,
+    remote_trailing: Option<&[String]>,
+) -> bool {
+    askpass_inherited_routed_ssh(profile, remote_trailing)
+        && crate::security::tty::stdin_is_real_tty()
+}
+
+/// OpenSSH with askpass vault inject and inherited stdio — native TTY for nested interactive routes.
+#[cfg(unix)]
+pub fn run_askpass_inherited_tty(
+    binary: &str,
+    args: &[String],
+    record_id: Uuid,
+) -> Result<PtyRunResult> {
+    let bin = which::which(binary)
+        .map_err(|_| BrokreError::Runtime(format!("{}: command not found", binary)))?;
+    let mut cmd = Command::new(bin);
+    for a in args {
+        cmd.arg(a);
+    }
+    if let Ok(cwd) = std::env::current_dir() {
+        cmd.current_dir(cwd);
+    }
+
+    let state_path = configure_askpass(&mut cmd, record_id)?;
+    cmd.stdin(Stdio::inherit())
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit());
+
+    let status = cmd
+        .spawn()
+        .map_err(|e| BrokreError::Runtime(format!("spawn {}: {}", binary, e)))?
+        .wait()
+        .map_err(BrokreError::Io)?;
+    let _ = std::fs::remove_file(&state_path);
+
+    Ok(PtyRunResult {
+        exit_code: status.code().unwrap_or(-1),
+        captured_password: None,
+        had_prompt: true,
+        injector_pid: None,
+        injector_dur_ms: None,
+        injector_outcome: Some("askpass".into()),
+    })
+}
+
+/// Run OpenSSH with `SSH_ASKPASS` for vault injection and optional stdin pipe forwarding.
+#[cfg(unix)]
+pub fn run(binary: &str, args: &[String], record_id: Uuid) -> Result<PtyRunResult> {
     let stdin_is_pipe = crate::security::tty::stdin_is_pipe();
 
     let bin = which::which(binary)
@@ -89,14 +167,7 @@ pub fn run(binary: &str, args: &[String], record_id: Uuid) -> Result<PtyRunResul
         cmd.current_dir(cwd);
     }
 
-    cmd.env("SSH_ASKPASS", &exe);
-    cmd.env("SSH_ASKPASS_REQUIRE", "force");
-    cmd.env("DISPLAY", ":0");
-    cmd.env("BROKRE_INTERNAL_ASKPASS", "1");
-    cmd.env("BROKRE_ASKPASS_RECORD_ID", record_id.to_string());
-    cmd.env("BROKRE_ASKPASS_TOKEN", &token);
-    cmd.env("BROKRE_ASKPASS_STATE", &state_path);
-    cmd.env("BROKRE_ASKPASS_OWNER", &owner_pid);
+    let state_path = configure_askpass(&mut cmd, record_id)?;
 
     if stdin_is_pipe {
         cmd.stdin(Stdio::piped());
@@ -218,6 +289,25 @@ pub fn should_use_inherited_tty_mode(
 }
 
 #[cfg(not(unix))]
+pub fn should_use_askpass_inherited_tty_mode(
+    _profile: &str,
+    _remote_trailing: Option<&[String]>,
+) -> bool {
+    false
+}
+
+#[cfg(not(unix))]
+pub fn run_askpass_inherited_tty(
+    _binary: &str,
+    _args: &[String],
+    _record_id: Uuid,
+) -> Result<PtyRunResult> {
+    Err(BrokreError::Runtime(
+        "askpass inherited TTY mode is only supported on Unix".into(),
+    ))
+}
+
+#[cfg(not(unix))]
 pub fn run(_binary: &str, _args: &[String], _record_id: Uuid) -> Result<PtyRunResult> {
     Err(BrokreError::Runtime(
         "pipe mode is only supported on Unix".into(),
@@ -229,6 +319,16 @@ mod tests {
     use super::*;
 
     #[test]
+    fn askpass_inherited_for_interactive_routed_trailing() {
+        std::env::remove_var("BROKRE_ROUTED_INNER");
+        let token = crate::utils::paths::remote_brokre_shell_token().to_string();
+        let trailing = vec![token, "ssh".into(), "-tt".into(), "db".into()];
+        assert!(askpass_inherited_routed_ssh("ssh", Some(&trailing)));
+        assert!(!askpass_inherited_routed_ssh("ssh", Some(&["uptime".into()])));
+        assert!(!askpass_inherited_routed_ssh("mysql", Some(&trailing)));
+    }
+
+    #[test]
     fn inherited_tty_for_routed_inner_interactive_ssh() {
         assert!(routed_inner_inherited_ssh("ssh", true, true));
         assert!(!routed_inner_inherited_ssh("ssh", false, true));
@@ -238,6 +338,8 @@ mod tests {
 
     #[test]
     fn pipe_mode_for_scp_and_piped_ssh() {
+        std::env::remove_var("BROKRE_ROUTED_INNER");
+        std::env::remove_var("BROKRE_MCP_EXEC");
         assert!(should_use_pipe_mode("scp", false, None));
         assert!(should_use_pipe_mode("sftp", false, None));
         assert!(should_use_pipe_mode("ssh", true, None));
