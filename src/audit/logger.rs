@@ -6,7 +6,7 @@ use fs4::fs_std::FileExt;
 use hmac::{Hmac, Mac};
 use serde::{Deserialize, Serialize};
 use sha2::Sha256;
-use std::fs::{self, OpenOptions};
+use std::fs::OpenOptions;
 use std::io::{BufRead, BufReader, Write};
 use std::path::Path;
 
@@ -257,6 +257,7 @@ pub fn append(event: &mut AuditEvent, hmac_key: &[u8; 32]) -> Result<()> {
     let line = serde_json::to_string(event).map_err(|e| BrokreError::Audit(e.to_string()))?;
     #[cfg(unix)]
     {
+        use std::fs;
         use std::os::unix::fs::PermissionsExt;
         let _ = fs::set_permissions(&path, fs::Permissions::from_mode(0o600));
     }

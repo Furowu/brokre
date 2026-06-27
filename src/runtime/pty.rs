@@ -764,11 +764,11 @@ pub fn run(
     let inner_ssh_login_done_b = inner_ssh_login_done.clone();
     let pending_record_id_b = pending_record_id.clone();
     let pending_is_elevation_b = pending_is_elevation.clone();
-    let suppress_stdout_b = suppress_stdout.clone();
-    let suppress_until_post_auth_b = suppress_until_post_auth.clone();
+    let _suppress_stdout_b = suppress_stdout.clone();
+    let _suppress_until_post_auth_b = suppress_until_post_auth.clone();
     let bastion_outer_b = bastion_outer_hop;
-    let dual_ssh_inject_b = dual_ssh_inject;
-    let rescan_after_inject_b = rescan_after_inject.clone();
+    let _dual_ssh_inject_b = dual_ssh_inject;
+    let _rescan_after_inject_b = rescan_after_inject.clone();
     let injector = thread::spawn(move || {
         while !done_b.load(Ordering::Acquire) {
             if pending_inj_b.swap(false, Ordering::AcqRel) {
@@ -805,9 +805,9 @@ pub fn run(
                                         ssh_login_done_b.store(true, Ordering::Release);
                                     }
                                     crate::runtime::pty_drain::ensure_pty_echo_on(fd);
-                                    suppress_until_post_auth_b.store(false, Ordering::Release);
+                                    _suppress_until_post_auth_b.store(false, Ordering::Release);
                                     if !is_elevation {
-                                        let suppress_until = suppress_until_post_auth_b.clone();
+                                        let suppress_until = _suppress_until_post_auth_b.clone();
                                         thread::spawn(move || {
                                             thread::sleep(Duration::from_millis(250));
                                             suppress_until.store(false, Ordering::Release);
@@ -818,11 +818,11 @@ pub fn run(
                                     } else {
                                         35
                                     }));
-                                    suppress_stdout_b.store(false, Ordering::Release);
-                                    rescan_after_inject_b.store(true, Ordering::Release);
+                                    _suppress_stdout_b.store(false, Ordering::Release);
+                                    _rescan_after_inject_b.store(true, Ordering::Release);
                                     let n = inject_done_count_b.fetch_add(1, Ordering::AcqRel) + 1;
                                     let inner_done = inner_ssh_login_done_b.load(Ordering::Acquire);
-                                    let dual_hop_pending = dual_ssh_inject_b && !inner_done;
+                                    let dual_hop_pending = _dual_ssh_inject_b && !inner_done;
                                     if !dual_hop_pending && n >= inject_fields_b.len() {
                                         inject_completed_b.store(true, Ordering::Release);
                                     }

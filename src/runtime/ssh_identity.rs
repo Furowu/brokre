@@ -384,11 +384,6 @@ pub fn prune_stale_mux_sockets(_binary: &str, _argv: &[String]) -> Result<()> {
     Ok(())
 }
 
-#[cfg(not(unix))]
-pub fn build_mux_session_argv(argv: &[String]) -> Vec<String> {
-    argv.to_vec()
-}
-
 /// True when an OpenSSH mux control socket is already authenticated for this argv.
 #[cfg(unix)]
 pub fn mux_master_alive(binary: &str, argv: &[String]) -> Result<bool> {
