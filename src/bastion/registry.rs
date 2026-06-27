@@ -28,8 +28,8 @@ pub fn load_registry() -> Result<Vec<BastionEntry>> {
         return Ok(vec![]);
     }
     let data = fs::read_to_string(&path).map_err(BrokreError::Io)?;
-    let file: RegistryFile =
-        serde_json::from_str(&data).map_err(|e| BrokreError::Vault(format!("bastion registry: {e}")))?;
+    let file: RegistryFile = serde_json::from_str(&data)
+        .map_err(|e| BrokreError::Vault(format!("bastion registry: {e}")))?;
     Ok(file.bastions)
 }
 
@@ -69,16 +69,16 @@ pub fn list_bastions() -> Result<Vec<BastionEntry>> {
 
 pub fn enable_bastion(alias: &str) -> Result<BastionEntry> {
     if !SecretRecord::validate_name(alias) {
-        return Err(BrokreError::Vault(format!("invalid bastion alias: {alias}")));
+        return Err(BrokreError::Vault(format!(
+            "invalid bastion alias: {alias}"
+        )));
     }
     let store = VaultStore::open()?;
-    let rec = store
-        .get("ssh", alias)?
-        .ok_or_else(|| {
-            BrokreError::Vault(format!(
-                "no ssh alias '{alias}' — save it first with `brokre ssh {alias}`"
-            ))
-        })?;
+    let rec = store.get("ssh", alias)?.ok_or_else(|| {
+        BrokreError::Vault(format!(
+            "no ssh alias '{alias}' — save it first with `brokre ssh {alias}`"
+        ))
+    })?;
     let mut entries = load_registry()?;
     if let Some(existing) = entries.iter().find(|e| e.alias == alias) {
         return Ok(existing.clone());

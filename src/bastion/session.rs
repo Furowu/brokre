@@ -43,8 +43,8 @@ pub fn load_session() -> Result<Option<BastionSession>> {
         return Ok(None);
     }
     let data = fs::read_to_string(&path).map_err(BrokreError::Io)?;
-    let session: BastionSession =
-        serde_json::from_str(&data).map_err(|e| BrokreError::Runtime(format!("bastion session: {e}")))?;
+    let session: BastionSession = serde_json::from_str(&data)
+        .map_err(|e| BrokreError::Runtime(format!("bastion session: {e}")))?;
     Ok(Some(session))
 }
 

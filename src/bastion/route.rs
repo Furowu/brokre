@@ -100,6 +100,11 @@ pub fn check_loop(hops: &[String]) -> Result<()> {
             return Err(BrokreError::PolicyDenied);
         }
     }
+    for (idx, hop) in hops.iter().enumerate() {
+        if hops.iter().skip(idx + 1).any(|next| next == hop) {
+            return Err(BrokreError::PolicyDenied);
+        }
+    }
     Ok(())
 }
 
@@ -308,6 +313,12 @@ mod tests {
     }
 
     #[test]
+    fn check_loop_rejects_duplicate_hops_in_same_route() {
+        let hops = vec!["b1".to_string(), "b2".to_string(), "b1".to_string()];
+        assert!(matches!(check_loop(&hops), Err(BrokreError::PolicyDenied)));
+    }
+
+    #[test]
     fn build_single_hop_sh_c_complex_script() {
         let route = BastionRoute {
             hops: vec!["b150".into()],
@@ -356,14 +367,7 @@ mod tests {
         );
         assert_eq!(
             args,
-            vec![
-                "b150",
-                "ssh",
-                "-tt",
-                "root@10.0.0.195",
-                "uname",
-                "-a"
-            ]
+            vec!["b150", "ssh", "-tt", "root@10.0.0.195", "uname", "-a"]
         );
     }
 

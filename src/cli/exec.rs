@@ -33,8 +33,10 @@ use crate::vault::service::{
     save_with_reveal_prompt, scp_remote_host_token, suggest_name,
 };
 use crate::vault::store::VaultStore;
+use base64::Engine;
 use chrono::Utc;
-use std::io::BufRead;
+use std::io::{BufRead, Write};
+use std::process::Command;
 use std::time::Instant;
 use uuid::Uuid;
 
@@ -121,11 +123,7 @@ fn is_openssh_file_transfer(profile: &str) -> bool {
 /// is `[local…, remote:path]` with an empty remote-command tail, which would otherwise
 /// look like an interactive login and inject `-tt` before the local path — OpenSSH 10.x
 /// then fails locally with `scp: ambiguous target`.
-fn apply_openssh_tty_argv_adjustments(
-    profile: &str,
-    argv: &mut Vec<String>,
-    trailing: &[String],
-) {
+fn apply_openssh_tty_argv_adjustments(profile: &str, argv: &mut Vec<String>, trailing: &[String]) {
     if !is_openssh_profile(profile) || is_openssh_file_transfer(profile) {
         return;
     }
@@ -154,6 +152,7 @@ struct RoutedExec {
     route: BastionRoute,
     leading: Vec<String>,
     trailing: Vec<String>,
+    scp_path: Option<String>,
 }
 
 /// Entry point used by `main.rs` for any external subcommand.
@@ -186,6 +185,23 @@ pub fn run(binary: String, args: Vec<String>) -> Result<()> {
 }
 
 fn detect_bastion_route(profile: &str, args: &[String]) -> Result<Option<RoutedExec>> {
+    if is_openssh_file_transfer(profile) {
+        for (idx, token) in args.iter().enumerate() {
+            if token.starts_with('-') {
+                continue;
+            }
+            if let Some((route, path)) = parse_scp_routed_remote(token)? {
+                return Ok(Some(RoutedExec {
+                    profile: profile.to_string(),
+                    route,
+                    leading: args[..idx].to_vec(),
+                    trailing: args[idx + 1..].to_vec(),
+                    scp_path: Some(path),
+                }));
+            }
+        }
+    }
+
     let idx = match args.iter().position(|a| !a.starts_with('-')) {
         Some(i) => i,
         None => return Ok(None),
@@ -197,6 +213,7 @@ fn detect_bastion_route(profile: &str, args: &[String]) -> Result<Option<RoutedE
             route,
             leading: args[..idx].to_vec(),
             trailing: args[idx + 1..].to_vec(),
+            scp_path: None,
         }));
     }
     Ok(None)
@@ -207,6 +224,12 @@ fn exec_routed(r: RoutedExec) -> Result<()> {
     gate_args.push(r.route.addr.clone());
     gate_args.extend(r.trailing.clone());
     prepare_outbound_gate_for_exec(&r.profile, &gate_args)?;
+    if r.scp_path.is_some() {
+        return exec_routed_scp(r);
+    }
+    if tunnel_enabled() {
+        return exec_routed_via_tunnel(r, gate_args);
+    }
     let store = VaultStore::open()?;
     let inner_record = resolve_routed_inner_record(&store, &r.profile, &r.route)?;
     let direct_inner = std::env::var_os(DIRECT_INNER_ENV).is_some();
@@ -225,6 +248,121 @@ fn exec_routed(r: RoutedExec) -> Result<()> {
     let mut full = r.leading;
     full.append(&mut argv);
     run("ssh".to_string(), full)
+}
+
+fn tunnel_enabled() -> bool {
+    std::env::var("BROKRE_TUNNEL")
+        .map(|v| !(v == "0" || v.eq_ignore_ascii_case("false")))
+        .unwrap_or(true)
+}
+
+fn exec_routed_via_tunnel(r: RoutedExec, audit_args: Vec<String>) -> Result<()> {
+    let start = Instant::now();
+    let result = crate::tunnel::client::exec_route(&r.route, r.trailing.clone())?;
+    let dur = start.elapsed().as_millis() as u64;
+    let mut ev = AuditEvent {
+        ts: Utc::now().to_rfc3339(),
+        sid: Uuid::new_v4().to_string(),
+        action: "tunnel_exec".into(),
+        profile: r.profile,
+        name: r.route.addr.clone(),
+        exit: Some(result.exit_code),
+        dur_ms: Some(dur),
+        args_redacted: redact_args(&audit_args),
+        hardening: crate::security::hardening::last_hardening_report(),
+        injector_pid: result.injector_pid,
+        injector_dur_ms: result.injector_dur_ms,
+        injector_outcome: result.injector_outcome.clone(),
+        source: Some(exec_audit_source()),
+        route: Some(r.route.hops.clone()),
+        bastion: Some(r.route.first_hop().to_string()),
+        hmac_version: None,
+        prev_hmac: None,
+        hmac: None,
+    };
+    let _ = append(&mut ev, &get_or_init_audit_hmac_key()?);
+    std::process::exit(result.exit_code);
+}
+
+fn parse_scp_routed_remote(arg: &str) -> Result<Option<(BastionRoute, String)>> {
+    let Some((route_part, path)) = arg.rsplit_once(':') else {
+        return Ok(None);
+    };
+    if route_part.is_empty() || path.is_empty() {
+        return Ok(None);
+    }
+    let Some(route) = parse_route(route_part)? else {
+        return Ok(None);
+    };
+    Ok(Some((route, path.to_string())))
+}
+
+fn exec_routed_scp(r: RoutedExec) -> Result<()> {
+    if r.profile.rsplit('/').next().unwrap_or(&r.profile) != "scp" {
+        return Err(BrokreError::Runtime(
+            "routed file transfer currently supports scp only".into(),
+        ));
+    }
+    let remote_path = r
+        .scp_path
+        .as_deref()
+        .ok_or_else(|| BrokreError::Runtime("missing routed scp remote path".into()))?;
+    if r.leading.len() == 1 && r.trailing.is_empty() {
+        return exec_routed_scp_push(&r.route.addr, &r.leading[0], remote_path);
+    }
+    if r.leading.is_empty() && r.trailing.len() == 1 {
+        return exec_routed_scp_pull(&r.route.addr, remote_path, &r.trailing[0]);
+    }
+    Err(BrokreError::Runtime(
+        "routed scp supports one local path and one routed remote path".into(),
+    ))
+}
+
+fn exec_routed_scp_push(route_addr: &str, local_path: &str, remote_path: &str) -> Result<()> {
+    let input = std::fs::read(local_path).map_err(BrokreError::Io)?;
+    let encoded = base64::engine::general_purpose::STANDARD.encode(input);
+    let script = format!(
+        "printf '%s' {} | base64 -d > {}",
+        crate::bastion::route::shell_escape(&encoded),
+        crate::bastion::route::shell_escape(remote_path)
+    );
+    let mut child = Command::new(std::env::current_exe().map_err(BrokreError::Io)?)
+        .arg("ssh")
+        .arg(route_addr)
+        .arg(script)
+        .spawn()
+        .map_err(BrokreError::Io)?;
+    let status = child.wait().map_err(BrokreError::Io)?;
+    std::process::exit(status.code().unwrap_or(1));
+}
+
+fn exec_routed_scp_pull(route_addr: &str, remote_path: &str, local_path: &str) -> Result<()> {
+    let script = format!(
+        "base64 -w 0 {}",
+        crate::bastion::route::shell_escape(remote_path)
+    );
+    let output = Command::new(std::env::current_exe().map_err(BrokreError::Io)?)
+        .arg("ssh")
+        .arg(route_addr)
+        .arg(script)
+        .output()
+        .map_err(BrokreError::Io)?;
+    if !output.status.success() {
+        std::io::stderr()
+            .write_all(&output.stderr)
+            .map_err(BrokreError::Io)?;
+        std::process::exit(output.status.code().unwrap_or(1));
+    }
+    let compact: Vec<u8> = output
+        .stdout
+        .into_iter()
+        .filter(|b| !b.is_ascii_whitespace())
+        .collect();
+    let decoded = base64::engine::general_purpose::STANDARD
+        .decode(compact)
+        .map_err(|e| BrokreError::Runtime(format!("routed scp decode: {e}")))?;
+    std::fs::write(local_path, decoded).map_err(BrokreError::Io)?;
+    std::process::exit(0);
 }
 
 /// Mac-vault inner target for a routed exec (`openssh` connection token + alias name).
@@ -382,30 +520,27 @@ fn exec_saved(
     let routed_inner_passive = std::env::var_os("BROKRE_ROUTED_INNER").is_some();
     #[cfg(unix)]
     let inner_route = if is_bastion_outer_hop {
-        let inner_name = std::env::var(ROUTED_INNER_ALIAS_ENV)
-            .ok()
-            .or_else(|| {
-                crate::runtime::ssh_identity::routed_bastion_inner_alias(&resolved.trailing)
-                    .map(|s| s.to_string())
-            });
+        let inner_name = std::env::var(ROUTED_INNER_ALIAS_ENV).ok().or_else(|| {
+            crate::runtime::ssh_identity::routed_bastion_inner_alias(&resolved.trailing)
+                .map(|s| s.to_string())
+        });
         inner_name.and_then(|inner_name| {
-                let routed_name = format!("{}::{}", rec.name, inner_name);
-                lookup_profiles(profile).into_iter().find_map(|lp| {
-                    store
-                        .get(lp, &routed_name)
-                        .ok()
-                        .flatten()
-                        .or_else(|| store.get(lp, &inner_name).ok().flatten())
-                        .map(|r| {
-                            let hint = crate::runtime::ssh_identity::openssh_connection_target(
-                                &r.saved_args,
-                            )
-                            .or(r.host_alias.clone())
-                            .unwrap_or_else(|| inner_name.to_string());
-                            (r.id, hint)
-                        })
-                })
+            let routed_name = format!("{}::{}", rec.name, inner_name);
+            lookup_profiles(profile).into_iter().find_map(|lp| {
+                store
+                    .get(lp, &routed_name)
+                    .ok()
+                    .flatten()
+                    .or_else(|| store.get(lp, &inner_name).ok().flatten())
+                    .map(|r| {
+                        let hint =
+                            crate::runtime::ssh_identity::openssh_connection_target(&r.saved_args)
+                                .or(r.host_alias.clone())
+                                .unwrap_or_else(|| inner_name.to_string());
+                        (r.id, hint)
+                    })
             })
+        })
     } else {
         None
     };
@@ -421,6 +556,10 @@ fn exec_saved(
         inner_host_hint,
         inject_disabled: false,
         passive_inner_ssh: routed_inner_passive,
+        skip_interactive_raw: false,
+        exit_on_shared_connection_closed: crate::runtime::ssh_identity::remote_command_needs_tty(
+            user_trailing,
+        ),
     };
     #[cfg(unix)]
     let exec_cred = PtyCredential::VaultRecord(rec.id);
@@ -431,11 +570,11 @@ fn exec_saved(
         resolved.trailing.is_empty(),
     ) {
         crate::runtime::pipe_exec::run_inherited_tty(profile, &argv)?
-    } else if crate::runtime::pipe_exec::should_use_mux_inherited_tty_mode(
-        profile,
-        remote_trailing,
-    ) {
-        crate::runtime::pipe_exec::run_interactive_routed_mux_tty(profile, &argv, rec.id)?
+    } else if crate::runtime::pipe_exec::should_use_mux_inherited_tty_mode(profile, remote_trailing)
+    {
+        crate::runtime::pipe_exec::run_interactive_routed_mux_tty(
+            profile, &argv, rec.id, &patterns,
+        )?
     } else if crate::runtime::pipe_exec::should_use_pipe_mode(
         profile,
         crate::security::tty::stdin_is_pipe(),
@@ -715,6 +854,67 @@ mod tests {
 
     #[test]
     #[serial_test::serial]
+    fn tunnel_enabled_by_default() {
+        std::env::remove_var("BROKRE_TUNNEL");
+        assert!(tunnel_enabled());
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn tunnel_can_be_disabled_for_legacy_escape_hatch() {
+        std::env::set_var("BROKRE_TUNNEL", "0");
+        assert!(!tunnel_enabled());
+        std::env::set_var("BROKRE_TUNNEL", "false");
+        assert!(!tunnel_enabled());
+        std::env::set_var("BROKRE_TUNNEL", "1");
+        assert!(tunnel_enabled());
+        std::env::remove_var("BROKRE_TUNNEL");
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn parses_routed_scp_push_remote_spec() {
+        with_temp_brokre_home(|| {
+            let store = VaultStore::open().unwrap();
+            store
+                .insert(sample_ssh_record("b150", "198.51.100.2"))
+                .unwrap();
+            crate::bastion::enable_bastion("b150").unwrap();
+
+            let args = vec!["./local.bin".into(), "b150::db:/tmp/local.bin".into()];
+            let routed = detect_bastion_route("scp", &args)
+                .unwrap()
+                .expect("routed scp");
+            assert_eq!(routed.route.addr, "b150::db");
+            assert_eq!(routed.scp_path.as_deref(), Some("/tmp/local.bin"));
+            assert_eq!(routed.leading, vec!["./local.bin".to_string()]);
+            assert!(routed.trailing.is_empty());
+        });
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn parses_routed_scp_pull_remote_spec() {
+        with_temp_brokre_home(|| {
+            let store = VaultStore::open().unwrap();
+            store
+                .insert(sample_ssh_record("b150", "198.51.100.2"))
+                .unwrap();
+            crate::bastion::enable_bastion("b150").unwrap();
+
+            let args = vec!["b150::db:/tmp/remote.bin".into(), "./remote.bin".into()];
+            let routed = detect_bastion_route("scp", &args)
+                .unwrap()
+                .expect("routed scp");
+            assert_eq!(routed.route.addr, "b150::db");
+            assert_eq!(routed.scp_path.as_deref(), Some("/tmp/remote.bin"));
+            assert!(routed.leading.is_empty());
+            assert_eq!(routed.trailing, vec!["./remote.bin".to_string()]);
+        });
+    }
+
+    #[test]
+    #[serial_test::serial]
     fn scp_resolves_ssh_record_by_host() {
         with_temp_brokre_home(|| {
             let store = VaultStore::open().unwrap();
@@ -776,10 +976,7 @@ mod tests {
 
     #[test]
     fn scp_argv_skips_interactive_tty_insert() {
-        let mut argv = vec![
-            "./local.bin".into(),
-            "root@10.0.0.1:/remote/path".into(),
-        ];
+        let mut argv = vec!["./local.bin".into(), "root@10.0.0.1:/remote/path".into()];
         apply_openssh_tty_argv_adjustments("scp", &mut argv, &[]);
         assert_eq!(
             argv,

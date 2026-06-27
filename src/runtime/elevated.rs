@@ -98,12 +98,7 @@ pub fn build_persistent_shell_remote_argv(
     );
     let quoted = shell_single_quote_escape(&inner);
     match mode {
-        ElevatedMode::Sudo => vec![
-            "sudo".into(),
-            "bash".into(),
-            "-c".into(),
-            quoted,
-        ],
+        ElevatedMode::Sudo => vec!["sudo".into(), "bash".into(), "-c".into(), quoted],
         ElevatedMode::SudoLogin => vec![
             "sudo".into(),
             "-i".into(),
@@ -206,10 +201,17 @@ pub fn shell_single_quote_escape(s: &str) -> String {
 }
 
 /// Build `brokre ssh <alias> …` argv for a one-shot elevated remote command.
-pub fn build_ssh_argv(alias: &str, mode: ElevatedMode, command: &str, su_user: Option<&str>) -> Result<Vec<String>> {
+pub fn build_ssh_argv(
+    alias: &str,
+    mode: ElevatedMode,
+    command: &str,
+    su_user: Option<&str>,
+) -> Result<Vec<String>> {
     let alias = alias.trim();
     if alias.is_empty() {
-        return Err(BrokreError::Runtime("elevated exec: alias is required".into()));
+        return Err(BrokreError::Runtime(
+            "elevated exec: alias is required".into(),
+        ));
     }
     let command = command.trim();
     if command.is_empty() {
@@ -224,12 +226,7 @@ pub fn build_ssh_argv(alias: &str, mode: ElevatedMode, command: &str, su_user: O
     let mut argv = vec![alias.to_string()];
     match mode {
         ElevatedMode::Sudo => {
-            argv.extend([
-                "sudo".into(),
-                "bash".into(),
-                "-lc".into(),
-                quoted,
-            ]);
+            argv.extend(["sudo".into(), "bash".into(), "-lc".into(), quoted]);
         }
         ElevatedMode::SudoLogin => {
             argv.extend([
@@ -289,8 +286,7 @@ mod tests {
 
     #[test]
     fn build_sudo_login_argv() {
-        let argv =
-            build_ssh_argv("prod", ElevatedMode::SudoLogin, "echo $HOME", None).unwrap();
+        let argv = build_ssh_argv("prod", ElevatedMode::SudoLogin, "echo $HOME", None).unwrap();
         assert_eq!(argv[1..5], ["sudo", "-i", "bash", "-lc"]);
     }
 
@@ -312,10 +308,7 @@ mod tests {
 
     #[test]
     fn shell_escape_embedded_quote() {
-        assert_eq!(
-            shell_single_quote_escape("it's fine"),
-            "'it'\"'\"'s fine'"
-        );
+        assert_eq!(shell_single_quote_escape("it's fine"), "'it'\"'\"'s fine'");
     }
 
     #[test]

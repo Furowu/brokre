@@ -10,9 +10,9 @@
 
 Developed by [Techinone](https://www.tio.tech) (成都同创合一科技有限公司).
 
-## What's New in 0.2.8
+## What's New in 0.2.17
 
-**0.2.8** is the current release: **one-command npm install**, **auto MCP registration** across major IDEs, **auto binary upgrade** on each MCP start — plus the **bastion broker** for multi-host / cluster operations (one laptop, one MCP session, many inner targets).
+**0.2.17** is the current release: **SessionRelay routed SSH by default**, **multi-hop bastion routes**, **local-only list by default**, and the existing **one-command npm install / auto MCP registration / auto binary upgrade** flow.
 
 ### npm — install, auto-update, auto MCP setup
 
@@ -40,10 +40,10 @@ The bastion layer lets AI agents operate **many hosts behind one jump box** with
 | Advantage | What it means in practice |
 |-----------|----------------------------|
 | **Single control plane** | Register a bastion SSH alias (`b150`), sync inner aliases from remote brokre, and drive the whole cluster from `brokre list` / MCP `brokre_list` |
-| **Smart routing** | `b150::db`, `b150::app-01`, multi-hop `b1::b2::inner` — route separator `::`; AI picks `access=via_b150` when direct LAN paths are down |
+| **Smart routing** | `b150::db`, `b150::app-01`, multi-hop `b1::b2::inner` — route separator `::`; routed SSH uses SessionRelay by default |
 | **Secrets stay on the bastion** | Routed exec runs `~/.brokre/bin/brokre` on the jump host; laptop holds metadata and session gate, not inner-host passwords |
 | **Human gate, agent-friendly** | Bastion outbound requires unlock (TTY, `/bastion-auth`, or MCP URL elicitation); gate auth survives manage UI idle expiry so long MCP runs keep working |
-| **Cluster-safe defaults** | Reachability probes with ms timeouts and concurrency caps; unreachable local aliases hidden from default list; loop detection and audit `route`/`bastion` fields |
+| **Cluster-safe defaults** | Local-only list by default; explicit bastion discovery; reachability probes with ms timeouts and concurrency caps; loop detection and audit `route`/`bastion` fields |
 | **Privileged ops over routes** | `brokre_exec_elevated` and `sudo`/`sudo -i` paths work through bastions with session reuse and PTY hardening |
 
 Typical flow for a K8s / DB / batch cluster behind one entry host:
@@ -52,7 +52,7 @@ Typical flow for a K8s / DB / batch cluster behind one entry host:
 brokre bastion enable b150
 brokre bastion sync b150 --json          # pull inner alias catalog
 brokre bastion unlock
-brokre list --json                       # b150::db, b150::worker-01, …
+brokre list --include-bastions --json    # b150::db, b150::worker-01, …
 brokre ssh b150::db systemctl status   # MCP: brokre_exec with routed alias
 ```
 
@@ -62,7 +62,7 @@ MCP equivalent:
 { "binary": "ssh", "args": ["b150::db", "uname", "-a"] }
 ```
 
-**Gate policy (default vs strict)** — see [Bastion gate policy](#bastion-gate-policy-default-vs-strict) below. Gate is inactive until `brokre bastion set-key`; then **default** unlocks only bastion outbound paths; **strict** requires unlock for every exec/list.
+**Gate policy (default vs strict)** — see [Bastion gate policy](#bastion-gate-policy-default-vs-strict) below. Gate is inactive until `brokre bastion set-key`; then **default** unlocks only bastion outbound paths; **strict** requires unlock for every exec while list remains local-only unless bastion discovery is requested.
 
 See [Cross-network list inheritance](#cross-network-list-inheritance-bastion-broker) and [Bastion proxy](#bastion-proxy-cross-network--intranet-entry) below for setup details.
 
@@ -222,7 +222,7 @@ More clients and env vars: [packages/brokre-mcp/README.md](packages/brokre-mcp/R
 
 | MCP tool | Purpose |
 |----------|---------|
-| `brokre_list` | Saved aliases; with bastions: auto-probe, merge routed aliases (`b150::db`), hide unreachable; includes `access`/`availability`/`bastion_gate` |
+| `brokre_list` | Saved local aliases by default; set `include_bastions=true` to discover routed aliases (`b150::db`), which may require bastion unlock; includes `access`/`availability`/`bastion_gate` |
 | `brokre_exec` | Run **any** saved CLI alias (`binary` + `args`); `ssh` supports `shell_command` for remote scripts; `ssh` + `sudo`/`su` auto-reuses elevated session |
 | `brokre_exec_elevated` | Remote privileged command (`alias`, `command`, `mode`); default `session=reuse` (10 min idle timeout) |
 | `brokre_setup` | Open manage UI in browser for the human to add creds |
@@ -292,6 +292,17 @@ When the session pool is enabled, responses include `session_reused` and `sessio
 
 Bastion routes work the same: `args=["b150::db"]` with `shell_command` as the remote script.
 
+#### SessionRelay tunnel (default)
+
+`brokre ssh b150::db` uses the SessionRelay path by default: the laptop starts `brokre tunnel agent --stdio` on `b150` over SSH, and the agent runs `brokre ssh db` on the bastion. Multi-hop routes peel one hop per agent (`b1::b2::db` starts on `b1`, then `b1` continues with `b2::db`). Inner credentials stay in the bastion vault; the laptop only relays terminal bytes. `BROKRE_TUNNEL=0` is a temporary legacy escape hatch for emergency rollback.
+
+```bash
+brokre tunnel doctor b150
+brokre ssh b150::db uname -a
+```
+
+MCP `brokre_exec` responses for routed SSH include `tunnel: { mode, active }`. TcpForward, endpoint sync, Manage UI tunnel controls, and persistent `tunneld` are later phases.
+
 | Control | Default |
 |---------|---------|
 | Idle teardown | 10 minutes |
@@ -342,7 +353,7 @@ brokre list --all --json        # include unreachable aliases (debugging)
 brokre list --no-bastion-discovery   # local only — no SSH, no probe
 ```
 
-When bastions are registered, `brokre list` **by default**: probes reachability (SSH aliases require a valid server banner; other protocols use TCP), merges bastion-discovered aliases (e.g. `b150::db`), and **hides unreachable** local LAN entries so AI agents do not pick wrong paths.
+When bastions are registered, `brokre list` **stays local-only by default** and does not SSH to bastions or trigger bastion unlock. Use `brokre list --include-bastions` (MCP: `include_bastions=true`) when you actually need routed aliases such as `b150::db`; that remote discovery may require unlock.
 
 ### Cross-network list inheritance (bastion broker)
 
@@ -353,14 +364,14 @@ For **cross-network** access — travel, VPN, public entry points — when direc
 1. Laptop: `brokre bastion enable b150` (`b150` is a saved SSH alias)
 2. Bastion host runs brokre at `~/.brokre/bin/brokre` (standard install / `npx` path) with inner aliases saved (e.g. `db`)
 
-**Smart list**
+**Routed list**
 
 ```bash
 brokre bastion unlock            # if bastion key is set
-brokre list                      # includes b150::db (route=b150, access=via_b150)
+brokre list --include-bastions   # includes b150::db (route=b150, access=via_b150)
 ```
 
-When cross-network, local `db` (`access=direct`) is **omitted** if unreachable; use `b150::db` instead.
+When cross-network, use `--include-bastions` when you need routed aliases. Plain `brokre list` stays local-only and does not unlock or SSH to bastions.
 
 **Execute**
 
@@ -379,7 +390,7 @@ Promote **any** saved SSH alias whose remote host runs brokre into a bastion bro
 brokre bastion enable b150        # register ssh alias b150 as bastion
 brokre bastion set-key              # set bastion unlock key (TTY)
 brokre bastion unlock               # unlock outbound session (TTL, 30 min idle default)
-brokre list --json                  # smart list: reachability + bastion-routed aliases
+brokre list --include-bastions --json # discover bastion-routed aliases
 brokre ssh b150::db uname -a        # routed exec via b150 remote brokre
 brokre bastion sync b150 --json     # fetch alias list from one bastion
 ```
@@ -398,7 +409,7 @@ Policy is stored at `~/.brokre/bastion/policy.json` (`strict_mode`, default `fal
 | Mode | `gate_mode` | When unlock is required (key must be set) |
 |------|-------------|-------------------------------------------|
 | **default** | `default` | **Bastion outbound only** — `b150::inner` routed exec; SSH/scp/sftp to a **registered** bastion alias; `brokre list` / `brokre_list` when bastion discovery SSHs to bastions. Purely **local** exec (e.g. `brokre ssh lan-db`) does **not** require unlock. |
-| **strict** | `strict` | **Every** `brokre exec` and `brokre list` (and MCP `brokre_exec` / `brokre_list`) — including local LAN aliases. Use when you want a human in the loop for all agent operations while a bastion key is configured. |
+| **strict** | `strict` | **Every** `brokre exec` / MCP `brokre_exec`; metadata-only `brokre list` stays local-only, while `--include-bastions` still requires unlock. Use when you want a human in the loop for agent execution while a bastion key is configured. |
 
 **Examples (default mode, key set, session locked)**
 
@@ -407,16 +418,16 @@ Policy is stored at `~/.brokre/bastion/policy.json` (`strict_mode`, default `fal
 | `brokre ssh prod uname -a` (local alias) | No |
 | `brokre ssh b150::db uname -a` | Yes |
 | `brokre ssh b150 uptime` (registered bastion) | Yes |
-| `brokre list` with bastion discovery | Yes |
-| `brokre list --no-bastion-discovery` (local only) | No |
+| `brokre list --include-bastions` | Yes |
+| `brokre list` (local only) | No |
 
-In **strict** mode, every row above requires unlock.
+In **strict** mode, exec rows require unlock; metadata-only `brokre list` remains local-only and does not unlock unless `--include-bastions` is used.
 
 **Set gate mode**
 
 ```bash
 brokre bastion strict status    # default | strict
-brokre bastion strict on        # strict — all exec/list gated
+brokre bastion strict on        # strict — all exec gated; list stays local-only unless discovery is requested
 brokre bastion strict off       # default — bastion outbound only
 ```
 

@@ -284,8 +284,7 @@ mod tests {
         }
         event.prev_hmac = prev_hmac;
         event.hmac = Some(compute_hmac_for_append(event, hmac_key));
-        let line =
-            serde_json::to_string(event).map_err(|e| BrokreError::Audit(e.to_string()))?;
+        let line = serde_json::to_string(event).map_err(|e| BrokreError::Audit(e.to_string()))?;
         use std::io::Write;
         let mut file = OpenOptions::new()
             .append(true)
@@ -391,15 +390,7 @@ mod tests {
             Some(vec!["b150".into()]),
             Some("b150"),
         );
-        sample_with_bastion(
-            tmp.path(),
-            "exec",
-            "ssh",
-            "other",
-            Some("cli"),
-            None,
-            None,
-        );
+        sample_with_bastion(tmp.path(), "exec", "ssh", "other", Some("cli"), None, None);
 
         let q = AuditQuery {
             bastion: Some("b150".into()),

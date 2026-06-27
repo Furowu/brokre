@@ -8,4 +8,5 @@ pub mod manage;
 pub mod mcp;
 pub mod reveal;
 pub mod rm;
+pub mod tunnel;
 pub mod upgrade;

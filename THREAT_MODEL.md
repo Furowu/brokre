@@ -86,6 +86,12 @@
 - **Mitigation**: Session file mode 0600; only manage `POST /api/bastion/unlock` (Bearer session token + Argon2id verifier), `POST /api/bastion/set-key` (Bearer write auth + Argon2id verifier), or TTY `brokre bastion unlock` / `brokre bastion set-key` create or rotate keys and sessions. MCP uses URL-mode elicitation (sensitive key never in MCP client) or localhost browser + status polling. Gate unlock/status remain available after embedded manage idle expiry so MCP/CLI unlock flows keep working, but they do not re-enable general Manage API auth. Unlock/deny/set-key events are audit-logged (HMAC v4 with `bastion` field).
 - **Residual risk**: Root on the laptop can still patch brokre or replace the binary; bastion gate is a human intent latch, not anti-root.
 
+## T15: SessionRelay tunnel agent misuse
+
+- **Attack**: A local user or AI process runs routed SSH through a registered bastion, which starts `brokre tunnel agent --stdio` by default, then attempts routed SSH fan-out through aliases such as `b150::db`.
+- **Mitigation**: Phase 1 agents are started only over an authenticated SSH session to the bastion and still require bastion gate unlock when configured. The agent executes `brokre ssh <inner>` on the bastion, so inner credentials remain in the bastion vault and are injected by the short-lived injector path there. The protocol is single-session over SSH stdio; no TCP listener or persistent daemon is exposed in Phase 1. `tunnel_exec` audit events record route metadata, bastion, exit code, and duration, not terminal payload.
+- **Residual risk**: An unlocked bastion session permits the local account to open SessionRelay sessions until idle expiry. A compromised bastion can still use its local vault and network position for lateral movement; SessionRelay does not make that worse, but it introduces agent parsing and PTY relay code into the default routed SSH path. `BROKRE_TUNNEL=0` remains a temporary legacy escape hatch for emergency rollback.
+
 ## Future Work
 
 - **Custom TOML profiles**: Load `~/.brokre/profiles/*.toml` with path validation and TTY trust (see README roadmap).

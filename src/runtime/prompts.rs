@@ -161,11 +161,11 @@ mod tests {
         assert!(is_remote_sudo_password_prompt(
             b"Last login: Mon May 18 08:41:12 2026\n[sudo] password for deploy: "
         ));
-        assert!(pats.iter().any(|p| {
-            p.is_match(b"[sudo: authenticate] Password: ")
-        }));
+        assert!(pats
+            .iter()
+            .any(|p| { p.is_match(b"[sudo: authenticate] Password: ") }));
         assert!(is_remote_sudo_password_prompt(
-            b"rowu3@host:~$ sudo -i\n[sudo: authenticate] Password: "
+            b"dev-user@host:~$ sudo -i\n[sudo: authenticate] Password: "
         ));
     }
 

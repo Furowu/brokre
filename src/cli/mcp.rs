@@ -100,11 +100,7 @@ mod tests {
     fn resolve_setup_script_finds_repo_file() {
         let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         let expected = manifest.join("packages/brokre-mcp/setup-mcp.js");
-        assert!(
-            expected.is_file(),
-            "missing {}",
-            expected.display()
-        );
+        assert!(expected.is_file(), "missing {}", expected.display());
         std::env::set_var(
             "BROKRE_MCP_SETUP_SCRIPT",
             expected.to_string_lossy().as_ref(),

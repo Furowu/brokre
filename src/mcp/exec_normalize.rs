@@ -82,10 +82,7 @@ mod tests {
     fn shell_command_appends_sh_c() {
         let args = s(&["prod"]);
         let out = normalize_exec_argv("ssh", &args, Some("echo a > /tmp/f")).unwrap();
-        assert_eq!(
-            out,
-            s(&["prod", "sh", "-c", "echo a > /tmp/f"])
-        );
+        assert_eq!(out, s(&["prod", "sh", "-c", "echo a > /tmp/f"]));
     }
 
     #[test]

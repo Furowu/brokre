@@ -98,9 +98,6 @@ pub fn gate_applies_to_exec(profile: &str, args: &[String]) -> bool {
 }
 
 pub fn gate_applies_to_list(probe: bool, include_bastions: bool) -> bool {
-    if strict_mode() {
-        return true;
-    }
     list_touches_bastion_outbound(probe, include_bastions)
 }
 
@@ -497,9 +494,9 @@ mod tests {
     fn strict_mode_gate_applies_to_any_exec() {
         with_temp_brokre_home(|| {
             crate::bastion::policy::set_strict_mode(true).unwrap();
-            assert!(gate_applies_to_exec("ssh", &["lan07".into()]));
+            assert!(gate_applies_to_exec("ssh", &["db".into()]));
             crate::bastion::policy::set_strict_mode(false).unwrap();
-            assert!(!gate_applies_to_exec("ssh", &["lan07".into()]));
+            assert!(!gate_applies_to_exec("ssh", &["db".into()]));
         });
     }
 
@@ -527,21 +524,30 @@ mod tests {
 
     #[test]
     #[serial]
-    fn prepare_outbound_gate_touches_idle_when_already_unlocked() {
+    fn prepare_outbound_gate_for_bastion_list_touches_idle_when_already_unlocked() {
         with_temp_brokre_home(|| {
             use crate::security::secret::SecretString;
             crate::bastion::key::set_bastion_key(&SecretString::new("gate-key".into())).unwrap();
-            crate::bastion::policy::set_strict_mode(true).unwrap();
+            let store = crate::vault::store::VaultStore::open().unwrap();
+            crate::vault::service::auto_save(
+                &store,
+                "ssh",
+                &["u@10.0.0.150".into()],
+                SecretString::new("pw".into()),
+                "b150",
+            )
+            .unwrap();
+            crate::bastion::enable_bastion("b150").unwrap();
             let session = crate::bastion::session::unlock_session().unwrap();
             let first_idle = session.idle_expires_at;
             std::thread::sleep(std::time::Duration::from_millis(25));
-            prepare_outbound_gate_for_list(false, false).unwrap();
+            prepare_outbound_gate_for_list(false, true).unwrap();
             let updated = crate::bastion::session::load_session()
                 .unwrap()
                 .expect("session");
             assert!(updated.idle_expires_at > first_idle);
-            assert!(!needs_unlock_for_list(false, false));
-            crate::bastion::policy::set_strict_mode(false).unwrap();
+            assert!(!needs_unlock_for_list(false, true));
+            assert!(!gate_applies_to_list(false, false));
         });
     }
 }

@@ -10,9 +10,9 @@
 
 由 [Techinone](https://www.tio.tech)（成都同创合一科技有限公司）开发维护。
 
-## 0.2.8 新特性
+## 0.2.17 新特性
 
-**0.2.8** 为当前正式版本：**一条 npm 命令安装**、**主流 IDE 自动注册 MCP**、**每次 MCP 启动自动升级二进制** — 并包含面向多主机 / 集群的**堡垒代理**（一台笔记本、一个 MCP 会话，操作多台内网目标）。
+**0.2.17** 为当前正式版本：**SessionRelay 路由 SSH 默认启用**、**多跳堡垒路由**、**列表默认 local-only**，并保留已有的**一条 npm 命令安装 / 主流 IDE 自动注册 MCP / 每次 MCP 启动自动升级二进制**流程。
 
 ### npm — 安装、自动更新、自动 MCP 注册
 
@@ -40,10 +40,10 @@ npm install -g brokre          # 或：npx -y brokre@latest
 | 优势 | 实际效果 |
 |------|----------|
 | **统一控制面** | 注册堡垒 SSH 别名（`b150`），从远端 brokre 同步内网别名，用 `brokre list` / MCP `brokre_list` 驱动整个集群 |
-| **智能路由** | `b150::db`、`b150::app-01`、多跳 `b1::b2::inner` — 路由分隔符 `::`；直连不可达时 AI 自动选择 `access=via_b150` |
+| **智能路由** | `b150::db`、`b150::app-01`、多跳 `b1::b2::inner` — 路由分隔符 `::`；路由 SSH 默认走 SessionRelay |
 | **密钥留在堡垒** | 路由执行在跳板机调用 `~/.brokre/bin/brokre`；笔记本只缓存元数据并做人机门控，不持有内网主机密码 |
 | **人机门控 + Agent 友好** | 堡垒出站需解锁（TTY、`/bastion-auth` 或 MCP URL elicitation）；门控鉴权不受 manage UI 空闲过期影响，长时 MCP 任务可继续解锁 |
-| **集群安全默认** | 毫秒级可达性探测与并发上限；默认列表隐藏不可达本地别名；环路检测与审计 `route`/`bastion` 字段 |
+| **集群安全默认** | 列表默认 local-only；显式堡垒发现；毫秒级可达性探测与并发上限；环路检测与审计 `route`/`bastion` 字段 |
 | **跨路由提权** | `brokre_exec_elevated` 及 `sudo`/`sudo -i` 路径支持经堡垒执行，含会话复用与 PTY 加固 |
 
 K8s / 数据库 / 批处理集群经单一入口主机访问的典型流程：
@@ -52,7 +52,7 @@ K8s / 数据库 / 批处理集群经单一入口主机访问的典型流程：
 brokre bastion enable b150
 brokre bastion sync b150 --json          # 拉取内网别名目录
 brokre bastion unlock
-brokre list --json                       # b150::db、b150::worker-01 …
+brokre list --include-bastions --json    # b150::db、b150::worker-01 …
 brokre ssh b150::db systemctl status   # MCP：brokre_exec 路由别名
 ```
 
@@ -62,7 +62,7 @@ MCP 等价调用：
 { "binary": "ssh", "args": ["b150::db", "uname", "-a"] }
 ```
 
-**门控策略（默认 / 严格）** — 详见下文 [堡垒门控策略](#堡垒门控策略默认-vs-严格)。未执行 `brokre bastion set-key` 前门控不生效；设钥后 **默认模式** 仅堡垒出站需解锁，**严格模式** 要求所有 exec/list 先解锁。
+**门控策略（默认 / 严格）** — 详见下文 [堡垒门控策略](#堡垒门控策略默认-vs-严格)。未执行 `brokre bastion set-key` 前门控不生效；设钥后 **默认模式** 仅堡垒出站需解锁，**严格模式** 要求所有 exec 解锁；list 仍保持 local-only，除非显式请求堡垒发现。
 
 完整配置见下文 [跨网段列表继承](#跨网段列表继承堡垒代理) 与 [堡垒代理](#堡垒代理跨网段--内网入口)。
 
@@ -222,7 +222,7 @@ brokre mcp setup
 
 | MCP 工具 | 用途 |
 |----------|------|
-| `brokre_list` | 已保存别名；有堡垒时自动探测、合并路由别名（`b150::db`）、隐藏不可达项；含 `access`/`availability`/`bastion_gate` |
+| `brokre_list` | 默认仅列本地已保存别名；需要路由别名（`b150::db`）时显式传 `include_bastions=true`，这可能触发堡垒解锁；含 `access`/`availability`/`bastion_gate` |
 | `brokre_exec` | 运行**任意**已保存 CLI 别名（`binary` + `args`）；`ssh` 可用 `shell_command` 写远端脚本；`ssh` + `sudo`/`su` 时自动复用 elevated 会话 |
 | `brokre_exec_elevated` | 远端提权执行（`alias` + `command` + `mode`）；默认 `session=reuse` 复用后台 shell（10 分钟空闲销毁） |
 | `brokre_setup` | 在浏览器打开 manage UI，由人类添加凭据 |
@@ -292,6 +292,17 @@ brokre **不是** `ssh`/`mysql` 的替代品 — 必须加 `brokre` 前缀才会
 
 堡垒路由同理：`args=["b150::db"]`，`shell_command` 为远端脚本内容。
 
+#### SessionRelay 隧道（默认启用）
+
+`brokre ssh b150::db` 默认使用 SessionRelay 路径：笔记本通过 SSH 在 `b150` 上启动 `brokre tunnel agent --stdio`，agent 在堡垒机本地执行 `brokre ssh db`。多跳会逐跳剥离 route（`b1::b2::db` 先在 `b1` 启动 agent，再由 `b1` 继续访问 `b2::db`）。内层凭据留在堡垒机 vault，笔记本只中继终端字节。`BROKRE_TUNNEL=0` 是临时旧路径回退开关，用于紧急恢复。
+
+```bash
+brokre tunnel doctor b150
+brokre ssh b150::db uname -a
+```
+
+MCP `brokre_exec` 的 routed SSH 响应会包含 `tunnel: { mode, active }`。TcpForward、endpoint sync、Manage UI 隧道控制和常驻 `tunneld` 属于后续阶段。
+
 | 控制项 | 默认 |
 |--------|------|
 | 空闲销毁 | 10 分钟 |
@@ -337,12 +348,12 @@ brokre <你的-cli> <别名> [args...]
 ### 列出元数据（AI / 脚本安全）
 
 ```bash
-brokre list --json              # 无堡垒时：本地别名；有堡垒时：智能列表（见下）
+brokre list --json              # 默认仅本地别名，不 SSH 到堡垒
 brokre list --all --json        # 含不可达别名（排查用）
-brokre list --no-bastion-discovery   # 仅本地，不 SSH、不探测
+brokre list --include-bastions --json # 需要路由别名时显式发现堡垒
 ```
 
-已注册堡垒时，`brokre list` **默认**会：探测可达性（SSH 别名读服务端 banner，其它协议 TCP）、合并堡垒上的别名（如 `b150::db`）、**隐藏不可达**的本地局域网项，避免 AI 误用跨网不可达的直连别名。
+已注册堡垒时，`brokre list` **默认仍只读本地元数据**，不会 SSH 到堡垒，也不会触发堡垒解锁。只有显式 `--include-bastions`（MCP: `include_bastions=true`）才会拉取堡垒上的别名（如 `b150::db`）。
 
 ### 跨网清单继承（堡垒 broker）
 
@@ -353,14 +364,14 @@ brokre list --no-bastion-discovery   # 仅本地，不 SSH、不探测
 1. 本机：`brokre bastion enable b150`（`b150` 为已保存的 SSH 别名）
 2. 堡垒主机上已安装 brokre（标准路径 `~/.brokre/bin/brokre`，与 `npx`/安装脚本一致），并保存内网别名（如 `db`）
 
-**智能列表**
+**路由列表**
 
 ```bash
 brokre bastion unlock            # 若已设堡垒密钥
-brokre list                      # 自动含 b150::db（route=b150, access=via_b150）
+brokre list --include-bastions   # 含 b150::db（route=b150, access=via_b150）
 ```
 
-跨网时本地 `db`（`access=direct`）若不可达则**不出现在列表**；请使用 `b150::db`。
+跨网时需要路由别名才使用 `--include-bastions`。普通 `brokre list` 保持本地-only，不会解锁或访问堡垒。
 
 **执行**
 
@@ -379,7 +390,7 @@ brokre ssh b150::db uname -a
 brokre bastion enable b150        # 提升 ssh 别名 b150 为堡垒
 brokre bastion set-key              # 设定堡垒解锁密钥（TTY）
 brokre bastion unlock               # 解锁出站会话（TTL，默认 30 分钟空闲）
-brokre list --json                  # 智能列表：可达性 + 堡垒路由别名
+brokre list --include-bastions --json # 发现堡垒路由别名
 brokre ssh b150::db uname -a        # 路由执行：经 b150 在远端 brokre 注入 db 凭据
 brokre bastion sync b150 --json     # 仅拉取某堡垒上的别名清单
 ```
@@ -398,7 +409,7 @@ brokre bastion sync b150 --json     # 仅拉取某堡垒上的别名清单
 | 模式 | `gate_mode` | 何时需要解锁（须已设堡垒密钥） |
 |------|-------------|-------------------------------|
 | **默认** | `default` | **仅堡垒出站** — `b150::inner` 路由执行；SSH/scp/sftp 到**已注册**堡垒别名；`brokre list` / `brokre_list` 在启用堡垒发现并向堡垒 SSH 时。纯**本地**执行（如 `brokre ssh lan-db`）**不需要**解锁。 |
-| **严格** | `strict` | **所有** `brokre exec` 与 `brokre list`（及 MCP `brokre_exec` / `brokre_list`）— 含本地局域网别名。适用于已配置堡垒密钥、且希望 Agent 每次操作都需人类确认的场景。 |
+| **严格** | `strict` | **所有** `brokre exec` / MCP `brokre_exec`；metadata-only 的 `brokre list` 仍保持本地-only，只有 `--include-bastions` 需要解锁。适用于已配置堡垒密钥、且希望 Agent 执行操作需人类确认的场景。 |
 
 **示例（默认模式、已设密钥、会话未解锁）**
 
@@ -407,16 +418,16 @@ brokre bastion sync b150 --json     # 仅拉取某堡垒上的别名清单
 | `brokre ssh prod uname -a`（本地别名） | 否 |
 | `brokre ssh b150::db uname -a` | 是 |
 | `brokre ssh b150 uptime`（已注册堡垒） | 是 |
-| `brokre list`（含堡垒发现） | 是 |
-| `brokre list --no-bastion-discovery`（仅本地） | 否 |
+| `brokre list --include-bastions` | 是 |
+| `brokre list`（仅本地） | 否 |
 
-**严格**模式下，上表所有操作均需解锁。
+**严格**模式下，执行类操作需要解锁；metadata-only 的 `brokre list` 仍不解锁，除非使用 `--include-bastions`。
 
 **切换门控模式**
 
 ```bash
 brokre bastion strict status    # 查看 default | strict
-brokre bastion strict on        # 严格 — 所有 exec/list 需解锁
+brokre bastion strict on        # 严格 — 所有 exec 需解锁；list 仍 local-only，除非请求堡垒发现
 brokre bastion strict off       # 默认 — 仅堡垒出站
 ```
 

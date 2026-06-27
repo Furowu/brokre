@@ -35,9 +35,10 @@ use std::time::Duration;
 const SERVER_INSTRUCTIONS: &str = "\
 brokre is an AI-safe credential broker. Rules for agents:\n\
 1. NEVER ask the user for passwords or call brokre reveal — it is TTY-gated and unavailable here.\n\
-2. Use brokre_list to discover saved aliases (metadata: profile, name, addr, host_alias, route, access, availability, status).\n\
-3. Cross-network: when local LAN aliases are unreachable, brokre_list hides them and shows routed entries \
-(e.g. b150::db with access=via_b150, route=[\"b150\"]). Prefer addr containing `::` with availability=available.\n\
+2. Use brokre_list to discover saved local aliases (metadata: profile, name, addr, host_alias, route, access, availability, status).\n\
+3. Cross-network: brokre_list does not unlock bastions or discover remote aliases by default. \
+Use include_bastions=true only when the user needs routed aliases; that may require bastion unlock. \
+Prefer routed addrs such as b150::db when they are listed.\n\
 4. Exec routed aliases: brokre_exec binary=ssh, args=[\"b150::db\", \"uname\", \"-a\"] — credentials inject on the bastion.\n\
 5. Argv layout for brokre_exec args: [client_flags…, alias, remote_command…]. \
 The alias is the first token that does not start with `-` (connector flags may precede it). \
@@ -80,7 +81,7 @@ pub struct ListRequest {
     /// TCP reachability probe (ms-level timeout).
     #[serde(default)]
     pub probe: bool,
-    /// Include aliases discovered on registered bastions (auto-enabled when bastions are registered).
+    /// Include aliases discovered on registered bastions. This may require bastion unlock; default stays local-only.
     #[serde(default)]
     pub include_bastions: bool,
     /// Include unreachable aliases (default: hidden when probing). Set `all: true` here — not CLI `-a` (terminal: `brokre list --all`).
@@ -242,7 +243,7 @@ impl BrokreMcp {
 #[tool_router]
 impl BrokreMcp {
     #[tool(
-        description = "List saved credential aliases (metadata only — never passwords). When bastions are registered, auto-probes reachability, merges routed aliases (e.g. b150::db), and hides unreachable entries. Use all=true to show everything. Response includes items (addr, route, access, availability, host_alias, status) and bastion_gate. Always call before brokre_exec."
+        description = "List saved credential aliases (metadata only — never passwords). Default is local-only and does not unlock or SSH to bastions. Set include_bastions=true only when routed aliases are needed; that may require bastion unlock and can merge routed aliases (e.g. b150::db). Use probe=true for local reachability probes and all=true to show unreachable aliases. Response includes items (addr, route, access, availability, host_alias, status) and bastion_gate."
     )]
     async fn brokre_list(
         &self,
@@ -295,12 +296,9 @@ Supports bastion routes like b150::db. Response includes `bastion_gate` unlock m
         peer: Peer<rmcp::RoleServer>,
     ) -> std::result::Result<CallToolResult, McpError> {
         let source_env = mcp_source_env(&peer, "brokre_exec");
-        let args = crate::mcp::normalize_exec_argv(
-            &req.binary,
-            &req.args,
-            req.shell_command.as_deref(),
-        )
-        .map_err(mcp_err)?;
+        let args =
+            crate::mcp::normalize_exec_argv(&req.binary, &req.args, req.shell_command.as_deref())
+                .map_err(mcp_err)?;
         let mut unlocked_during_call = false;
         if gate_required() && gate_applies_for_exec(&req.binary, &args) {
             let server = self.ensure_manage_server().map_err(mcp_err)?;
@@ -346,7 +344,11 @@ Reuses a persistent elevated shell by default. BROKRE_MCP_SESSION=0 disables reu
             unlocked_during_call =
                 ensure_bastion_unlocked(&server, &peer, "brokre_exec_elevated").await?;
         }
-        let gate = BastionGateInfo::for_exec("ssh", std::slice::from_ref(&req.alias), unlocked_during_call);
+        let gate = BastionGateInfo::for_exec(
+            "ssh",
+            std::slice::from_ref(&req.alias),
+            unlocked_during_call,
+        );
         let mode = crate::runtime::elevated::ElevatedMode::parse(&req.mode).map_err(mcp_err)?;
         let policy = SessionPolicy::parse(&req.session).map_err(mcp_err)?;
 
@@ -554,13 +556,42 @@ async fn run_brokre_cli(
     let stderr = String::from_utf8_lossy(&output.stderr);
     let code = output.status.code().unwrap_or(-1);
 
-    let body = serde_json::json!({
+    let mut body = serde_json::json!({
         "exit_code": code,
         "stdout": stdout,
         "stderr": stderr,
         "bastion_gate": gate,
     });
+    if let Some(tunnel) = tunnel_metadata(binary, args, extra_env) {
+        body["tunnel"] = tunnel;
+    }
     Ok(text_json_result(&body))
+}
+
+fn tunnel_metadata(
+    binary: &str,
+    args: &[String],
+    extra_env: &[(String, String)],
+) -> Option<serde_json::Value> {
+    if binary.rsplit('/').next().unwrap_or(binary) != "ssh" {
+        return None;
+    }
+    let routed = args
+        .iter()
+        .any(|arg| !arg.starts_with('-') && arg.contains("::"));
+    if !routed {
+        return None;
+    }
+    let disabled = extra_env
+        .iter()
+        .any(|(k, v)| k == "BROKRE_TUNNEL" && (v == "0" || v.eq_ignore_ascii_case("false")))
+        || std::env::var("BROKRE_TUNNEL")
+            .map(|v| v == "0" || v.eq_ignore_ascii_case("false"))
+            .unwrap_or(false);
+    Some(serde_json::json!({
+        "mode": if disabled { "legacy" } else { "session_relay" },
+        "active": !disabled,
+    }))
 }
 
 async fn run_elevated_pool(
@@ -620,4 +651,37 @@ pub async fn run_mcp_server() -> std::result::Result<(), BrokreError> {
         .map_err(|e| BrokreError::Runtime(format!("mcp waiting: {e}")))?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    #[serial_test::serial]
+    fn tunnel_metadata_defaults_to_session_relay_for_routed_ssh() {
+        std::env::remove_var("BROKRE_TUNNEL");
+        let args = vec![
+            "b150::db".to_string(),
+            "uname".to_string(),
+            "-a".to_string(),
+        ];
+        let meta = tunnel_metadata("ssh", &args, &[]).expect("routed ssh metadata");
+        assert_eq!(meta["mode"], "session_relay");
+        assert_eq!(meta["active"], true);
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn tunnel_metadata_honors_explicit_legacy_escape_hatch() {
+        let args = vec![
+            "b150::db".to_string(),
+            "uname".to_string(),
+            "-a".to_string(),
+        ];
+        let env = vec![("BROKRE_TUNNEL".to_string(), "0".to_string())];
+        let meta = tunnel_metadata("ssh", &args, &env).expect("routed ssh metadata");
+        assert_eq!(meta["mode"], "legacy");
+        assert_eq!(meta["active"], false);
+    }
 }

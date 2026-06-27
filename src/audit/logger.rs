@@ -245,7 +245,11 @@ pub fn append(event: &mut AuditEvent, hmac_key: &[u8; 32]) -> Result<()> {
             .lines()
             .map_while(|l| l.ok())
             .last()
-            .and_then(|last| events_from_line(&last).last().and_then(|ev| ev.hmac.clone()))
+            .and_then(|last| {
+                events_from_line(&last)
+                    .last()
+                    .and_then(|ev| ev.hmac.clone())
+            })
     };
     event.prev_hmac = prev_hmac;
     event.hmac = Some(compute_hmac(event, hmac_key));
@@ -280,7 +284,9 @@ pub fn verify_chain(path: &Path, hmac_key: &[u8; 32]) -> Result<()> {
         }
         for event in events {
             if event.prev_hmac != prev_hmac {
-                return Err(BrokreError::Audit("chain broken: prev_hmac mismatch".into()));
+                return Err(BrokreError::Audit(
+                    "chain broken: prev_hmac mismatch".into(),
+                ));
             }
             let expected = compute_hmac(&event, hmac_key);
             if event.hmac.as_ref() != Some(&expected) {
@@ -383,7 +389,11 @@ mod tests {
         let mut b = sample_event("exec", "b");
         b.hmac_version = Some(HMAC_VERSION_V2);
         b.hmac = Some(compute_hmac(&b, &key));
-        let line = format!("{}{}", serde_json::to_string(&a).unwrap(), serde_json::to_string(&b).unwrap());
+        let line = format!(
+            "{}{}",
+            serde_json::to_string(&a).unwrap(),
+            serde_json::to_string(&b).unwrap()
+        );
         let parsed = events_from_line(&line);
         assert_eq!(parsed.len(), 2);
         assert_eq!(parsed[0].name, "a");

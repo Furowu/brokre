@@ -119,10 +119,15 @@ fn connect_tcp(host: &str, port: u16, timeout: Duration) -> std::result::Result<
 }
 
 fn remaining_timeout(started: Instant, total: Duration) -> Duration {
-    total.saturating_sub(started.elapsed()).max(Duration::from_millis(1))
+    total
+        .saturating_sub(started.elapsed())
+        .max(Duration::from_millis(1))
 }
 
-fn read_ssh_server_banner(stream: &TcpStream, timeout: Duration) -> std::result::Result<(), String> {
+fn read_ssh_server_banner(
+    stream: &TcpStream,
+    timeout: Duration,
+) -> std::result::Result<(), String> {
     stream
         .set_read_timeout(Some(timeout))
         .map_err(|e| e.to_string())?;
@@ -284,10 +289,7 @@ fn parse_host_port_alias(host_alias: &str, profile: &str) -> Option<(String, u16
             return Some((host.to_string(), port));
         }
     }
-    Some((
-        host_alias.to_string(),
-        default_port_for_profile(profile),
-    ))
+    Some((host_alias.to_string(), default_port_for_profile(profile)))
 }
 
 impl Clone for ProbeOptions {
@@ -300,14 +302,8 @@ impl Clone for ProbeOptions {
     }
 }
 
-pub fn probe_items_from_records(
-    records: &[SecretRecord],
-    opts: &ProbeOptions,
-) -> Vec<ProbeStatus> {
-    records
-        .iter()
-        .map(|r| probe_record(r, opts))
-        .collect()
+pub fn probe_items_from_records(records: &[SecretRecord], opts: &ProbeOptions) -> Vec<ProbeStatus> {
+    records.iter().map(|r| probe_record(r, opts)).collect()
 }
 
 #[cfg(test)]

@@ -219,7 +219,11 @@ fn group_from_def(def: &ProfileGroupDef) -> ProfileGroupInfo {
             available,
             create_profile,
             detected,
-            profiles: def.vault_profiles.iter().map(|s| (*s).to_string()).collect(),
+            profiles: def
+                .vault_profiles
+                .iter()
+                .map(|s| (*s).to_string())
+                .collect(),
             generic: false,
             user_field: UserFieldMode::Optional,
             user_placeholder: None,
@@ -248,8 +252,8 @@ fn load_user_groups() -> Vec<ProfileGroupInfo> {
                 .cloned()
                 .collect();
             let available = !detected.is_empty();
-            let create_profile = pick_create_profile(&g.binaries)
-                .unwrap_or_else(|| g.binaries[0].clone());
+            let create_profile =
+                pick_create_profile(&g.binaries).unwrap_or_else(|| g.binaries[0].clone());
             let create_profile_for_meta = create_profile.clone();
             with_form_meta(
                 &create_profile_for_meta,
@@ -330,8 +334,7 @@ fn custom_cli_group() -> ProfileGroupInfo {
 
 /// Built-in + `~/.brokre/manage.toml` + vault orphans + catch-all custom section.
 pub fn detect_profile_groups() -> Vec<ProfileGroupInfo> {
-    let mut groups: Vec<ProfileGroupInfo> =
-        BUILTIN_GROUPS.iter().map(group_from_def).collect();
+    let mut groups: Vec<ProfileGroupInfo> = BUILTIN_GROUPS.iter().map(group_from_def).collect();
 
     let mut by_id: HashMap<String, usize> = HashMap::new();
     for (i, g) in groups.iter().enumerate() {
@@ -449,7 +452,9 @@ mod tests {
 
     #[test]
     fn profile_available_requires_path_binary() {
-        assert!(!profile_available_for_create("definitely-not-a-real-brokre-cli-xyz"));
+        assert!(!profile_available_for_create(
+            "definitely-not-a-real-brokre-cli-xyz"
+        ));
         if which::which("ssh").is_ok() {
             assert!(profile_available_for_create("ssh"));
         }
@@ -472,7 +477,10 @@ binaries = ["gsql", "gaussdb"]
             .unwrap();
 
             let groups = detect_profile_groups();
-            let gauss = groups.iter().find(|g| g.id == "gaussdb").expect("gaussdb group");
+            let gauss = groups
+                .iter()
+                .find(|g| g.id == "gaussdb")
+                .expect("gaussdb group");
             assert!(gauss.generic);
             assert_eq!(gauss.label, "GaussDB");
         });

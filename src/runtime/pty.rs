@@ -133,6 +133,11 @@ pub struct PtyRunOptions {
     pub inject_disabled: bool,
     /// Inner brokre: Mac outer injects nested SSH login; inner keeps sudo/su inject locally.
     pub passive_inner_ssh: bool,
+    /// Interactive routed fallback: keep local terminal cooked (no crossterm raw).
+    pub skip_interactive_raw: bool,
+    /// OpenSSH multiplexed one-shot commands can leave brokre alive after printing
+    /// `Shared connection ... closed.`; treat that line as terminal for sudo/su one-shots.
+    pub exit_on_shared_connection_closed: bool,
 }
 
 /// Prompt context for [`should_arm_vault_inject`] (keeps arity within clippy limits).
@@ -281,7 +286,11 @@ impl Drop for RawModeGuard {
     }
 }
 
-fn try_enable_interactive_raw(raw_mode: &Mutex<Option<RawModeGuard>>, stdin_is_tty: bool, ready: bool) {
+fn try_enable_interactive_raw(
+    raw_mode: &Mutex<Option<RawModeGuard>>,
+    stdin_is_tty: bool,
+    ready: bool,
+) {
     if !stdin_is_tty || !ready {
         return;
     }
@@ -423,10 +432,11 @@ pub fn run(
     let stdin_is_tty = crate::security::tty::stdin_is_real_tty();
     let stdin_is_pipe = crate::security::tty::stdin_is_pipe();
     let preset_inject = !options.inject_disabled && cred.preset_injection();
+    let skip_interactive_raw = options.skip_interactive_raw;
     // First-time capture enables raw mode immediately; vault inject defers until
     // stdin forwarding opens so arrow keys / Ctrl+C behave like plain ssh.
     let raw_mode: Arc<Mutex<Option<RawModeGuard>>> = Arc::new(Mutex::new(None));
-    if stdin_is_tty && !options.inject_disabled && !preset_inject {
+    if stdin_is_tty && !options.inject_disabled && !preset_inject && !skip_interactive_raw {
         *raw_mode.lock().unwrap() = Some(RawModeGuard::enable());
     }
 
@@ -470,6 +480,7 @@ pub fn run(
     let suppress_stdout: Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
     let suppress_until_post_auth: Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
     let rescan_after_inject: Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
+    let shared_connection_closed: Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
     let defer_stdin = options.defer_stdin_forward;
     let bastion_outer_hop = options.bastion_outer_hop;
     let passive_inner_ssh = options.passive_inner_ssh;
@@ -522,6 +533,8 @@ pub fn run(
     let suppress_until_post_auth_a = suppress_until_post_auth.clone();
     let defer_stdin_a = defer_stdin;
     let rescan_after_inject_a = rescan_after_inject.clone();
+    let exit_on_shared_connection_closed_a = options.exit_on_shared_connection_closed;
+    let shared_connection_closed_a = shared_connection_closed.clone();
     #[cfg(unix)]
     let scanner_pty_fd = master_raw_fd;
 
@@ -576,9 +589,7 @@ pub fn run(
                                 .unwrap_or(true);
                             let allow_elevation_reinject =
                                 already && field == "password" && is_elevation_prompt;
-                            let second_ssh_hop = is_ssh_login_prompt
-                                && ssh_done
-                                && !inner_ssh_done;
+                            let second_ssh_hop = is_ssh_login_prompt && ssh_done && !inner_ssh_done;
                             let allow_bastion_second_ssh = bastion_outer_a
                                 && inner_vault_record_a.is_some()
                                 && second_ssh_hop
@@ -603,7 +614,9 @@ pub fn run(
                                     elevation_attempts: elev_attempts,
                                     auth_failed_visible: auth_failed,
                                 },
-                            ) && (!already || allow_elevation_reinject || allow_bastion_second_ssh)
+                            ) && (!already
+                                || allow_elevation_reinject
+                                || allow_bastion_second_ssh)
                             {
                                 let use_inner = bastion_outer_a
                                     && inner_vault_record_a.is_some()
@@ -670,6 +683,12 @@ pub fn run(
                             let drop_n = window.len() - 2048;
                             window.drain(..drop_n);
                         }
+                        if exit_on_shared_connection_closed_a
+                            && contains_ascii_case_insensitive(&window, b"shared connection")
+                            && contains_ascii_case_insensitive(&window, b"closed")
+                        {
+                            shared_connection_closed_a.store(true, Ordering::Release);
+                        }
 
                         if track_ssh_post_auth
                             && !post_auth_a.load(Ordering::Acquire)
@@ -688,10 +707,10 @@ pub fn run(
                         arm_prompt_if_needed(&mut window);
                     }
 
-                    let suppress_auth_transition = should_scan
-                        && suppress_until_post_auth_a.load(Ordering::Acquire);
-                    let suppress_this_chunk = suppress_stdout_a.swap(false, Ordering::AcqRel)
-                        || suppress_auth_transition;
+                    let suppress_auth_transition =
+                        should_scan && suppress_until_post_auth_a.load(Ordering::Acquire);
+                    let suppress_this_chunk =
+                        suppress_stdout_a.swap(false, Ordering::AcqRel) || suppress_auth_transition;
                     if !suppress_this_chunk {
                         let mut out = stdout.lock();
                         let _ = out.write_all(data);
@@ -802,10 +821,8 @@ pub fn run(
                                     suppress_stdout_b.store(false, Ordering::Release);
                                     rescan_after_inject_b.store(true, Ordering::Release);
                                     let n = inject_done_count_b.fetch_add(1, Ordering::AcqRel) + 1;
-                                    let inner_done =
-                                        inner_ssh_login_done_b.load(Ordering::Acquire);
-                                    let dual_hop_pending =
-                                        dual_ssh_inject_b && !inner_done;
+                                    let inner_done = inner_ssh_login_done_b.load(Ordering::Acquire);
+                                    let dual_hop_pending = dual_ssh_inject_b && !inner_done;
                                     if !dual_hop_pending && n >= inject_fields_b.len() {
                                         inject_completed_b.store(true, Ordering::Release);
                                     }
@@ -846,10 +863,7 @@ pub fn run(
     let stdin_rx_slot: Arc<Mutex<Option<std::sync::mpsc::Receiver<Vec<u8>>>>> =
         Arc::new(Mutex::new(None));
     if stdin_is_pipe || stdin_is_tty {
-        *stdin_rx_slot.lock().unwrap() = Some(spawn_stdin_reader(
-            pipe_eof.clone(),
-            stdin_is_pipe,
-        ));
+        *stdin_rx_slot.lock().unwrap() = Some(spawn_stdin_reader(pipe_eof.clone(), stdin_is_pipe));
     }
 
     let cap_main = captured.clone();
@@ -859,6 +873,7 @@ pub fn run(
     let elevation_attempts_main = elevation_attempts.clone();
     let defer_stdin_main = defer_stdin;
     let bastion_outer_main = bastion_outer_hop;
+    let skip_interactive_raw_main = skip_interactive_raw;
     let spawn_instant = Instant::now();
     let raw_mode_main = raw_mode.clone();
     let stdin_rx_slot_main = stdin_rx_slot.clone();
@@ -916,7 +931,11 @@ pub fn run(
             pending_cap_main.load(Ordering::Acquire),
             pending_inject.load(Ordering::Acquire),
         );
-        try_enable_interactive_raw(&raw_mode_main, stdin_is_tty, tty_raw_ready);
+        try_enable_interactive_raw(
+            &raw_mode_main,
+            stdin_is_tty,
+            tty_raw_ready && !skip_interactive_raw_main,
+        );
 
         let stdin_rx = stdin_rx_slot_main.lock().unwrap();
         if stdin_forward_main.load(Ordering::Acquire) {
@@ -984,13 +1003,30 @@ pub fn run(
             Err(_) => break,
         }
 
+        if options.exit_on_shared_connection_closed
+            && shared_connection_closed.load(Ordering::Acquire)
+        {
+            break;
+        }
+
         thread::sleep(Duration::from_millis(15));
     }
 
-    let exit_status = child
-        .wait()
-        .map_err(|e| BrokreError::Runtime(format!("child wait: {}", e)))?;
-    let exit_code = exit_status.exit_code() as i32;
+    let exit_code = if options.exit_on_shared_connection_closed
+        && shared_connection_closed.load(Ordering::Acquire)
+    {
+        child
+            .try_wait()
+            .ok()
+            .flatten()
+            .map(|s| s.exit_code() as i32)
+            .unwrap_or(0)
+    } else {
+        child
+            .wait()
+            .map_err(|e| BrokreError::Runtime(format!("child wait: {}", e)))?
+            .exit_code() as i32
+    };
 
     done.store(true, Ordering::Release);
     drop(master);

@@ -9,6 +9,7 @@ use crate::utils::paths::run_dir;
 use std::io::{Read, Write};
 use std::process::{Command, Stdio};
 use std::thread;
+use std::time::Duration;
 use uuid::Uuid;
 
 /// True when the CLI must run without a PTY (pipe-safe).
@@ -37,10 +38,22 @@ pub fn should_use_pipe_mode(
         // Outer hop of bastion::inner: Mac must watch the PTY stream and inject the inner
         // SSH login from the local vault. Pipe mode breaks nested inject and leaves commands
         // on the bastion host (same machine-id as the hop).
-        if remote_trailing.is_some_and(crate::runtime::ssh_identity::is_routed_bastion_outer_trailing) {
+        if remote_trailing
+            .is_some_and(crate::runtime::ssh_identity::is_routed_bastion_outer_trailing)
+        {
             return false;
         }
-        // Inner brokre on a bastion (`BROKRE_ROUTED_INNER=1`) is spawned headless from the
+        // Tunnel SessionRelay runs the inner brokre locally on the bastion. Non-interactive
+        // commands can use ASKPASS pipe mode; only interactive/elevation paths need a PTY.
+        if std::env::var_os("BROKRE_ROUTED_INNER").is_some()
+            && std::env::var_os("BROKRE_TUNNEL_AGENT_INNER").is_some()
+            && remote_trailing.is_some_and(|t| {
+                !t.is_empty() && !crate::runtime::ssh_identity::remote_command_needs_tty(t)
+            })
+        {
+            return true;
+        }
+        // Inner brokre on a bastion (`BROKRE_ROUTED_INNER=1`) is usually spawned headless from the
         // outer SSH remote command; it still needs vault/ASKPASS inject to reach the inner host.
         if std::env::var_os("BROKRE_ROUTED_INNER").is_some() {
             return false;
@@ -154,10 +167,7 @@ pub fn run(binary: &str, args: &[String], record_id: Uuid) -> Result<PtyRunResul
 }
 
 /// Policy for Mac-side interactive bastion routes (TTY check applied separately).
-pub fn routed_interactive_native_tty(
-    profile: &str,
-    remote_trailing: Option<&[String]>,
-) -> bool {
+pub fn routed_interactive_native_tty(profile: &str, remote_trailing: Option<&[String]>) -> bool {
     let bin = profile
         .rsplit('/')
         .next()
@@ -184,27 +194,62 @@ pub fn run_interactive_routed_mux_tty(
     binary: &str,
     args: &[String],
     record_id: Uuid,
+    prompt_patterns: &[regex::bytes::Regex],
 ) -> Result<PtyRunResult> {
-    ensure_ssh_mux_master(binary, args, record_id)?;
-    let mut result = run_inherited_tty(binary, args)?;
+    ensure_ssh_mux_master(binary, args, record_id, prompt_patterns)?;
+    let master_argv = crate::runtime::ssh_identity::build_mux_master_argv(args);
+    if !crate::runtime::ssh_identity::wait_mux_master_alive(binary, &master_argv, Duration::ZERO)? {
+        return Err(BrokreError::Runtime(
+            "ssh multiplex master unavailable after pre-authentication".into(),
+        ));
+    }
+    let session_argv = crate::runtime::ssh_identity::build_mux_session_argv(args);
+    let mut result = run_inherited_tty(binary, &session_argv)?;
     result.had_prompt = true;
     result.injector_outcome = Some("mux+inherited".into());
     Ok(result)
 }
 
-/// Establish mux master with askpass (stdin null); reused by interactive sessions on inherited TTY.
+/// Establish mux master: short PTY inject for outer-hop auth, then inherited TTY for the session.
 #[cfg(unix)]
-fn ensure_ssh_mux_master(binary: &str, argv: &[String], record_id: Uuid) -> Result<()> {
-    if crate::runtime::ssh_identity::mux_master_alive(binary, argv)? {
+fn ensure_ssh_mux_master(
+    binary: &str,
+    argv: &[String],
+    record_id: Uuid,
+    prompt_patterns: &[regex::bytes::Regex],
+) -> Result<()> {
+    use crate::runtime::pty::{run as pty_run, PtyCredential, PtyRunOptions};
+
+    let master_argv = crate::runtime::ssh_identity::build_mux_master_argv(argv);
+    if crate::runtime::ssh_identity::wait_mux_master_alive(binary, &master_argv, Duration::ZERO)? {
         return Ok(());
     }
-    let master_argv = crate::runtime::ssh_identity::build_mux_master_argv(argv);
-    let result = run(binary, &master_argv, record_id)?;
-    if result.exit_code != 0 {
-        return Err(BrokreError::Runtime(format!(
-            "ssh multiplex pre-authentication failed (exit {})",
-            result.exit_code
-        )));
+    let preflight_opts = PtyRunOptions {
+        skip_interactive_raw: true,
+        ..PtyRunOptions::default()
+    };
+    for attempt in 0..2 {
+        crate::runtime::ssh_identity::prune_stale_mux_sockets(binary, &master_argv)?;
+        let result = pty_run(
+            binary,
+            &master_argv,
+            PtyCredential::VaultRecord(record_id),
+            prompt_patterns,
+            preflight_opts.clone(),
+        )?;
+        if crate::runtime::ssh_identity::wait_mux_master_alive(
+            binary,
+            &master_argv,
+            Duration::from_secs(3),
+        )? {
+            return Ok(());
+        }
+        if attempt == 1 {
+            return Err(BrokreError::Runtime(format!(
+                "ssh multiplex pre-authentication failed (exit {})",
+                result.exit_code
+            )));
+        }
     }
     Ok(())
 }
@@ -284,6 +329,7 @@ pub fn run_interactive_routed_mux_tty(
     _binary: &str,
     _args: &[String],
     _record_id: Uuid,
+    _prompt_patterns: &[regex::bytes::Regex],
 ) -> Result<PtyRunResult> {
     Err(BrokreError::Runtime(
         "mux inherited TTY mode is only supported on Unix".into(),
@@ -316,7 +362,10 @@ mod tests {
         let token = crate::utils::paths::remote_brokre_shell_token().to_string();
         let trailing = vec![token, "ssh".into(), "-tt".into(), "db".into()];
         assert!(routed_interactive_native_tty("ssh", Some(&trailing)));
-        assert!(!routed_interactive_native_tty("ssh", Some(&["uptime".into()])));
+        assert!(!routed_interactive_native_tty(
+            "ssh",
+            Some(&["uptime".into()])
+        ));
     }
 
     #[test]
@@ -393,8 +442,30 @@ mod tests {
     #[test]
     fn routed_inner_forces_pty_even_when_stdin_is_pipe() {
         std::env::set_var("BROKRE_ROUTED_INNER", "1");
-        assert!(!should_use_pipe_mode("ssh", true, Some(&["hostname".into()])));
+        assert!(!should_use_pipe_mode(
+            "ssh",
+            true,
+            Some(&["hostname".into()])
+        ));
         std::env::remove_var("BROKRE_ROUTED_INNER");
+    }
+
+    #[test]
+    fn tunnel_agent_inner_noninteractive_uses_pipe_mode() {
+        std::env::set_var("BROKRE_ROUTED_INNER", "1");
+        std::env::set_var("BROKRE_TUNNEL_AGENT_INNER", "1");
+        assert!(should_use_pipe_mode(
+            "ssh",
+            false,
+            Some(&["hostname".into()])
+        ));
+        assert!(!should_use_pipe_mode(
+            "ssh",
+            false,
+            Some(&["sudo".into(), "whoami".into()])
+        ));
+        std::env::remove_var("BROKRE_ROUTED_INNER");
+        std::env::remove_var("BROKRE_TUNNEL_AGENT_INNER");
     }
 
     #[test]

@@ -32,6 +32,7 @@ BUILT-IN SUBCOMMANDS:\n\
   brokre manage [--open]            # local web UI for credentials\n\
   brokre mcp                        # MCP server for AI assistants\n\
   brokre mcp setup                  # register brokre MCP in detected IDEs\n\
+  brokre tunnel doctor <bastion>     # check SessionRelay agent over SSH stdio\n\
   brokre version [--check]          # show version; query GitHub for updates\n\
   brokre upgrade                    # upgrade CLI from GitHub Releases\n\
   brokre bastion enable <alias>     # bastion broker (see brokre bastion --help)\n\
@@ -110,6 +111,11 @@ enum Commands {
         #[command(subcommand)]
         action: BastionCmd,
     },
+    /// SSH stdio SessionRelay tunnel operations.
+    Tunnel {
+        #[command(subcommand)]
+        action: TunnelCmd,
+    },
     /// Show brokre version and install location.
     Version {
         /// Query GitHub for the latest release.
@@ -178,6 +184,31 @@ enum BastionCmd {
         /// `on`, `off`, or `status` (default).
         #[arg(value_name = "MODE")]
         mode: Option<String>,
+    },
+}
+
+#[derive(Subcommand)]
+enum TunnelCmd {
+    /// Run a tunnel agent on stdio (normally started through SSH).
+    Agent {
+        /// Use stdin/stdout for the tunnel protocol.
+        #[arg(long)]
+        stdio: bool,
+        /// Print tunnel protocol version.
+        #[arg(long)]
+        version: bool,
+    },
+    /// Start the remote agent and verify protocol/arch.
+    Up {
+        bastion: String,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Diagnose remote agent reachability and compatibility.
+    Doctor {
+        bastion: String,
+        #[arg(long)]
+        json: bool,
     },
 }
 
@@ -314,6 +345,11 @@ fn main() {
             BastionCmd::Sync { alias, json } => cli::bastion::run_sync(alias, json),
             BastionCmd::Strict { mode } => cli::bastion::run_strict(mode),
         },
+        Some(Commands::Tunnel { action }) => match action {
+            TunnelCmd::Agent { stdio, version } => cli::tunnel::run_agent(stdio, version),
+            TunnelCmd::Up { bastion, json } => cli::tunnel::run_up(bastion, json),
+            TunnelCmd::Doctor { bastion, json } => cli::tunnel::run_doctor(bastion, json),
+        },
         Some(Commands::Mcp { action }) => match action {
             None => cli::mcp::run(),
             Some(McpCmd::Setup { dry_run, force }) => cli::mcp::run_setup(dry_run, force),
@@ -380,6 +416,7 @@ fn print_usage() {
     eprintln!("  brokre list [--profile P] [--json] [--probe]  list saved aliases");
     eprintln!("  brokre bastion enable <ssh-alias>        register bastion broker");
     eprintln!("  brokre bastion unlock                    unlock bastion outbound session");
+    eprintln!("  brokre tunnel doctor <bastion>      check SessionRelay tunnel agent");
     eprintln!("  brokre rm <profile> <alias>         delete an alias");
     eprintln!("  brokre reveal <profile> <alias>     show stored plaintext (TTY + passphrase)");
     eprintln!("  brokre audit list [--profile P] [--json]  query audit history");

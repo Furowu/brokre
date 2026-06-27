@@ -84,10 +84,7 @@ mod tests {
             "uname".into(),
             "-a".into(),
         ];
-        assert_eq!(
-            redact_args(&args),
-            vec!["-tt", "user@host", "uname", "-a"]
-        );
+        assert_eq!(redact_args(&args), vec!["-tt", "user@host", "uname", "-a"]);
     }
 
     #[test]

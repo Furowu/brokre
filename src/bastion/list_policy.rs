@@ -4,7 +4,6 @@ use crate::bastion::discover::{
     build_local_items, discover_remote_items, merge_list_items, DiscoverOptions,
 };
 use crate::bastion::model::{Availability, BastionListItem};
-use crate::bastion::registry::list_bastions;
 use crate::utils::errors::Result;
 use crate::vault::model::SecretRecord;
 
@@ -26,23 +25,10 @@ pub struct RawListOptions {
 }
 
 pub fn resolve_list_options(raw: RawListOptions) -> EffectiveListOptions {
-    let has_bastions = list_bastions().map(|b| !b.is_empty()).unwrap_or(false);
+    let include_bastions = raw.include_bastions && !raw.no_bastion_discovery;
+    let probe = raw.probe;
 
-    let include_bastions = if raw.no_bastion_discovery {
-        raw.include_bastions
-    } else {
-        raw.include_bastions || (raw.probe && !raw.no_bastion_discovery) || has_bastions
-    };
-
-    let probe = raw.probe || include_bastions;
-
-    let reachable_only = if raw.show_all {
-        false
-    } else if raw.for_mcp {
-        probe || include_bastions
-    } else {
-        has_bastions && !raw.no_bastion_discovery
-    };
+    let reachable_only = !raw.show_all && probe;
 
     EffectiveListOptions {
         probe,
@@ -72,28 +58,27 @@ fn compute_access(item: &BastionListItem) -> String {
     }
 }
 
-pub fn filter_list_items(items: Vec<BastionListItem>, reachable_only: bool) -> Vec<BastionListItem> {
+pub fn filter_list_items(
+    items: Vec<BastionListItem>,
+    reachable_only: bool,
+) -> Vec<BastionListItem> {
     if !reachable_only {
         return items;
     }
     items
         .into_iter()
-        .filter(|item| {
-            match item.status.as_ref() {
-                Some(s) => s.reachable,
-                None => true,
-            }
+        .filter(|item| match item.status.as_ref() {
+            Some(s) => s.reachable,
+            None => true,
         })
         .collect()
 }
 
 pub fn format_status_display(item: &BastionListItem) -> String {
     match (&item.availability, &item.status) {
-        (Some(Availability::Available), Some(s)) => format!(
-            "available ({}, {}ms)",
-            s.source,
-            s.probe_ms.unwrap_or(0)
-        ),
+        (Some(Availability::Available), Some(s)) => {
+            format!("available ({}, {}ms)", s.source, s.probe_ms.unwrap_or(0))
+        }
         (Some(Availability::Unavailable), Some(s)) => format!(
             "unavailable ({}, {})",
             s.source,
@@ -142,11 +127,7 @@ mod tests {
                 reachable: r,
                 probe_ms: Some(1),
                 checked_at: "2026-01-01T00:00:00Z".into(),
-                error: if r {
-                    None
-                } else {
-                    Some("refused".into())
-                },
+                error: if r { None } else { Some("refused".into()) },
                 source: "local".into(),
             }),
             access: None,
@@ -156,7 +137,7 @@ mod tests {
 
     #[test]
     #[serial]
-    fn resolve_auto_enables_when_bastions_registered() {
+    fn resolve_does_not_auto_enable_when_bastions_registered() {
         with_temp_brokre_home(|| {
             use crate::security::secret::SecretString;
             use crate::vault::service::auto_save;
@@ -179,10 +160,33 @@ mod tests {
                 show_all: false,
                 for_mcp: false,
             });
-            assert!(eff.include_bastions);
-            assert!(eff.probe);
-            assert!(eff.reachable_only);
+            assert!(!eff.include_bastions);
+            assert!(!eff.probe);
+            assert!(!eff.reachable_only);
         });
+    }
+
+    #[test]
+    fn resolve_explicit_include_bastions_only_when_requested() {
+        let eff = resolve_list_options(RawListOptions {
+            probe: false,
+            include_bastions: true,
+            no_bastion_discovery: false,
+            show_all: false,
+            for_mcp: true,
+        });
+        assert!(eff.include_bastions);
+        assert!(!eff.probe);
+        assert!(!eff.reachable_only);
+
+        let disabled = resolve_list_options(RawListOptions {
+            probe: false,
+            include_bastions: true,
+            no_bastion_discovery: true,
+            show_all: false,
+            for_mcp: true,
+        });
+        assert!(!disabled.include_bastions);
     }
 
     #[test]

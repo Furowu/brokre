@@ -38,10 +38,7 @@ mod tests {
 
     #[test]
     fn bearer_extraction() {
-        assert_eq!(
-            extract_bearer(Some("Bearer abc123")),
-            Some("abc123")
-        );
+        assert_eq!(extract_bearer(Some("Bearer abc123")), Some("abc123"));
         assert_eq!(extract_bearer(Some("Basic x")), None);
     }
 

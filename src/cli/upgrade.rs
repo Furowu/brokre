@@ -24,7 +24,7 @@ pub struct VersionReport {
 }
 
 pub fn detect_target() -> Result<&'static str> {
-  #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     return Ok("aarch64-apple-darwin");
     #[cfg(all(target_os = "macos", target_arch = "x86_64"))]
     return Ok("x86_64-apple-darwin");
@@ -79,9 +79,11 @@ pub fn gather_version_report(check_latest: bool) -> Result<VersionReport> {
 pub fn run_version(json: bool, check_latest: bool) -> Result<()> {
     let report = gather_version_report(check_latest)?;
     if json {
-        println!("{}", serde_json::to_string_pretty(&report).map_err(|e| {
-            BrokreError::Runtime(format!("version json: {e}"))
-        })?);
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&report)
+                .map_err(|e| { BrokreError::Runtime(format!("version json: {e}")) })?
+        );
         return Ok(());
     }
 
@@ -152,8 +154,15 @@ pub fn run_upgrade(version: Option<String>, force: bool, check_only: bool) -> Re
     result?;
 
     println!("Installed brokre v{target_ver} to {}", dest.display());
-    if dest != std::env::current_exe().map_err(BrokreError::Io)?.canonicalize().map_err(BrokreError::Io)? {
-        eprintln!("Note: active binary may still be an older copy on PATH until you open a new shell.");
+    if dest
+        != std::env::current_exe()
+            .map_err(BrokreError::Io)?
+            .canonicalize()
+            .map_err(BrokreError::Io)?
+    {
+        eprintln!(
+            "Note: active binary may still be an older copy on PATH until you open a new shell."
+        );
         eprintln!("       Ensure ~/.brokre/bin is on PATH, or re-run: curl -fsSL https://raw.githubusercontent.com/{REPO}/main/install.sh | bash");
     }
     Ok(())
@@ -183,9 +192,8 @@ fn normalize_version(v: &str) -> String {
 pub fn fetch_latest_version() -> Result<String> {
     let url = format!("https://api.github.com/repos/{REPO}/releases/latest");
     let body = curl_get(&url)?;
-    parse_github_tag_name(&body).ok_or_else(|| {
-        BrokreError::Runtime("failed to parse latest release from GitHub".into())
-    })
+    parse_github_tag_name(&body)
+        .ok_or_else(|| BrokreError::Runtime("failed to parse latest release from GitHub".into()))
 }
 
 fn parse_github_tag_name(json: &str) -> Option<String> {
@@ -219,7 +227,9 @@ fn curl_get(url: &str) -> Result<String> {
     let output = Command::new("curl")
         .args(["-fsSL", url])
         .output()
-        .map_err(|_| BrokreError::Runtime("curl not found — install curl or use install.sh".into()))?;
+        .map_err(|_| {
+            BrokreError::Runtime("curl not found — install curl or use install.sh".into())
+        })?;
     if !output.status.success() {
         return Err(BrokreError::Runtime(format!(
             "curl failed (HTTP) for {url}"
@@ -235,19 +245,18 @@ fn curl_download(url: &str, dest: &Path) -> Result<()> {
     let status = Command::new("curl")
         .args(["-fsSL", "-o", dest.to_string_lossy().as_ref(), url])
         .status()
-        .map_err(|_| BrokreError::Runtime("curl not found — install curl or use install.sh".into()))?;
+        .map_err(|_| {
+            BrokreError::Runtime("curl not found — install curl or use install.sh".into())
+        })?;
     if !status.success() {
-        return Err(BrokreError::Runtime(format!(
-            "download failed: {url}"
-        )));
+        return Err(BrokreError::Runtime(format!("download failed: {url}")));
     }
     Ok(())
 }
 
 fn download_release_tarball(version: &str, target: &str, dest: &Path) -> Result<()> {
-    let url = format!(
-        "https://github.com/{REPO}/releases/download/v{version}/brokre-{target}.tar.gz"
-    );
+    let url =
+        format!("https://github.com/{REPO}/releases/download/v{version}/brokre-{target}.tar.gz");
     eprintln!("Downloading {url}...");
     curl_download(&url, dest)
 }

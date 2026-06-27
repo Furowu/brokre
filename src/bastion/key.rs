@@ -22,8 +22,8 @@ pub fn load_key_file() -> Result<Option<BastionKeyFile>> {
         return Ok(None);
     }
     let data = fs::read_to_string(&path).map_err(BrokreError::Io)?;
-    let file: BastionKeyFile =
-        serde_json::from_str(&data).map_err(|e| BrokreError::Crypto(format!("bastion key: {e}")))?;
+    let file: BastionKeyFile = serde_json::from_str(&data)
+        .map_err(|e| BrokreError::Crypto(format!("bastion key: {e}")))?;
     Ok(Some(file))
 }
 

@@ -63,15 +63,7 @@ pub fn create_credential(
 ) -> Result<Uuid> {
     let mut fields = BTreeMap::new();
     fields.insert("password".into(), password);
-    create_credential_with_fields(
-        store,
-        profile,
-        name,
-        args,
-        fields,
-        None,
-        reveal_passphrase,
-    )
+    create_credential_with_fields(store, profile, name, args, fields, None, reveal_passphrase)
 }
 
 /// Create a credential with arbitrary encrypted fields (SSH key + dual passphrases).
@@ -85,7 +77,9 @@ pub fn create_credential_with_fields(
     reveal_passphrase: Option<&SecretString>,
 ) -> Result<Uuid> {
     if fields.is_empty() {
-        return Err(BrokreError::Vault("at least one secret field is required".into()));
+        return Err(BrokreError::Vault(
+            "at least one secret field is required".into(),
+        ));
     }
     if !SecretRecord::validate_name(name) {
         return Err(BrokreError::Vault(format!("invalid name: {}", name)));
@@ -233,14 +227,10 @@ pub fn rotate_password(
     } else {
         let reveal_kek =
             crate::vault::crypto::kdf::derive_reveal_key(auth, &rec.crypto.reveal_salt)?;
-        let mut fields = crate::vault::crypto::record::decrypt_for_reveal(&rec.crypto, &reveal_kek)?;
+        let mut fields =
+            crate::vault::crypto::record::decrypt_for_reveal(&rec.crypto, &reveal_kek)?;
         fields.insert("password".into(), new_password);
-        encrypt_record(
-            &fields,
-            &master_kek,
-            &reveal_kek,
-            rec.crypto.reveal_salt,
-        )
+        encrypt_record(&fields, &master_kek, &reveal_kek, rec.crypto.reveal_salt)
     };
     rec.updated_at = Utc::now();
     store.update(rec)
@@ -258,7 +248,8 @@ fn reencrypt_update_password(
         .iter()
         .map(|(k, v)| (k.clone(), v.expose().to_string()))
         .collect();
-    let plaintext = serde_json::to_vec(&plain_map).map_err(|e| BrokreError::Crypto(e.to_string()))?;
+    let plaintext =
+        serde_json::to_vec(&plain_map).map_err(|e| BrokreError::Crypto(e.to_string()))?;
     let (nonce, ct) = crate::vault::crypto::aead::aead_encrypt(&dek, &plaintext);
     Ok(crate::vault::crypto::record::RecordCiphertext {
         nonce,
@@ -357,9 +348,7 @@ fn infer_ftp_port(args: &[String]) -> Option<u16> {
 pub fn infer_cli_port(profile: &str, args: &[String]) -> Option<u16> {
     let bin = profile.rsplit('/').next().unwrap_or(profile);
     match bin {
-        "ssh" | "scp" | "sftp" => {
-            read_flag_port(args, &[openssh_port_flag(bin)])
-        }
+        "ssh" | "scp" | "sftp" => read_flag_port(args, &[openssh_port_flag(bin)]),
         "mysql" | "mariadb" => read_flag_port(args, &["-P", "--port"]),
         "postgres" | "psql" | "redis" | "redis-cli" | "lftp" => {
             read_flag_port(args, &["-p", "--port"])
@@ -576,8 +565,12 @@ pub fn connection_token_index(profile: &str, args: &[String], host: &str) -> Opt
                     return Some(i);
                 }
             }
-        "mysql" | "mariadb" | "psql" | "postgres" | "redis" | "redis-cli"
-        | "clickhouse" | "clickhouse-client" if a == host => return Some(i),
+            "mysql" | "mariadb" | "psql" | "postgres" | "redis" | "redis-cli" | "clickhouse"
+            | "clickhouse-client"
+                if a == host =>
+            {
+                return Some(i)
+            }
             _ => {}
         }
     }
@@ -619,8 +612,8 @@ pub fn infer_host(profile: &str, args: &[String]) -> Option<String> {
             }
             None
         }
-        "mysql" | "mariadb" | "psql" | "postgres" | "redis" | "redis-cli"
-        | "clickhouse" | "clickhouse-client" => {
+        "mysql" | "mariadb" | "psql" | "postgres" | "redis" | "redis-cli" | "clickhouse"
+        | "clickhouse-client" => {
             let mut iter = args.iter().peekable();
             while let Some(a) = iter.next() {
                 if a == "-h" || a == "--host" {
@@ -735,10 +728,7 @@ mod tests {
             schema_version: 1,
             reveal_protected: false,
         };
-        assert!(verify_reveal_auth(
-            &auto,
-            &SecretString::new("YES".into())
-        ));
+        assert!(verify_reveal_auth(&auto, &SecretString::new("YES".into())));
         let mut protected = auto.clone();
         protected.reveal_protected = true;
         assert!(!verify_reveal_auth(
@@ -750,19 +740,13 @@ mod tests {
     #[test]
     fn infer_host_strips_scp_remote_path() {
         let args = vec!["file".into(), "user@198.51.100.3:/tmp/x".into()];
-        assert_eq!(
-            infer_host("scp", &args).as_deref(),
-            Some("198.51.100.3")
-        );
+        assert_eq!(infer_host("scp", &args).as_deref(), Some("198.51.100.3"));
     }
 
     #[test]
     fn infer_host_prefers_scp_remote_spec_over_local_path() {
         let args = vec!["./local".into(), "dev-host:/remote".into()];
-        assert_eq!(
-            infer_host("scp", &args).as_deref(),
-            Some("dev-host")
-        );
+        assert_eq!(infer_host("scp", &args).as_deref(), Some("dev-host"));
     }
 
     #[test]
@@ -808,10 +792,7 @@ mod tests {
 
     #[test]
     fn parse_host_port_leaves_ipv6_untouched() {
-        assert_eq!(
-            parse_host_port("2001:db8::1"),
-            ("2001:db8::1".into(), None)
-        );
+        assert_eq!(parse_host_port("2001:db8::1"), ("2001:db8::1".into(), None));
     }
 
     #[test]
@@ -826,19 +807,13 @@ mod tests {
     #[test]
     fn build_saved_args_mysql_with_port() {
         let args = build_saved_args("mysql", "db.local", Some("u"), &[], Some(3307));
-        assert_eq!(
-            args,
-            vec!["-h", "db.local", "-P", "3307", "-u", "u"]
-        );
+        assert_eq!(args, vec!["-h", "db.local", "-P", "3307", "-u", "u"]);
     }
 
     #[test]
     fn build_saved_args_psql_with_port() {
         let args = build_saved_args("psql", "db.local", Some("u"), &[], Some(5433));
-        assert_eq!(
-            args,
-            vec!["-h", "db.local", "-p", "5433", "-U", "u"]
-        );
+        assert_eq!(args, vec!["-h", "db.local", "-p", "5433", "-U", "u"]);
     }
 
     #[test]
@@ -850,10 +825,7 @@ mod tests {
     #[test]
     fn build_saved_args_clickhouse_with_port() {
         let args = build_saved_args("clickhouse-client", "ch.local", None, &[], Some(9440));
-        assert_eq!(
-            args,
-            vec!["--host=ch.local", "--port=9440"]
-        );
+        assert_eq!(args, vec!["--host=ch.local", "--port=9440"]);
     }
 
     #[test]
@@ -871,10 +843,7 @@ mod tests {
     #[test]
     fn build_saved_args_splits_host_port_in_field() {
         let args = build_saved_args("mysql", "db.local:3307", Some("u"), &[], None);
-        assert_eq!(
-            args,
-            vec!["-h", "db.local", "-P", "3307", "-u", "u"]
-        );
+        assert_eq!(args, vec!["-h", "db.local", "-P", "3307", "-u", "u"]);
     }
 
     #[test]

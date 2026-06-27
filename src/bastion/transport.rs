@@ -68,3 +68,29 @@ pub fn run_remote_exec(
     let (code, stdout, stderr) = run_on_bastion(bastion_alias, &remote)?;
     Ok((code, stdout, stderr, started.elapsed().as_millis() as u64))
 }
+
+/// Spawn `brokre tunnel agent --stdio` on a bastion through the existing SSH credential path.
+#[cfg(unix)]
+pub fn spawn_tunnel_agent(bastion_alias: &str) -> Result<std::process::Child> {
+    prepare_outbound_gate_for_exec("ssh", &[bastion_alias.to_string()])?;
+
+    let exe = std::env::current_exe().map_err(BrokreError::Io)?;
+    let remote = "BROKRE_SOFT_MEMLOCK=1 BROKRE_ALLOW_FILE_KEYCHAIN=1 $HOME/.brokre/bin/brokre tunnel agent --stdio";
+    let mut cmd = Command::new(exe);
+    cmd.env("BROKRE_MCP_EXEC", "1");
+    cmd.arg("ssh");
+    cmd.arg(bastion_alias);
+    cmd.arg(remote);
+    cmd.stdin(Stdio::piped());
+    cmd.stdout(Stdio::piped());
+    cmd.stderr(Stdio::inherit());
+    cmd.spawn()
+        .map_err(|e| BrokreError::Runtime(format!("spawn tunnel agent on {bastion_alias}: {e}")))
+}
+
+#[cfg(not(unix))]
+pub fn spawn_tunnel_agent(_bastion_alias: &str) -> Result<std::process::Child> {
+    Err(BrokreError::Runtime(
+        "tunnel agent bootstrap requires Unix".into(),
+    ))
+}

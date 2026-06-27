@@ -1,6 +1,8 @@
 //! Long-lived PTY session for MCP elevated shell reuse (Unix).
 
-use crate::runtime::prompts::{is_remote_su_password_prompt, is_remote_sudo_password_prompt, patterns_for};
+use crate::runtime::prompts::{
+    is_remote_su_password_prompt, is_remote_sudo_password_prompt, patterns_for,
+};
 use crate::runtime::session_markers;
 use crate::utils::errors::{BrokreError, Result};
 use portable_pty::{CommandBuilder, MasterPty, NativePtySystem, PtySize, PtySystem};
@@ -79,9 +81,8 @@ impl PtySession {
             .map_err(|e| BrokreError::Runtime(format!("openpty: {}", e)))?;
 
         let master = pair.master;
-        let master_raw_fd: RawFd = MasterPty::as_raw_fd(&*master).ok_or_else(|| {
-            BrokreError::Runtime("pty session: no master fd".into())
-        })?;
+        let master_raw_fd: RawFd = MasterPty::as_raw_fd(&*master)
+            .ok_or_else(|| BrokreError::Runtime("pty session: no master fd".into()))?;
 
         let mut cmd = CommandBuilder::new(binary);
         for a in args {
@@ -187,9 +188,7 @@ impl PtySession {
                                 let is_sudo = is_remote_sudo_password_prompt(window);
                                 let is_su = expect_su && is_remote_su_password_prompt(window);
                                 let is_elevation = is_sudo || is_su;
-                                if let Some(field) =
-                                    field_for_prompt(window, &inject_fields_inj)
-                                {
+                                if let Some(field) = field_for_prompt(window, &inject_fields_inj) {
                                     let already = injected_fields_inj
                                         .lock()
                                         .map(|g| g.contains(&field))

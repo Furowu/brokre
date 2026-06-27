@@ -15,6 +15,8 @@ use std::io::Write;
 use std::path::PathBuf;
 #[cfg(unix)]
 use std::process::{Command, Stdio};
+use std::thread;
+use std::time::{Duration, Instant};
 
 pub struct SecureKeyFile {
     pub path: PathBuf,
@@ -247,22 +249,166 @@ pub fn build_mux_master_argv(argv: &[String]) -> Vec<String> {
     out
 }
 
+/// Argv for an interactive session that attaches to an existing mux master (never creates one).
+pub fn build_mux_session_argv(argv: &[String]) -> Vec<String> {
+    argv.iter()
+        .map(|arg| {
+            if arg == "ControlMaster=auto" || arg.starts_with("ControlMaster=auto") {
+                "ControlMaster=no".into()
+            } else {
+                arg.clone()
+            }
+        })
+        .collect()
+}
+
+#[cfg(unix)]
+fn run_mux_op(binary: &str, op: &str, control_path: &str, target: &str) -> Result<()> {
+    let bin = which::which(binary)
+        .map_err(|_| BrokreError::Runtime(format!("{}: command not found", binary)))?;
+    let _ = Command::new(bin)
+        .arg("-O")
+        .arg(op)
+        .arg("-o")
+        .arg(format!("ControlPath={control_path}"))
+        .arg(target)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map_err(BrokreError::Io)?;
+    Ok(())
+}
+
+/// Candidate mux socket files for a `ControlPath` template (expands `%C` via directory scan).
+pub fn mux_socket_candidates(control_path_template: &str) -> Vec<PathBuf> {
+    if control_path_template.contains("%C") {
+        let parent = PathBuf::from(control_path_template)
+            .parent()
+            .map(PathBuf::from)
+            .unwrap_or_else(run_dir);
+        let mut out = Vec::new();
+        if let Ok(entries) = fs::read_dir(parent) {
+            for entry in entries.flatten() {
+                let name = entry.file_name().to_string_lossy().into_owned();
+                if name.starts_with("ssh-") && name.ends_with(".sock") {
+                    out.push(entry.path());
+                }
+            }
+        }
+        out
+    } else {
+        vec![PathBuf::from(control_path_template)]
+    }
+}
+
+/// Resolved `ControlPath` after OpenSSH expands `%C` / applies config for this argv.
+#[cfg(unix)]
+pub fn expanded_mux_control_path(binary: &str, argv: &[String]) -> Option<PathBuf> {
+    let target_idx = connection_target_index(argv);
+    let target = argv.get(target_idx)?;
+    let bin = which::which(binary).ok()?;
+    let mut cmd = Command::new(bin);
+    cmd.arg("-G");
+    for arg in &argv[..target_idx] {
+        cmd.arg(arg);
+    }
+    cmd.arg(target);
+    cmd.stdin(Stdio::null());
+    let output = cmd.output().ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    for line in String::from_utf8_lossy(&output.stdout).lines() {
+        let mut parts = line.split_whitespace();
+        if parts
+            .next()
+            .is_some_and(|k| k.eq_ignore_ascii_case("controlpath"))
+        {
+            return parts.next().map(PathBuf::from);
+        }
+    }
+    None
+}
+
+#[cfg(not(unix))]
+pub fn expanded_mux_control_path(_binary: &str, _argv: &[String]) -> Option<PathBuf> {
+    None
+}
+
+/// Remove dead mux sockets so `ssh -N -f` can establish a fresh authenticated master.
+#[cfg(unix)]
+pub fn prune_stale_mux_sockets(binary: &str, argv: &[String]) -> Result<()> {
+    if mux_master_alive(binary, argv)? {
+        return Ok(());
+    }
+    let Some(template) = mux_control_path_from_argv(argv) else {
+        return Ok(());
+    };
+    let Some(target) = openssh_argv_connection_target(argv) else {
+        return Ok(());
+    };
+
+    let _ = run_mux_op(binary, "exit", &template, &target);
+    if let Some(expanded) = expanded_mux_control_path(binary, argv) {
+        let path = expanded.to_string_lossy().into_owned();
+        let _ = run_mux_op(binary, "exit", &path, &target);
+    }
+    if mux_master_alive(binary, argv)? {
+        return Ok(());
+    }
+
+    let mut paths = mux_socket_candidates(&template);
+    if let Some(expanded) = expanded_mux_control_path(binary, argv) {
+        if !paths.iter().any(|p| p == &expanded) {
+            paths.push(expanded);
+        }
+    }
+
+    for path in paths {
+        if !path.exists() {
+            continue;
+        }
+        let path_str = path.to_string_lossy().into_owned();
+        let _ = run_mux_op(binary, "exit", &path_str, &target);
+        if mux_master_alive(binary, argv)? {
+            return Ok(());
+        }
+        let _ = fs::remove_file(&path);
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+pub fn prune_stale_mux_sockets(_binary: &str, _argv: &[String]) -> Result<()> {
+    Ok(())
+}
+
+#[cfg(not(unix))]
+pub fn build_mux_session_argv(argv: &[String]) -> Vec<String> {
+    argv.to_vec()
+}
+
 /// True when an OpenSSH mux control socket is already authenticated for this argv.
 #[cfg(unix)]
 pub fn mux_master_alive(binary: &str, argv: &[String]) -> Result<bool> {
-    let Some(path) = mux_control_path_from_argv(argv) else {
-        return Ok(false);
-    };
     let Some(target) = openssh_argv_connection_target(argv) else {
         return Ok(false);
     };
+    let path = match expanded_mux_control_path(binary, argv)
+        .or_else(|| mux_control_path_from_argv(argv).map(PathBuf::from))
+    {
+        Some(p) => p,
+        None => return Ok(false),
+    };
+    let path_str = path.to_string_lossy().into_owned();
     let bin = which::which(binary)
         .map_err(|_| BrokreError::Runtime(format!("{}: command not found", binary)))?;
     let status = Command::new(bin)
         .arg("-O")
         .arg("check")
         .arg("-o")
-        .arg(format!("ControlPath={path}"))
+        .arg(format!("ControlPath={path_str}"))
         .arg(target)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -270,6 +416,26 @@ pub fn mux_master_alive(binary: &str, argv: &[String]) -> Result<bool> {
         .status()
         .map_err(BrokreError::Io)?;
     Ok(status.success())
+}
+
+/// Poll until mux master answers `ssh -O check` or timeout.
+#[cfg(unix)]
+pub fn wait_mux_master_alive(binary: &str, argv: &[String], timeout: Duration) -> Result<bool> {
+    let deadline = Instant::now() + timeout;
+    loop {
+        if mux_master_alive(binary, argv)? {
+            return Ok(true);
+        }
+        if Instant::now() >= deadline {
+            return Ok(false);
+        }
+        thread::sleep(Duration::from_millis(50));
+    }
+}
+
+#[cfg(not(unix))]
+pub fn wait_mux_master_alive(_binary: &str, _argv: &[String], _timeout: Duration) -> Result<bool> {
+    Ok(false)
 }
 
 #[cfg(not(unix))]
@@ -694,11 +860,11 @@ mod tests {
             "-o".into(),
             "ControlMaster=auto".into(),
             "-tt".into(),
-            "out150".into(),
+            "b150".into(),
             token,
             "ssh".into(),
             "-tt".into(),
-            "lan07".into(),
+            "db".into(),
         ];
         assert_eq!(
             build_mux_master_argv(&argv),
@@ -709,7 +875,7 @@ mod tests {
                 "ControlPath=/tmp/ssh-%C.sock",
                 "-o",
                 "ControlMaster=yes",
-                "out150",
+                "b150",
                 "-N",
                 "-f",
             ]
@@ -723,8 +889,26 @@ mod tests {
         );
         assert_eq!(
             openssh_argv_connection_target(&argv).as_deref(),
-            Some("out150")
+            Some("b150")
         );
+    }
+
+    #[test]
+    fn build_mux_session_argv_attaches_without_creating_master() {
+        let argv = vec![
+            "-o".into(),
+            "ControlPersist=300".into(),
+            "-o".into(),
+            "ControlPath=/tmp/ssh-%C.sock".into(),
+            "-o".into(),
+            "ControlMaster=auto".into(),
+            "-tt".into(),
+            "b150".into(),
+            "uptime".into(),
+        ];
+        let session = build_mux_session_argv(&argv);
+        assert!(session.iter().any(|a| a == "ControlMaster=no"));
+        assert!(!session.iter().any(|a| a == "ControlMaster=auto"));
     }
 
     #[test]
@@ -795,7 +979,7 @@ mod tests {
         assert!(remote_command_needs_tty(&[
             token,
             "ssh".into(),
-            "lan07".into(),
+            "db".into(),
             "sudo".into(),
             "-i".into(),
         ]));

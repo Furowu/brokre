@@ -38,8 +38,9 @@ pub fn discover_remote_items(opts: &DiscoverOptions) -> Result<Vec<BastionListIt
 
 fn fetch_bastion_items(bastion_alias: &str, probe: bool) -> Result<Vec<BastionListItem>> {
     let stdout = run_remote_list_json_probe(bastion_alias)?;
-    let mut items: Vec<BastionListItem> = serde_json::from_str(&stdout)
-        .map_err(|e| BrokreError::Runtime(format!("parse remote list from {bastion_alias}: {e}")))?;
+    let mut items: Vec<BastionListItem> = serde_json::from_str(&stdout).map_err(|e| {
+        BrokreError::Runtime(format!("parse remote list from {bastion_alias}: {e}"))
+    })?;
     for item in &mut items {
         if item.kind == ListItemKind::Local {
             item.kind = ListItemKind::Inner;
@@ -60,10 +61,7 @@ fn fetch_bastion_items(bastion_alias: &str, probe: bool) -> Result<Vec<BastionLi
     Ok(items)
 }
 
-pub fn build_local_items(
-    records: Vec<SecretRecord>,
-    probe: bool,
-) -> Result<Vec<BastionListItem>> {
+pub fn build_local_items(records: Vec<SecretRecord>, probe: bool) -> Result<Vec<BastionListItem>> {
     let mut items: Vec<BastionListItem> = records
         .into_iter()
         .map(|r| BastionListItem::from_local_record(&r))
@@ -75,7 +73,10 @@ pub fn build_local_items(
     Ok(items)
 }
 
-pub fn merge_list_items(mut local: Vec<BastionListItem>, remote: Vec<BastionListItem>) -> Vec<BastionListItem> {
+pub fn merge_list_items(
+    mut local: Vec<BastionListItem>,
+    remote: Vec<BastionListItem>,
+) -> Vec<BastionListItem> {
     local.extend(remote);
     local
 }

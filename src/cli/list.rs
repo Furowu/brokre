@@ -64,7 +64,8 @@ pub fn run(opts: ListOptions) -> Result<()> {
 fn print_json(items: &[BastionListItem]) -> Result<()> {
     println!(
         "{}",
-        serde_json::to_string_pretty(items).map_err(|e| crate::utils::errors::BrokreError::Cli(e.to_string()))?
+        serde_json::to_string_pretty(items)
+            .map_err(|e| crate::utils::errors::BrokreError::Cli(e.to_string()))?
     );
     Ok(())
 }

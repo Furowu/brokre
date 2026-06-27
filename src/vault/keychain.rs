@@ -15,7 +15,8 @@ fn fallback_path(account: &str) -> PathBuf {
 }
 
 fn decode_key(b64: &str) -> Result<[u8; 32]> {
-    let bytes = base64ct::Base64::decode_vec(b64).map_err(|e| BrokreError::Crypto(e.to_string()))?;
+    let bytes =
+        base64ct::Base64::decode_vec(b64).map_err(|e| BrokreError::Crypto(e.to_string()))?;
     if bytes.len() != 32 {
         return Err(BrokreError::Crypto("corrupt key length".into()));
     }
