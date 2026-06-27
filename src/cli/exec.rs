@@ -483,10 +483,14 @@ fn exec_saved(
     apply_openssh_tty_argv_adjustments(profile, &mut argv, &resolved.trailing);
     #[cfg(unix)]
     let _key_guard = if is_openssh_profile(profile) {
-        crate::runtime::ssh_identity::insert_mux_options(&mut argv);
+        crate::runtime::ssh_identity::insert_mux_options_for_profile(profile, &mut argv);
         match crate::runtime::ssh_identity::materialize_identity(&rec)? {
             Some(guard) => {
-                crate::runtime::ssh_identity::insert_identity_arg(&mut argv, &guard.path);
+                crate::runtime::ssh_identity::insert_identity_arg_for_profile(
+                    profile,
+                    &mut argv,
+                    &guard.path,
+                );
                 Some(guard)
             }
             None => None,

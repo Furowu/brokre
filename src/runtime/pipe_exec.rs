@@ -105,7 +105,21 @@ fn configure_askpass(cmd: &mut Command, record_id: Uuid) -> Result<std::path::Pa
 #[cfg(unix)]
 pub fn run(binary: &str, args: &[String], record_id: Uuid) -> Result<PtyRunResult> {
     let stdin_is_pipe = crate::security::tty::stdin_is_pipe();
+    let result = run_once(binary, args, record_id, stdin_is_pipe)?;
+    if result.exit_code != 0 && scp_legacy_mode_requested(binary, args) {
+        let retry_args = scp_args_without_legacy_mode(args);
+        return run_once(binary, &retry_args, record_id, stdin_is_pipe);
+    }
+    Ok(result)
+}
 
+#[cfg(unix)]
+fn run_once(
+    binary: &str,
+    args: &[String],
+    record_id: Uuid,
+    stdin_is_pipe: bool,
+) -> Result<PtyRunResult> {
     let bin = which::which(binary)
         .map_err(|_| BrokreError::Runtime(format!("{}: command not found", binary)))?;
     let mut cmd = Command::new(bin);
@@ -164,6 +178,17 @@ pub fn run(binary: &str, args: &[String], record_id: Uuid) -> Result<PtyRunResul
         injector_dur_ms: None,
         injector_outcome: Some("askpass".into()),
     })
+}
+
+fn scp_legacy_mode_requested(binary: &str, args: &[String]) -> bool {
+    binary.rsplit('/').next().unwrap_or(binary) == "scp" && args.iter().any(|arg| arg == "-O")
+}
+
+fn scp_args_without_legacy_mode(args: &[String]) -> Vec<String> {
+    args.iter()
+        .filter(|arg| arg.as_str() != "-O")
+        .cloned()
+        .collect()
 }
 
 /// Policy for Mac-side interactive bastion routes (TTY check applied separately).
@@ -385,6 +410,28 @@ mod tests {
         assert!(should_use_pipe_mode("ssh", true, None));
         assert!(!should_use_pipe_mode("ssh", false, None));
         assert!(!should_use_pipe_mode("mysql", true, None));
+    }
+
+    #[test]
+    fn scp_legacy_retry_removes_only_standalone_o_flag() {
+        let args = vec![
+            "-O".into(),
+            "-P".into(),
+            "2222".into(),
+            "/tmp/local".into(),
+            "dev-host:/tmp/remote".into(),
+        ];
+        assert!(scp_legacy_mode_requested("scp", &args));
+        assert_eq!(
+            scp_args_without_legacy_mode(&args),
+            vec![
+                "-P".to_string(),
+                "2222".to_string(),
+                "/tmp/local".to_string(),
+                "dev-host:/tmp/remote".to_string()
+            ]
+        );
+        assert!(!scp_legacy_mode_requested("ssh", &args));
     }
 
     #[test]

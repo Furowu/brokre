@@ -108,8 +108,12 @@ fn openssh_attached_short_value(arg: &str) -> bool {
     openssh_short_takes_value(ch)
 }
 
-fn openssh_option_consumes_next(arg: &str) -> bool {
+fn openssh_option_consumes_next_for_profile(profile: &str, arg: &str) -> bool {
     if arg == "--" {
+        return false;
+    }
+    let bin = profile.rsplit('/').next().unwrap_or(profile);
+    if bin == "scp" && arg == "-O" {
         return false;
     }
     if arg.starts_with("--") {
@@ -140,6 +144,10 @@ pub fn openssh_connection_target(argv: &[String]) -> Option<String> {
 
 /// Index of the connection target (`user@host` / `host`) in a saved OpenSSH argv.
 fn connection_target_index(argv: &[String]) -> usize {
+    connection_target_index_for_profile("ssh", argv)
+}
+
+fn connection_target_index_for_profile(profile: &str, argv: &[String]) -> usize {
     let mut i = 0;
     while i < argv.len() {
         let a = &argv[i];
@@ -149,7 +157,7 @@ fn connection_target_index(argv: &[String]) -> usize {
         if !a.starts_with('-') {
             return i;
         }
-        if openssh_option_consumes_next(a) {
+        if openssh_option_consumes_next_for_profile(profile, a) {
             i += 2;
         } else {
             i += 1;
@@ -179,12 +187,16 @@ fn has_mux_options(argv: &[String]) -> bool {
 
 /// Reuse one authenticated SSH session across rapid `brokre ssh` invocations (e.g. deploy scripts).
 pub fn insert_mux_options(argv: &mut Vec<String>) {
+    insert_mux_options_for_profile("ssh", argv)
+}
+
+pub fn insert_mux_options_for_profile(profile: &str, argv: &mut Vec<String>) {
     if has_mux_options(argv) {
         return;
     }
     let sock = run_dir().join("ssh-%C.sock");
     let path = sock.to_string_lossy().to_string();
-    let pos = connection_target_index(argv);
+    let pos = connection_target_index_for_profile(profile, argv);
     let pairs = [
         ("-o", format!("ControlPersist={}", SSH_MUX_PERSIST_SECS)),
         ("-o", format!("ControlPath={}", path)),
@@ -694,10 +706,18 @@ fn has_tty_request_flag(argv: &[String]) -> bool {
 
 /// Insert `-i <keyfile>` after leading flags, before the connection target.
 pub fn insert_identity_arg(argv: &mut Vec<String>, key_path: &std::path::Path) {
+    insert_identity_arg_for_profile("ssh", argv, key_path)
+}
+
+pub fn insert_identity_arg_for_profile(
+    profile: &str,
+    argv: &mut Vec<String>,
+    key_path: &std::path::Path,
+) {
     if argv.iter().any(|a| a == "-i" || a.starts_with("-i")) {
         return;
     }
-    let pos = connection_target_index(argv);
+    let pos = connection_target_index_for_profile(profile, argv);
     let p = key_path.display().to_string();
     argv.insert(pos, p);
     argv.insert(pos, "-i".into());
@@ -966,6 +986,31 @@ mod tests {
                 .map(String::from)
                 .collect::<Vec<_>>()
         );
+    }
+
+    #[test]
+    fn scp_legacy_o_does_not_consume_local_path() {
+        let mut argv = vec![
+            "-O".into(),
+            "/tmp/local".into(),
+            "dev-host:/tmp/remote".into(),
+        ];
+        insert_identity_arg_for_profile("scp", &mut argv, std::path::Path::new("/tmp/k"));
+        assert_eq!(
+            argv,
+            vec!["-O", "-i", "/tmp/k", "/tmp/local", "dev-host:/tmp/remote"]
+                .into_iter()
+                .map(String::from)
+                .collect::<Vec<_>>()
+        );
+
+        insert_mux_options_for_profile("scp", &mut argv);
+        let local_idx = argv.iter().position(|arg| arg == "/tmp/local").unwrap();
+        let first_mux_idx = argv
+            .iter()
+            .position(|arg| arg.starts_with("ControlPersist="))
+            .unwrap();
+        assert!(first_mux_idx < local_idx);
     }
 
     #[test]

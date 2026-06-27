@@ -124,8 +124,8 @@ fn run_internal_askpass() -> Result<()> {
         .parse()
         .map_err(|_| BrokreError::Runtime("askpass: bad owner pid".into()))?;
 
-    let ssh_pid = unsafe { libc::getppid() } as u32;
-    if parent_pid_of(ssh_pid) != Some(owner_pid) {
+    let askpass_parent_pid = unsafe { libc::getppid() } as u32;
+    if !process_has_ancestor(askpass_parent_pid, owner_pid, 4) {
         return Err(BrokreError::Runtime("askpass: owner pid mismatch".into()));
     }
 
@@ -214,4 +214,75 @@ fn parent_pid_of(_pid: u32) -> Option<u32> {
 #[cfg(not(unix))]
 fn parent_pid_of(_pid: u32) -> Option<u32> {
     None
+}
+
+fn process_has_ancestor(pid: u32, expected_ancestor: u32, max_depth: usize) -> bool {
+    process_has_ancestor_with(pid, expected_ancestor, max_depth, parent_pid_of)
+}
+
+fn process_has_ancestor_with<F>(
+    mut pid: u32,
+    expected_ancestor: u32,
+    max_depth: usize,
+    mut parent_of: F,
+) -> bool
+where
+    F: FnMut(u32) -> Option<u32>,
+{
+    if pid == expected_ancestor {
+        return true;
+    }
+    for _ in 0..max_depth {
+        let Some(parent) = parent_of(pid) else {
+            return false;
+        };
+        if parent == expected_ancestor {
+            return true;
+        }
+        if parent == 0 || parent == pid {
+            return false;
+        }
+        pid = parent;
+    }
+    false
+}
+
+#[cfg(test)]
+mod tests {
+    use super::process_has_ancestor_with;
+
+    #[test]
+    fn askpass_allows_scp_ssh_intermediate_process() {
+        let parent = |pid| match pid {
+            30 => Some(20), // askpass parent: ssh
+            20 => Some(10), // scp
+            10 => Some(1),  // brokre
+            _ => None,
+        };
+        assert!(process_has_ancestor_with(30, 1, 4, parent));
+    }
+
+    #[test]
+    fn askpass_rejects_unrelated_process_tree() {
+        let parent = |pid| match pid {
+            30 => Some(20),
+            20 => Some(10),
+            10 => Some(1),
+            _ => None,
+        };
+        assert!(!process_has_ancestor_with(30, 99, 4, parent));
+    }
+
+    #[test]
+    fn askpass_respects_max_depth() {
+        let parent = |pid| match pid {
+            40 => Some(30),
+            30 => Some(20),
+            20 => Some(10),
+            10 => Some(1),
+            _ => None,
+        };
+        assert!(!process_has_ancestor_with(40, 1, 2, parent));
+        assert!(process_has_ancestor_with(40, 1, 4, parent));
+    }
 }
