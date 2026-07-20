@@ -212,7 +212,7 @@ async fn poll_until_unlocked_async(
         tokio::time::sleep(Duration::from_millis(500)).await;
     }
     Err(McpError::invalid_request(
-        "bastion unlock timed out — open the auth page and retry",
+        "bastion unlock timed out — open the auth page (/bastion-auth on the local manage server) in your browser, unlock, then retry",
         None,
     ))
 }

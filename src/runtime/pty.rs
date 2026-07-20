@@ -158,6 +158,11 @@ pub(crate) fn should_arm_vault_inject(
     options: &PtyRunOptions,
     prompt: &VaultInjectPrompt<'_>,
 ) -> bool {
+    // OpenSSH `-i` identity unlock (`Enter passphrase for key …`). Not SSH login or
+    // elevation; inject once per connection (deduped via `injected_fields` at call site).
+    if prompt.field == "key_passphrase" {
+        return true;
+    }
     if prompt.field != "password" {
         return false;
     }
@@ -799,6 +804,8 @@ pub fn run(
                                     }
                                     if is_elevation {
                                         elevation_attempts_b.fetch_add(1, Ordering::AcqRel);
+                                    } else if field == "key_passphrase" {
+                                        // Identity unlock is not SSH login completion.
                                     } else if ssh_login_done_b.load(Ordering::Acquire) {
                                         inner_ssh_login_done_b.store(true, Ordering::Release);
                                     } else {
@@ -1094,6 +1101,19 @@ mod tests {
         }
     }
 
+    fn kp_prompt() -> VaultInjectPrompt<'static> {
+        VaultInjectPrompt {
+            is_elevation_prompt: false,
+            is_ssh_login_prompt: false,
+            is_inner_hop_ssh_prompt: false,
+            field: "key_passphrase",
+            ssh_login_done: false,
+            inner_ssh_login_done: false,
+            elevation_attempts: 0,
+            auth_failed_visible: false,
+        }
+    }
+
     #[test]
     fn bastion_outer_hop_injects_bastion_ssh_then_inner_from_mac_vault() {
         let outer = PtyRunOptions {
@@ -1187,6 +1207,28 @@ mod tests {
         assert!(should_arm_vault_inject(
             &direct,
             &pw_prompt(true, false, false, true, false, 0, false),
+        ));
+    }
+
+    #[test]
+    fn key_passphrase_arms_on_direct_and_bastion_outer_hop() {
+        let direct = PtyRunOptions::default();
+        assert!(should_arm_vault_inject(&direct, &kp_prompt()));
+        let outer_inner = PtyRunOptions {
+            bastion_outer_hop: true,
+            inner_vault_record: Some(uuid::Uuid::new_v4()),
+            inner_host_hint: Some("10.0.0.7".into()),
+            ..Default::default()
+        };
+        assert!(should_arm_vault_inject(&outer_inner, &kp_prompt()));
+    }
+
+    #[test]
+    fn ssh_login_password_still_arms_after_key_passphrase_field() {
+        let direct = PtyRunOptions::default();
+        assert!(should_arm_vault_inject(
+            &direct,
+            &pw_prompt(false, true, false, false, false, 0, false),
         ));
     }
 

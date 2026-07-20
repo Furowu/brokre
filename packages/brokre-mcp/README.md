@@ -224,15 +224,15 @@ Run `brokre --help` for pass-through syntax and subcommands (`list`, `manage`, `
 
 ### `brokre_list` — local-first list
 
-By default, `brokre_list` reads local metadata only. It does **not** SSH to bastions, does **not** discover remote aliases, and does **not** trigger bastion unlock.
+By default, `brokre_list` reads local metadata only. It does **not** SSH to bastions, does **not** discover remote aliases, and does **not** trigger bastion unlock. It **does** run local reachability probes by default so each item has `status` / `availability`.
 
-Set `include_bastions=true` only when the user needs cross-network routed aliases. Then brokre:
+Set `probe: false` to skip probes. Set `reachable_only: true` to hide unavailable aliases. Set `include_bastions: true` only when the user needs cross-network routed aliases. Then brokre:
 
 1. SSHs to registered bastions after bastion gate unlock when configured
 2. Merges routed entries like `b150::db` (`route: ["b150"]`, `access: "via_b150"`)
 3. Can return multi-hop entries such as `b1::b2::db` when the bastion catalogs expose them
 
-Use `probe: true` for reachability checks and `all: true` to include unreachable entries. Prefer routed aliases only when they are actually listed and needed.
+Prefer routed aliases only when they are actually listed and needed. MCP `brokre_exec` wall-clock timeout defaults to 120s (`BROKRE_MCP_EXEC_TIMEOUT`); SSH connect timeout defaults to 5s (`BROKRE_SSH_CONNECT_TIMEOUT`).
 
 **Example response** (cross-network via VPN to bastion `b150`):
 

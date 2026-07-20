@@ -348,12 +348,16 @@ brokre <your-cli> <alias> [args...]
 ### List metadata (safe for AI / scripts)
 
 ```bash
-brokre list --json              # no bastions: local aliases only; with bastions: smart list (below)
-brokre list --all --json        # include unreachable aliases (debugging)
-brokre list --no-bastion-discovery   # local only — no SSH, no probe
+brokre list --json              # local aliases with reachability status (default probe)
+brokre list --no-probe --json   # metadata only, skip TCP/SSH probes
+brokre list --reachable-only    # hide unavailable aliases
+brokre list --all --json        # compat: show all (same as default unless --reachable-only)
+brokre list --no-bastion-discovery   # local only — no bastion SSH discovery
 ```
 
 When bastions are registered, `brokre list` **stays local-only by default** and does not SSH to bastions or trigger bastion unlock. Use `brokre list --include-bastions` (MCP: `include_bastions=true`) when you actually need routed aliases such as `b150::db`; that remote discovery may require unlock.
+
+OpenSSH sessions inject `ConnectTimeout=5` by default (`BROKRE_SSH_CONNECT_TIMEOUT`). Override with `-o ConnectTimeout=N` or the env var.
 
 ### Cross-network list inheritance (bastion broker)
 

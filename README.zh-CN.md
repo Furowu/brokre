@@ -348,12 +348,15 @@ brokre <你的-cli> <别名> [args...]
 ### 列出元数据（AI / 脚本安全）
 
 ```bash
-brokre list --json              # 默认仅本地别名，不 SSH 到堡垒
-brokre list --all --json        # 含不可达别名（排查用）
+brokre list --json              # 本地别名 + 默认可达性探测（status）
+brokre list --no-probe --json   # 仅元数据，跳过探测
+brokre list --reachable-only    # 隐藏不可达
 brokre list --include-bastions --json # 需要路由别名时显式发现堡垒
 ```
 
 已注册堡垒时，`brokre list` **默认仍只读本地元数据**，不会 SSH 到堡垒，也不会触发堡垒解锁。只有显式 `--include-bastions`（MCP: `include_bastions=true`）才会拉取堡垒上的别名（如 `b150::db`）。
+
+OpenSSH 默认注入 `ConnectTimeout=5`（`BROKRE_SSH_CONNECT_TIMEOUT`），可用 `-o ConnectTimeout=N` 覆盖。
 
 ### 跨网清单继承（堡垒 broker）
 

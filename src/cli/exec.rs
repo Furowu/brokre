@@ -202,9 +202,16 @@ fn detect_bastion_route(profile: &str, args: &[String]) -> Result<Option<RoutedE
         }
     }
 
-    let idx = match args.iter().position(|a| !a.starts_with('-')) {
-        Some(i) => i,
-        None => return Ok(None),
+    let idx = if is_openssh_profile(profile) {
+        match crate::runtime::ssh_identity::openssh_first_positional_index(profile, args) {
+            Some(i) => i,
+            None => return Ok(None),
+        }
+    } else {
+        match args.iter().position(|a| !a.starts_with('-')) {
+            Some(i) => i,
+            None => return Ok(None),
+        }
     };
     let token = &args[idx];
     if let Some(route) = parse_route(token)? {
@@ -397,7 +404,12 @@ fn resolve_record(
     }
 
     // 1. First positional non-flag arg == alias name.
-    let first_positional = args.iter().position(|a| !a.starts_with('-'));
+    // OpenSSH: skip option *values* (`-o BatchMode=yes` → value is not the alias).
+    let first_positional = if is_openssh_profile(profile) {
+        crate::runtime::ssh_identity::openssh_first_positional_index(profile, args)
+    } else {
+        args.iter().position(|a| !a.starts_with('-'))
+    };
     if let Some(idx) = first_positional {
         let token = &args[idx];
         for lp in lookup_profiles(profile) {
@@ -483,7 +495,9 @@ fn exec_saved(
     apply_openssh_tty_argv_adjustments(profile, &mut argv, &resolved.trailing);
     #[cfg(unix)]
     let _key_guard = if is_openssh_profile(profile) {
+        crate::runtime::ssh_identity::insert_default_ssh_timeouts(profile, &mut argv);
         crate::runtime::ssh_identity::insert_mux_options_for_profile(profile, &mut argv);
+        let _ = crate::runtime::ssh_identity::prune_stale_mux_sockets(profile, &argv);
         match crate::runtime::ssh_identity::materialize_identity(&rec)? {
             Some(guard) => {
                 crate::runtime::ssh_identity::insert_identity_arg_for_profile(
@@ -668,9 +682,14 @@ fn exec_fresh(
 
     let patterns = patterns_for(&profile);
     let start = Instant::now();
+    let mut run_args = args.clone();
+    #[cfg(unix)]
+    if is_openssh_profile(&profile) {
+        crate::runtime::ssh_identity::insert_default_ssh_timeouts(&profile, &mut run_args);
+    }
     let result = crate::runtime::pty::run(
         &binary,
-        &args,
+        &run_args,
         PtyCredential::None,
         &patterns,
         crate::runtime::pty::PtyRunOptions::default(),

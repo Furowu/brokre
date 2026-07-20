@@ -370,7 +370,7 @@ pub fn poll_until_unlocked_sync(
         thread::sleep(Duration::from_millis(500));
     }
     Err(BrokreError::Cli(
-        "bastion unlock timed out — complete authentication in the browser and retry".into(),
+        "bastion unlock timed out — open the auth page (/bastion-auth on the local manage server) in your browser, unlock, then retry".into(),
     ))
 }
 

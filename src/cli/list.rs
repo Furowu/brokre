@@ -15,7 +15,9 @@ pub struct ListOptions {
     pub probe: bool,
     pub include_bastions: bool,
     pub no_bastion_discovery: bool,
-    /// Show unreachable aliases (disables smart filtering).
+    /// Show only reachable aliases (and unknown).
+    pub reachable_only: bool,
+    /// Show all aliases including unreachable (disables reachable_only).
     pub show_all: bool,
 }
 
@@ -45,6 +47,7 @@ pub fn run(opts: ListOptions) -> Result<()> {
         probe: opts.probe,
         include_bastions: opts.include_bastions,
         no_bastion_discovery: opts.no_bastion_discovery,
+        reachable_only: opts.reachable_only,
         show_all: opts.show_all,
         for_mcp: false,
     });

@@ -6,6 +6,10 @@ use crate::utils::paths::run_dir;
 
 /// Seconds to keep a multiplexed SSH control socket warm between commands.
 const SSH_MUX_PERSIST_SECS: &str = "300";
+/// Default OpenSSH ConnectTimeout (seconds). Override with BROKRE_SSH_CONNECT_TIMEOUT.
+const DEFAULT_SSH_CONNECT_TIMEOUT_SECS: u64 = 5;
+const DEFAULT_SSH_SERVER_ALIVE_INTERVAL: u64 = 15;
+const DEFAULT_SSH_SERVER_ALIVE_COUNT_MAX: u64 = 2;
 use crate::vault::crypto::record::decrypt_for_exec;
 use crate::vault::keychain::get_or_init_master_kek;
 use crate::vault::model::SecretRecord;
@@ -166,15 +170,34 @@ fn connection_target_index_for_profile(profile: &str, argv: &[String]) -> usize 
     argv.len()
 }
 
+/// Index of the first connection target / alias token in OpenSSH-style argv
+/// (skips `-o Value`, `-F path`, etc.).
+pub fn openssh_first_positional_index(profile: &str, argv: &[String]) -> Option<usize> {
+    let idx = connection_target_index_for_profile(profile, argv);
+    if idx < argv.len() {
+        Some(idx)
+    } else {
+        None
+    }
+}
+
+/// Compatibility alias used by tunnel/ssh_pool call sites.
+pub fn openssh_connection_target_index_for_profile(profile: &str, argv: &[String]) -> usize {
+    connection_target_index_for_profile(profile, argv)
+}
+
 fn has_mux_options(argv: &[String]) -> bool {
+    has_openssh_option_prefix(argv, "ControlPath=")
+        || has_openssh_option_prefix(argv, "ControlMaster=")
+        || has_openssh_option_exact(argv, "ControlMaster")
+}
+
+/// True when argv already contains `-o Name=…` or `-o Name` matching `prefix` (e.g. `ConnectTimeout=`).
+pub fn has_openssh_option_prefix(argv: &[String], prefix: &str) -> bool {
     let mut i = 0;
     while i < argv.len() {
         if argv[i] == "-o" && i + 1 < argv.len() {
-            let v = argv[i + 1].as_str();
-            if v.starts_with("ControlPath=")
-                || v.starts_with("ControlMaster=")
-                || v == "ControlMaster"
-            {
+            if argv[i + 1].starts_with(prefix) {
                 return true;
             }
             i += 2;
@@ -185,6 +208,73 @@ fn has_mux_options(argv: &[String]) -> bool {
     false
 }
 
+fn has_openssh_option_exact(argv: &[String], name: &str) -> bool {
+    let mut i = 0;
+    while i < argv.len() {
+        if argv[i] == "-o" && i + 1 < argv.len() {
+            if argv[i + 1] == name {
+                return true;
+            }
+            i += 2;
+        } else {
+            i += 1;
+        }
+    }
+    false
+}
+
+fn is_openssh_family_profile(profile: &str) -> bool {
+    matches!(
+        profile.rsplit('/').next().unwrap_or(profile),
+        "ssh" | "scp" | "sftp"
+    )
+}
+
+pub fn ssh_connect_timeout_secs() -> u64 {
+    std::env::var("BROKRE_SSH_CONNECT_TIMEOUT")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(DEFAULT_SSH_CONNECT_TIMEOUT_SECS)
+}
+
+/// Inject default OpenSSH timeouts when the user did not pass them.
+/// `ConnectTimeout` default is 5s (`BROKRE_SSH_CONNECT_TIMEOUT`).
+pub fn insert_default_ssh_timeouts(profile: &str, argv: &mut Vec<String>) {
+    if !is_openssh_family_profile(profile) {
+        return;
+    }
+    let pos = connection_target_index_for_profile(profile, argv);
+    let mut pairs: Vec<(String, String)> = Vec::new();
+    if !has_openssh_option_prefix(argv, "ConnectTimeout=") {
+        pairs.push((
+            "-o".into(),
+            format!("ConnectTimeout={}", ssh_connect_timeout_secs()),
+        ));
+    }
+    if !has_openssh_option_prefix(argv, "ServerAliveInterval=") {
+        pairs.push((
+            "-o".into(),
+            format!("ServerAliveInterval={DEFAULT_SSH_SERVER_ALIVE_INTERVAL}"),
+        ));
+    }
+    if !has_openssh_option_prefix(argv, "ServerAliveCountMax=") {
+        pairs.push((
+            "-o".into(),
+            format!("ServerAliveCountMax={DEFAULT_SSH_SERVER_ALIVE_COUNT_MAX}"),
+        ));
+    }
+    for (flag, val) in pairs.into_iter().rev() {
+        argv.insert(pos, val);
+        argv.insert(pos, flag);
+    }
+}
+
+/// True when OpenSSH argv has tokens after the connection target (a remote command).
+pub fn argv_has_remote_command(profile: &str, argv: &[String]) -> bool {
+    let idx = connection_target_index_for_profile(profile, argv);
+    argv.get(idx).is_some() && argv.len() > idx + 1
+}
+
 /// Reuse one authenticated SSH session across rapid `brokre ssh` invocations (e.g. deploy scripts).
 pub fn insert_mux_options(argv: &mut Vec<String>) {
     insert_mux_options_for_profile("ssh", argv)
@@ -192,19 +282,40 @@ pub fn insert_mux_options(argv: &mut Vec<String>) {
 
 pub fn insert_mux_options_for_profile(profile: &str, argv: &mut Vec<String>) {
     if has_mux_options(argv) {
+        // Remote commands must not attach to a mux master (exit hang after
+        // "Shared connection … closed."). Rewrite auto → no when needed.
+        if argv_has_remote_command(profile, argv) {
+            force_control_master_no(argv);
+        }
         return;
     }
     let sock = run_dir().join("ssh-%C.sock");
     let path = sock.to_string_lossy().to_string();
     let pos = connection_target_index_for_profile(profile, argv);
+    let master = if argv_has_remote_command(profile, argv) {
+        "ControlMaster=no"
+    } else {
+        "ControlMaster=auto"
+    };
     let pairs = [
         ("-o", format!("ControlPersist={}", SSH_MUX_PERSIST_SECS)),
         ("-o", format!("ControlPath={}", path)),
-        ("-o", "ControlMaster=auto".into()),
+        ("-o", master.into()),
     ];
     for (flag, val) in pairs.iter().rev() {
         argv.insert(pos, val.clone());
         argv.insert(pos, (*flag).into());
+    }
+}
+
+fn force_control_master_no(argv: &mut [String]) {
+    let mut i = 0;
+    while i + 1 < argv.len() {
+        if argv[i] == "-o" && argv[i + 1].starts_with("ControlMaster=") {
+            argv[i + 1] = "ControlMaster=no".into();
+            return;
+        }
+        i += 1;
     }
 }
 
@@ -924,6 +1035,58 @@ mod tests {
         let session = build_mux_session_argv(&argv);
         assert!(session.iter().any(|a| a == "ControlMaster=no"));
         assert!(!session.iter().any(|a| a == "ControlMaster=auto"));
+    }
+
+    #[test]
+    fn insert_default_ssh_timeouts_injects_connect_timeout_5() {
+        let mut argv = vec!["-v".into(), "user@10.0.0.1".into()];
+        insert_default_ssh_timeouts("ssh", &mut argv);
+        assert!(argv.iter().any(|a| a == "ConnectTimeout=5"));
+        assert!(argv.iter().any(|a| a == "ServerAliveInterval=15"));
+        assert!(argv.iter().any(|a| a == "ServerAliveCountMax=2"));
+    }
+
+    #[test]
+    fn insert_default_ssh_timeouts_skips_existing_connect_timeout() {
+        let mut argv = vec![
+            "-o".into(),
+            "ConnectTimeout=30".into(),
+            "user@10.0.0.1".into(),
+        ];
+        insert_default_ssh_timeouts("ssh", &mut argv);
+        let ct: Vec<_> = argv
+            .iter()
+            .filter(|a| a.starts_with("ConnectTimeout="))
+            .collect();
+        assert_eq!(ct, vec!["ConnectTimeout=30"]);
+    }
+
+    #[test]
+    fn insert_mux_uses_control_master_no_for_remote_command() {
+        let mut argv = vec!["user@10.0.0.1".into(), "true".into()];
+        insert_mux_options_for_profile("ssh", &mut argv);
+        assert!(argv.iter().any(|a| a == "ControlMaster=no"));
+        assert!(!argv.iter().any(|a| a == "ControlMaster=auto"));
+    }
+
+    #[test]
+    fn insert_mux_uses_control_master_auto_for_interactive_login() {
+        let mut argv = vec!["user@10.0.0.1".into()];
+        insert_mux_options_for_profile("ssh", &mut argv);
+        assert!(argv.iter().any(|a| a == "ControlMaster=auto"));
+    }
+
+    #[test]
+    fn openssh_first_positional_skips_dash_o_value() {
+        let argv = vec![
+            "-o".into(),
+            "BatchMode=yes".into(),
+            "-v".into(),
+            "lan07".into(),
+            "true".into(),
+        ];
+        assert_eq!(openssh_first_positional_index("ssh", &argv), Some(3));
+        assert_eq!(argv[3], "lan07");
     }
 
     #[test]

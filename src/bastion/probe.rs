@@ -94,23 +94,35 @@ pub fn is_valid_ssh_ident(line: &str) -> bool {
     proto == "2.0" || proto == "1.99" || proto == "1.5"
 }
 
-fn resolve_socket_addrs(host: &str, port: u16) -> std::result::Result<Vec<SocketAddr>, String> {
+fn resolve_socket_addrs(
+    host: &str,
+    port: u16,
+    timeout: Duration,
+) -> std::result::Result<Vec<SocketAddr>, String> {
     let addr_str = format!("{host}:{port}");
-    let addrs: Vec<SocketAddr> = addr_str
-        .to_socket_addrs()
-        .map_err(|e| e.to_string())?
-        .collect();
-    if addrs.is_empty() {
-        return Err("no addresses resolved".into());
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let result = addr_str
+            .to_socket_addrs()
+            .map(|iter| iter.collect::<Vec<_>>())
+            .map_err(|e| e.to_string());
+        let _ = tx.send(result);
+    });
+    match rx.recv_timeout(timeout) {
+        Ok(Ok(addrs)) if !addrs.is_empty() => Ok(addrs),
+        Ok(Ok(_)) => Err("no addresses resolved".into()),
+        Ok(Err(e)) => Err(e),
+        Err(_) => Err("DNS resolve timeout".into()),
     }
-    Ok(addrs)
 }
 
 fn connect_tcp(host: &str, port: u16, timeout: Duration) -> std::result::Result<TcpStream, String> {
-    let addrs = resolve_socket_addrs(host, port)?;
+    let started = Instant::now();
+    let addrs = resolve_socket_addrs(host, port, timeout)?;
     let mut last_err = None;
     for addr in addrs {
-        match TcpStream::connect_timeout(&addr, timeout) {
+        let remaining = remaining_timeout(started, timeout);
+        match TcpStream::connect_timeout(&addr, remaining) {
             Ok(stream) => return Ok(stream),
             Err(e) => last_err = Some(e.to_string()),
         }

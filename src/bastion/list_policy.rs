@@ -19,7 +19,9 @@ pub struct RawListOptions {
     pub probe: bool,
     pub include_bastions: bool,
     pub no_bastion_discovery: bool,
-    /// CLI `--all` or MCP `all=true` — show unreachable aliases.
+    /// Explicit filter: only show reachable (and unknown) aliases.
+    pub reachable_only: bool,
+    /// CLI `--all` or MCP `all=true` — forces reachable_only off (compat).
     pub show_all: bool,
     pub for_mcp: bool,
 }
@@ -27,8 +29,7 @@ pub struct RawListOptions {
 pub fn resolve_list_options(raw: RawListOptions) -> EffectiveListOptions {
     let include_bastions = raw.include_bastions && !raw.no_bastion_discovery;
     let probe = raw.probe;
-
-    let reachable_only = !raw.show_all && probe;
+    let reachable_only = raw.reachable_only && !raw.show_all;
 
     EffectiveListOptions {
         probe,
@@ -157,6 +158,7 @@ mod tests {
                 probe: false,
                 include_bastions: false,
                 no_bastion_discovery: false,
+                reachable_only: false,
                 show_all: false,
                 for_mcp: false,
             });
@@ -172,6 +174,7 @@ mod tests {
             probe: false,
             include_bastions: true,
             no_bastion_discovery: false,
+            reachable_only: false,
             show_all: false,
             for_mcp: true,
         });
@@ -183,6 +186,7 @@ mod tests {
             probe: false,
             include_bastions: true,
             no_bastion_discovery: true,
+            reachable_only: false,
             show_all: false,
             for_mcp: true,
         });
@@ -197,6 +201,7 @@ mod tests {
                 probe: false,
                 include_bastions: false,
                 no_bastion_discovery: false,
+                reachable_only: false,
                 show_all: false,
                 for_mcp: false,
             });
@@ -204,6 +209,33 @@ mod tests {
             assert!(!eff.probe);
             assert!(!eff.reachable_only);
         });
+    }
+
+    #[test]
+    fn resolve_default_probe_does_not_imply_reachable_only() {
+        let eff = resolve_list_options(RawListOptions {
+            probe: true,
+            include_bastions: false,
+            no_bastion_discovery: false,
+            reachable_only: false,
+            show_all: false,
+            for_mcp: false,
+        });
+        assert!(eff.probe);
+        assert!(!eff.reachable_only);
+    }
+
+    #[test]
+    fn resolve_reachable_only_cleared_by_show_all() {
+        let eff = resolve_list_options(RawListOptions {
+            probe: true,
+            include_bastions: false,
+            no_bastion_discovery: false,
+            reachable_only: true,
+            show_all: true,
+            for_mcp: false,
+        });
+        assert!(!eff.reachable_only);
     }
 
     #[test]

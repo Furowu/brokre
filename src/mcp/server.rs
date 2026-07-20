@@ -32,10 +32,21 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
+const DEFAULT_MCP_EXEC_TIMEOUT_SECS: u64 = 120;
+
+fn mcp_exec_timeout() -> Duration {
+    Duration::from_secs(
+        std::env::var("BROKRE_MCP_EXEC_TIMEOUT")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(DEFAULT_MCP_EXEC_TIMEOUT_SECS),
+    )
+}
+
 const SERVER_INSTRUCTIONS: &str = "\
 brokre is an AI-safe credential broker. Rules for agents:\n\
 1. NEVER ask the user for passwords or call brokre reveal — it is TTY-gated and unavailable here.\n\
-2. Use brokre_list to discover saved local aliases (metadata: profile, name, addr, host_alias, route, access, availability, status).\n\
+2. Use brokre_list to discover saved local aliases (metadata: profile, name, addr, host_alias, route, access, availability, status). Local reachability is probed by default; set probe=false to skip.\n\
 3. Cross-network: brokre_list does not unlock bastions or discover remote aliases by default. \
 Use include_bastions=true only when the user needs routed aliases; that may require bastion unlock. \
 Prefer routed addrs such as b150::db when they are listed.\n\
@@ -78,15 +89,22 @@ pub struct ListRequest {
     /// Filter by connector profile (ssh, mysql, postgres, …).
     #[serde(default)]
     pub profile: Option<String>,
-    /// TCP reachability probe (ms-level timeout).
-    #[serde(default)]
+    /// TCP reachability probe (ms-level timeout). Default true.
+    #[serde(default = "default_list_probe")]
     pub probe: bool,
     /// Include aliases discovered on registered bastions. This may require bastion unlock; default stays local-only.
     #[serde(default)]
     pub include_bastions: bool,
-    /// Include unreachable aliases (default: hidden when probing). Set `all: true` here — not CLI `-a` (terminal: `brokre list --all`).
+    /// Only show reachable aliases (hides unavailable). Default false — unavailable are listed with status.
+    #[serde(default)]
+    pub reachable_only: bool,
+    /// Include unreachable aliases / disable reachable_only (compat with older clients). Prefer omitting reachable_only.
     #[serde(default)]
     pub all: bool,
+}
+
+fn default_list_probe() -> bool {
+    true
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
@@ -243,7 +261,7 @@ impl BrokreMcp {
 #[tool_router]
 impl BrokreMcp {
     #[tool(
-        description = "List saved credential aliases (metadata only — never passwords). Default is local-only and does not unlock or SSH to bastions. Set include_bastions=true only when routed aliases are needed; that may require bastion unlock and can merge routed aliases (e.g. b150::db). Use probe=true for local reachability probes and all=true to show unreachable aliases. Response includes items (addr, route, access, availability, host_alias, status) and bastion_gate."
+        description = "List saved credential aliases (metadata only — never passwords). Default is local-only (no bastion unlock/SSH) and probes local reachability so status is available/unavailable. Set probe=false to skip probes. Set reachable_only=true to hide unavailable. Set include_bastions=true only when routed aliases are needed. Response includes items (addr, route, access, availability, host_alias, status) and bastion_gate."
     )]
     async fn brokre_list(
         &self,
@@ -254,6 +272,7 @@ impl BrokreMcp {
             probe: req.probe,
             include_bastions: req.include_bastions,
             no_bastion_discovery: false,
+            reachable_only: req.reachable_only,
             show_all: req.all,
             for_mcp: true,
         });
@@ -546,11 +565,38 @@ async fn run_brokre_cli(
     cmd.stdout(std::process::Stdio::piped());
     cmd.stderr(std::process::Stdio::piped());
     cmd.stdin(std::process::Stdio::null());
+    cmd.kill_on_drop(true);
 
-    let output = cmd
-        .output()
-        .await
+    let timeout = mcp_exec_timeout();
+    let child = cmd
+        .spawn()
         .map_err(|e| McpError::internal_error(format!("failed to spawn brokre exec: {e}"), None))?;
+
+    let output = match tokio::time::timeout(timeout, child.wait_with_output()).await {
+        Ok(Ok(output)) => output,
+        Ok(Err(e)) => {
+            return Err(McpError::internal_error(
+                format!("brokre exec failed: {e}"),
+                None,
+            ));
+        }
+        Err(_) => {
+            let mut body = serde_json::json!({
+                "exit_code": -1,
+                "stdout": "",
+                "stderr": format!(
+                    "brokre exec timed out after {}s (BROKRE_MCP_EXEC_TIMEOUT)",
+                    timeout.as_secs()
+                ),
+                "timed_out": true,
+                "bastion_gate": gate,
+            });
+            if let Some(tunnel) = tunnel_metadata(binary, args, extra_env) {
+                body["tunnel"] = tunnel;
+            }
+            return Ok(text_json_result(&body));
+        }
+    };
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);

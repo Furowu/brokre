@@ -28,7 +28,7 @@ REMOTE SSH: argv after the alias are separate tokens, not one shell string.\n\
   brokre ssh prod \"docker ps\"       # shell may work locally; prefer split argv\n\
 \n\
 BUILT-IN SUBCOMMANDS:\n\
-  brokre list [--json]              # list saved aliases (metadata only)\n\
+  brokre list [--json] [--no-probe]  # list aliases (probes reachability by default)\n\
   brokre manage [--open]            # local web UI for credentials\n\
   brokre mcp                        # MCP server for AI assistants\n\
   brokre mcp setup                  # register brokre MCP in detected IDEs\n\
@@ -63,16 +63,22 @@ enum Commands {
         name_glob: Option<String>,
         #[arg(long)]
         json: bool,
-        /// TCP reachability probe (ms-level timeout).
-        #[arg(long)]
+        /// Compat flag (probe is on by default). Prefer `--no-probe` to disable.
+        #[arg(long, hide = true, action = clap::ArgAction::SetTrue)]
         probe: bool,
+        /// Skip reachability probe (metadata only, fast).
+        #[arg(long = "no-probe", action = clap::ArgAction::SetTrue)]
+        no_probe: bool,
         /// Include aliases discovered on registered bastions.
         #[arg(long)]
         include_bastions: bool,
         /// Skip remote bastion discovery (used on bastion hosts).
         #[arg(long, hide = true)]
         no_bastion_discovery: bool,
-        /// Show all aliases including unreachable (disables smart filtering).
+        /// Only show reachable aliases (hides unavailable).
+        #[arg(long = "reachable-only")]
+        reachable_only: bool,
+        /// Show all aliases including unreachable (disables --reachable-only).
         #[arg(long)]
         all: bool,
         #[arg(long, hide = true)]
@@ -283,15 +289,18 @@ fn main() {
             host,
             name_glob,
             json,
-            probe,
+            probe: _probe,
+            no_probe,
             include_bastions,
             no_bastion_discovery,
+            reachable_only,
             all,
             probe_timeout_ms,
         }) => {
             if let Some(ms) = probe_timeout_ms {
                 std::env::set_var("BROKRE_PROBE_TIMEOUT_MS", ms.to_string());
             }
+            let probe = if no_probe { false } else { true };
             cli::list::run(cli::list::ListOptions {
                 profile_filter: profile,
                 labels: label,
@@ -301,6 +310,7 @@ fn main() {
                 probe,
                 include_bastions,
                 no_bastion_discovery,
+                reachable_only,
                 show_all: all,
             })
         }
@@ -413,7 +423,7 @@ fn print_usage() {
     eprintln!();
     eprintln!("Usage:");
     eprintln!("  brokre <cli> [args...]              run any CLI through brokre");
-    eprintln!("  brokre list [--profile P] [--json] [--probe]  list saved aliases");
+    eprintln!("  brokre list [--profile P] [--json] [--no-probe]  list aliases (probes by default)");
     eprintln!("  brokre bastion enable <ssh-alias>        register bastion broker");
     eprintln!("  brokre bastion unlock                    unlock bastion outbound session");
     eprintln!("  brokre tunnel doctor <bastion>      check SessionRelay tunnel agent");
