@@ -1,9 +1,21 @@
 use crate::bastion::gate::prepare_outbound_gate_for_exec;
 use crate::bastion::route::{extend_bastion_path, shell_join, visited_bastions, BASTION_PATH_ENV};
+use crate::runtime::child_guard::SessionChildGuard;
 use crate::utils::errors::{BrokreError, Result};
 use crate::utils::paths::remote_brokre_shell_token;
 use std::process::{Command, Stdio};
-use std::time::Instant;
+use std::time::{Duration, Instant};
+
+const DEFAULT_BASTION_RPC_TIMEOUT_SECS: u64 = 60;
+
+pub(crate) fn bastion_rpc_timeout() -> Duration {
+    Duration::from_secs(
+        std::env::var("BROKRE_BASTION_RPC_TIMEOUT")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(DEFAULT_BASTION_RPC_TIMEOUT_SECS),
+    )
+}
 
 /// Run a remote brokre command on a bastion via local `brokre ssh <alias> <remote_cmd...>`.
 pub fn run_on_bastion(
@@ -30,7 +42,8 @@ pub fn run_on_bastion(
     cmd.stderr(Stdio::piped());
     cmd.stdin(Stdio::null());
 
-    let output = cmd.output().map_err(BrokreError::Io)?;
+    let guard = SessionChildGuard::spawn(cmd)?;
+    let output = guard.wait_with_output_timeout(bastion_rpc_timeout())?;
     let code = output.status.code().unwrap_or(-1);
     let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
     let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
@@ -93,4 +106,25 @@ pub fn spawn_tunnel_agent(_bastion_alias: &str) -> Result<std::process::Child> {
     Err(BrokreError::Runtime(
         "tunnel agent bootstrap requires Unix".into(),
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+
+    #[test]
+    #[serial_test::serial]
+    fn bastion_rpc_timeout_default_is_60() {
+        std::env::remove_var("BROKRE_BASTION_RPC_TIMEOUT");
+        assert_eq!(bastion_rpc_timeout(), Duration::from_secs(60));
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn bastion_rpc_timeout_honors_env() {
+        std::env::set_var("BROKRE_BASTION_RPC_TIMEOUT", "15");
+        assert_eq!(bastion_rpc_timeout(), Duration::from_secs(15));
+        std::env::remove_var("BROKRE_BASTION_RPC_TIMEOUT");
+    }
 }

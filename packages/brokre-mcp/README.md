@@ -232,7 +232,7 @@ Set `probe: false` to skip probes. Set `reachable_only: true` to hide unavailabl
 2. Merges routed entries like `b150::db` (`route: ["b150"]`, `access: "via_b150"`)
 3. Can return multi-hop entries such as `b1::b2::db` when the bastion catalogs expose them
 
-Prefer routed aliases only when they are actually listed and needed. MCP `brokre_exec` wall-clock timeout defaults to 120s (`BROKRE_MCP_EXEC_TIMEOUT`); SSH connect timeout defaults to 5s (`BROKRE_SSH_CONNECT_TIMEOUT`).
+Prefer routed aliases only when they are actually listed and needed. MCP `brokre_exec` wall-clock timeout defaults to 120s (`BROKRE_MCP_EXEC_TIMEOUT`). MCP `brokre_list` (including bastion discovery) times out after 60s (`BROKRE_MCP_LIST_TIMEOUT`) and kills that call's SSH process group. Bastion RPC timeout is 60s (`BROKRE_BASTION_RPC_TIMEOUT`). SSH connect timeout defaults to 5s (`BROKRE_SSH_CONNECT_TIMEOUT`). Remote commands do not attach to an SSH mux master (`ControlPath=none`).
 
 **Example response** (cross-network via VPN to bastion `b150`):
 
@@ -331,7 +331,7 @@ Runs a command on a saved SSH host with `sudo`, `sudo -i` environment (`sudo_log
 | `session` | `reuse` (default), `new`, `close` (use `command: ""`) |
 | `user` | Target user for `su`; default `root` |
 
-**Response** (session pool enabled): `exit_code`, `stdout`, `stderr`, `session_reused`, `session_idle_expires_at`. The expiry field is a rolling idle-window hint, not a fixed deadline. With `BROKRE_MCP_SESSION=0`, only the first three fields are returned (one-shot subprocess).
+**Response** (session pool enabled): `exit_code`, `stdout`, `stderr`, `session_reused`, `session_idle_expires_at`. The expiry field is a rolling idle-window hint, not a fixed deadline. **`stdout` is the remote command output only** — TTY echo, `__BROKRE_*` framing, and shell prompts are stripped. With `BROKRE_MCP_SESSION=0`, only the first three fields are returned (one-shot subprocess).
 
 **`brokre_exec` shortcut:** `binary=ssh`, `args=["prod","sudo","systemctl","status","nginx"]` uses the same pool (always `reuse`; cannot pass `session=new|close`).
 

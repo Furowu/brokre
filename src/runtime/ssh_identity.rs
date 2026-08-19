@@ -281,17 +281,32 @@ pub fn insert_mux_options(argv: &mut Vec<String>) {
 }
 
 pub fn insert_mux_options_for_profile(profile: &str, argv: &mut Vec<String>) {
+    let detach_mux = remote_command_detaches_mux(profile, argv);
     if has_mux_options(argv) {
         // Remote commands must not attach to a mux master (exit hang after
         // "Shared connection … closed."). Rewrite auto → no when needed.
-        if argv_has_remote_command(profile, argv) {
+        if detach_mux {
             force_control_master_no(argv);
+            force_control_path_none(argv);
+        } else if argv_has_remote_command(profile, argv) {
+            force_control_master_no(argv);
+        }
+        return;
+    }
+    let pos = connection_target_index_for_profile(profile, argv);
+    if detach_mux {
+        let pairs = [
+            ("-o", "ControlPath=none".to_string()),
+            ("-o", "ControlMaster=no".to_string()),
+        ];
+        for (flag, val) in pairs.iter().rev() {
+            argv.insert(pos, val.clone());
+            argv.insert(pos, (*flag).into());
         }
         return;
     }
     let sock = run_dir().join("ssh-%C.sock");
     let path = sock.to_string_lossy().to_string();
-    let pos = connection_target_index_for_profile(profile, argv);
     let master = if argv_has_remote_command(profile, argv) {
         "ControlMaster=no"
     } else {
@@ -308,11 +323,31 @@ pub fn insert_mux_options_for_profile(profile: &str, argv: &mut Vec<String>) {
     }
 }
 
+fn remote_command_detaches_mux(profile: &str, argv: &[String]) -> bool {
+    if !argv_has_remote_command(profile, argv) {
+        return false;
+    }
+    let idx = connection_target_index_for_profile(profile, argv);
+    let trailing = &argv[idx + 1..];
+    !(is_routed_interactive_trailing(trailing) || is_routed_bastion_outer_trailing(trailing))
+}
+
 fn force_control_master_no(argv: &mut [String]) {
     let mut i = 0;
     while i + 1 < argv.len() {
         if argv[i] == "-o" && argv[i + 1].starts_with("ControlMaster=") {
             argv[i + 1] = "ControlMaster=no".into();
+            return;
+        }
+        i += 1;
+    }
+}
+
+fn force_control_path_none(argv: &mut [String]) {
+    let mut i = 0;
+    while i + 1 < argv.len() {
+        if argv[i] == "-o" && argv[i + 1].starts_with("ControlPath=") {
+            argv[i + 1] = "ControlPath=none".into();
             return;
         }
         i += 1;
@@ -1066,6 +1101,8 @@ mod tests {
         let mut argv = vec!["user@10.0.0.1".into(), "true".into()];
         insert_mux_options_for_profile("ssh", &mut argv);
         assert!(argv.iter().any(|a| a == "ControlMaster=no"));
+        assert!(argv.iter().any(|a| a == "ControlPath=none"));
+        assert!(!argv.iter().any(|a| a.contains("ssh-%C.sock")));
         assert!(!argv.iter().any(|a| a == "ControlMaster=auto"));
     }
 
@@ -1074,6 +1111,23 @@ mod tests {
         let mut argv = vec!["user@10.0.0.1".into()];
         insert_mux_options_for_profile("ssh", &mut argv);
         assert!(argv.iter().any(|a| a == "ControlMaster=auto"));
+        assert!(argv.iter().any(|a| a.contains("ssh-%C.sock")));
+    }
+
+    #[test]
+    fn insert_mux_rewrites_existing_control_path_for_remote_command() {
+        let mut argv = vec![
+            "-o".into(),
+            "ControlPath=/tmp/ssh-%C.sock".into(),
+            "-o".into(),
+            "ControlMaster=auto".into(),
+            "user@10.0.0.1".into(),
+            "true".into(),
+        ];
+        insert_mux_options_for_profile("ssh", &mut argv);
+        assert!(argv.iter().any(|a| a == "ControlMaster=no"));
+        assert!(argv.iter().any(|a| a == "ControlPath=none"));
+        assert!(!argv.iter().any(|a| a.contains("ssh-%C.sock")));
     }
 
     #[test]
@@ -1171,9 +1225,10 @@ mod tests {
         let local_idx = argv.iter().position(|arg| arg == "/tmp/local").unwrap();
         let first_mux_idx = argv
             .iter()
-            .position(|arg| arg.starts_with("ControlPersist="))
+            .position(|arg| arg.starts_with("ControlPath=") || arg.starts_with("ControlMaster="))
             .unwrap();
         assert!(first_mux_idx < local_idx);
+        assert!(argv.iter().any(|a| a == "ControlPath=none"));
     }
 
     #[test]

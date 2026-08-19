@@ -3,13 +3,15 @@
 //! `scp` and `ssh … < file` must not use a pseudo-terminal: PTY line discipline
 //! corrupts binary streams and echoes payload bytes to the terminal.
 
+use crate::runtime::child_guard::SessionChildGuard;
 use crate::runtime::pty::PtyRunResult;
 use crate::utils::errors::{BrokreError, Result};
 use crate::utils::paths::run_dir;
-use std::io::{Read, Write};
+use std::io::{self, Read, Write};
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 use uuid::Uuid;
 
 /// True when the CLI must run without a PTY (pipe-safe).
@@ -71,9 +73,23 @@ pub fn should_use_pipe_mode(
     false
 }
 
+#[cfg(unix)]
+pub(crate) struct AskpassGuard {
+    state_path: PathBuf,
+    owner_path: PathBuf,
+}
+
+#[cfg(unix)]
+impl Drop for AskpassGuard {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.state_path);
+        let _ = std::fs::remove_file(&self.owner_path);
+    }
+}
+
 /// Run OpenSSH with `SSH_ASKPASS` for vault injection and optional stdin pipe forwarding.
 #[cfg(unix)]
-fn configure_askpass(cmd: &mut Command, record_id: Uuid) -> Result<std::path::PathBuf> {
+fn configure_askpass(cmd: &mut Command, record_id: Uuid) -> Result<AskpassGuard> {
     if std::env::var_os("BROKRE_DISABLE_HARDENING").is_some() {
         return Err(BrokreError::Runtime(
             "BROKRE_DISABLE_HARDENING=1 — cannot inject password in pipe mode".into(),
@@ -81,13 +97,15 @@ fn configure_askpass(cmd: &mut Command, record_id: Uuid) -> Result<std::path::Pa
     }
 
     let exe = std::env::var_os("BROKRE_INJECTOR_EXE")
-        .map(std::path::PathBuf::from)
+        .map(PathBuf::from)
         .or_else(|| std::env::current_exe().ok())
         .ok_or_else(|| BrokreError::Runtime("cannot resolve brokre binary path".into()))?;
 
     let token = Uuid::new_v4().to_string();
     let state_path = run_dir().join(format!("askpass_{}_{}", record_id, token));
     std::fs::write(&state_path, "0").map_err(BrokreError::Io)?;
+    let owner_path = state_path.with_extension("owner");
+    std::fs::write(&owner_path, std::process::id().to_string()).map_err(BrokreError::Io)?;
 
     let owner_pid = std::process::id().to_string();
     cmd.env("SSH_ASKPASS", &exe);
@@ -98,7 +116,85 @@ fn configure_askpass(cmd: &mut Command, record_id: Uuid) -> Result<std::path::Pa
     cmd.env("BROKRE_ASKPASS_TOKEN", &token);
     cmd.env("BROKRE_ASKPASS_STATE", &state_path);
     cmd.env("BROKRE_ASKPASS_OWNER", &owner_pid);
-    Ok(state_path)
+    Ok(AskpassGuard {
+        state_path,
+        owner_path,
+    })
+}
+
+#[cfg(unix)]
+#[allow(dead_code)] // used by ssh_pool daemon when that module is wired
+pub(crate) fn configure_askpass_for_command(
+    cmd: &mut Command,
+    record_id: Uuid,
+) -> Result<AskpassGuard> {
+    configure_askpass(cmd, record_id)
+}
+
+fn owner_pid_alive(pid: u32) -> bool {
+    #[cfg(unix)]
+    {
+        if pid == 0 {
+            return false;
+        }
+        unsafe {
+            if libc::kill(pid as i32, 0) == 0 {
+                return true;
+            }
+            io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH)
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = pid;
+        true
+    }
+}
+
+fn askpass_mtime_older_than(path: &Path, age: Duration) -> bool {
+    let Ok(meta) = std::fs::metadata(path) else {
+        return false;
+    };
+    let Ok(modified) = meta.modified() else {
+        return false;
+    };
+    SystemTime::now()
+        .duration_since(modified)
+        .map(|d| d > age)
+        .unwrap_or(false)
+}
+
+/// Remove askpass state files whose owner process is dead (or unowned files older than 24h).
+pub fn prune_stale_askpass_files() {
+    let dir = run_dir();
+    let Ok(entries) = std::fs::read_dir(&dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+            continue;
+        };
+        if !name.starts_with("askpass_") || name.ends_with(".owner") {
+            continue;
+        }
+        let owner_path = path.with_extension("owner");
+        if owner_path.is_file() {
+            let dead = std::fs::read_to_string(&owner_path)
+                .ok()
+                .and_then(|s| s.trim().parse::<u32>().ok())
+                .map(|pid| !owner_pid_alive(pid))
+                .unwrap_or(true);
+            if dead {
+                let _ = std::fs::remove_file(&path);
+                let _ = std::fs::remove_file(&owner_path);
+            }
+            continue;
+        }
+        if askpass_mtime_older_than(&path, Duration::from_secs(24 * 3600)) {
+            let _ = std::fs::remove_file(&path);
+        }
+    }
 }
 
 /// Run OpenSSH with `SSH_ASKPASS` for vault injection and optional stdin pipe forwarding.
@@ -130,7 +226,7 @@ fn run_once(
         cmd.current_dir(cwd);
     }
 
-    let state_path = configure_askpass(&mut cmd, record_id)?;
+    let _askpass = configure_askpass(&mut cmd, record_id)?;
 
     if stdin_is_pipe {
         cmd.stdin(Stdio::piped());
@@ -140,14 +236,11 @@ fn run_once(
     cmd.stdout(Stdio::inherit());
     cmd.stderr(Stdio::inherit());
 
-    let mut child = cmd
-        .spawn()
-        .map_err(|e| BrokreError::Runtime(format!("spawn {}: {}", binary, e)))?;
+    let mut guard = SessionChildGuard::spawn(cmd)?;
 
     if stdin_is_pipe {
-        let mut child_stdin = child
-            .stdin
-            .take()
+        let mut child_stdin = guard
+            .take_stdin()
             .ok_or_else(|| BrokreError::Runtime("child stdin missing".into()))?;
         thread::spawn(move || {
             let mut src = std::io::stdin();
@@ -167,13 +260,14 @@ fn run_once(
         });
     }
 
-    let status = child.wait().map_err(BrokreError::Io)?;
-    let _ = std::fs::remove_file(&state_path);
+    let status = guard.wait()?;
+    drop(_askpass);
 
     Ok(PtyRunResult {
         exit_code: status.code().unwrap_or(-1),
         captured_password: None,
         had_prompt: true,
+        ssh_authenticated: false,
         injector_pid: None,
         injector_dur_ms: None,
         injector_outcome: Some("askpass".into()),
@@ -279,6 +373,17 @@ fn ensure_ssh_mux_master(
     Ok(())
 }
 
+#[cfg(unix)]
+#[allow(dead_code)] // used by ssh_pool daemon when that module is wired
+pub(crate) fn ensure_ssh_mux_master_for_argv(
+    binary: &str,
+    argv: &[String],
+    record_id: Uuid,
+    prompt_patterns: &[regex::bytes::Regex],
+) -> Result<()> {
+    ensure_ssh_mux_master(binary, argv, record_id, prompt_patterns)
+}
+
 /// Policy for bastion inner interactive login (TTY check applied separately).
 pub fn routed_inner_inherited_ssh(
     profile: &str,
@@ -319,15 +424,12 @@ pub fn run_inherited_tty(binary: &str, args: &[String]) -> Result<PtyRunResult> 
     cmd.stdin(Stdio::inherit())
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit());
-    let status = cmd
-        .spawn()
-        .map_err(|e| BrokreError::Runtime(format!("spawn {}: {}", binary, e)))?
-        .wait()
-        .map_err(BrokreError::Io)?;
+    let status = SessionChildGuard::spawn(cmd)?.wait()?;
     Ok(PtyRunResult {
         exit_code: status.code().unwrap_or(-1),
         captured_password: None,
         had_prompt: false,
+        ssh_authenticated: false,
         injector_pid: None,
         injector_dur_ms: None,
         injector_outcome: None,
@@ -542,5 +644,46 @@ mod tests {
             true,
             Some(&["sudo -i whoami".into()]),
         ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn askpass_guard_drops_state_and_owner_files() {
+        crate::utils::test_home::with_temp_brokre_home(|| {
+            std::env::remove_var("BROKRE_DISABLE_HARDENING");
+            let mut cmd = Command::new("true");
+            let record_id = Uuid::nil();
+            let guard = configure_askpass(&mut cmd, record_id).unwrap();
+            let state = guard.state_path.clone();
+            let owner = guard.owner_path.clone();
+            assert_eq!(std::fs::read_to_string(&state).unwrap().trim(), "0");
+            assert!(owner.is_file());
+            drop(guard);
+            assert!(!state.exists());
+            assert!(!owner.exists());
+        });
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn prune_stale_askpass_removes_dead_owner_keeps_live() {
+        crate::utils::test_home::with_temp_brokre_home(|| {
+            let dir = run_dir();
+            let state = dir.join("askpass_dead_token");
+            let owner = state.with_extension("owner");
+            std::fs::write(&state, "0").unwrap();
+            std::fs::write(&owner, "999999").unwrap();
+            prune_stale_askpass_files();
+            assert!(!state.exists());
+            assert!(!owner.exists());
+
+            let live = dir.join("askpass_live_token");
+            let live_owner = live.with_extension("owner");
+            std::fs::write(&live, "0").unwrap();
+            std::fs::write(&live_owner, std::process::id().to_string()).unwrap();
+            prune_stale_askpass_files();
+            assert!(live.exists());
+            assert!(live_owner.exists());
+        });
     }
 }

@@ -271,6 +271,8 @@ pub struct PtyRunResult {
     pub exit_code: i32,
     pub captured_password: Option<SecretString>,
     pub had_prompt: bool,
+    /// OpenSSH post-login banner/shell prompt was observed (login succeeded).
+    pub ssh_authenticated: bool,
     pub injector_pid: Option<u32>,
     pub injector_dur_ms: Option<u64>,
     pub injector_outcome: Option<String>,
@@ -424,6 +426,11 @@ pub fn run(
         .slave
         .spawn_command(cmd)
         .map_err(|e| BrokreError::Runtime(format!("spawn: {}", e)))?;
+    let pty_pid = child.process_id();
+    #[cfg(unix)]
+    if let Some(pid) = pty_pid {
+        crate::runtime::child_guard::register_pty_child_pid(pid);
+    }
 
     drop(pair.slave);
 
@@ -1022,18 +1029,29 @@ pub fn run(
     let exit_code = if options.exit_on_shared_connection_closed
         && shared_connection_closed.load(Ordering::Acquire)
     {
-        child
-            .try_wait()
-            .ok()
-            .flatten()
-            .map(|s| s.exit_code() as i32)
-            .unwrap_or(0)
+        match child.try_wait() {
+            Ok(Some(status)) => status.exit_code() as i32,
+            _ => {
+                #[cfg(unix)]
+                if let Some(pid) = pty_pid {
+                    crate::runtime::child_guard::terminate_session_pid(pid);
+                } else {
+                    let _ = child.kill();
+                }
+                #[cfg(not(unix))]
+                let _ = child.kill();
+                0
+            }
+        }
     } else {
         child
             .wait()
             .map_err(|e| BrokreError::Runtime(format!("child wait: {}", e)))?
             .exit_code() as i32
     };
+    if let Some(pid) = pty_pid {
+        crate::runtime::child_guard::unregister_session_pid(pid);
+    }
 
     done.store(true, Ordering::Release);
     drop(master);
@@ -1067,6 +1085,7 @@ pub fn run(
         exit_code,
         captured_password: captured_pw,
         had_prompt: had,
+        ssh_authenticated: post_auth.load(Ordering::Acquire),
         injector_pid: inj_pid,
         injector_dur_ms: inj_dur,
         injector_outcome: inj_out,

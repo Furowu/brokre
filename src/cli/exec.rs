@@ -157,6 +157,7 @@ struct RoutedExec {
 
 /// Entry point used by `main.rs` for any external subcommand.
 pub fn run(binary: String, args: Vec<String>) -> Result<()> {
+    crate::runtime::pipe_exec::prune_stale_askpass_files();
     // Confirm binary is actually on PATH; otherwise produce the same error a
     // user would see by typing the command directly.
     if which::which(&binary).is_err() {
@@ -728,9 +729,9 @@ fn exec_fresh(
         );
     }
 
-    // Only save if everything succeeded AND we actually saw a prompt
-    // AND we captured a non-empty password AND stdin is still a TTY.
-    let should_save = result.exit_code == 0
+    // Save when login succeeded (post-auth banner seen) even if the shell later
+    // exits non-zero — e.g. Ctrl+C (130) or `exit` after a failed command (127).
+    let should_save = (result.exit_code == 0 || result.ssh_authenticated)
         && result.had_prompt
         && result.captured_password.is_some()
         && crate::security::tty::stdin_is_real_tty();
@@ -743,11 +744,26 @@ fn exec_fresh(
                 let _ = offer_save(store, &profile, &args, pw);
             }
         }
-    } else if pre_alias.is_some() {
-        eprintln!(
-            "brokre: connection did not complete successfully — password not saved for alias '{}'",
-            pre_alias.unwrap()
-        );
+    } else if let Some(alias) = pre_alias {
+        if !result.had_prompt {
+            eprintln!(
+                "brokre: no password prompt detected — password not saved for alias '{alias}'"
+            );
+        } else if result.captured_password.is_none() {
+            eprintln!("brokre: password was not captured — not saved for alias '{alias}'");
+        } else if result.exit_code != 0 && !result.ssh_authenticated {
+            eprintln!(
+                "brokre: connection ended with exit {} before login — password not saved for alias '{alias}'",
+                result.exit_code
+            );
+        } else if !crate::security::tty::stdin_is_real_tty() {
+            eprintln!("brokre: stdin is not a TTY — password not saved for alias '{alias}'");
+        } else {
+            eprintln!(
+                "brokre: password not saved for alias '{alias}' (exit {})",
+                result.exit_code
+            );
+        }
     }
 
     std::process::exit(result.exit_code);

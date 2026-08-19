@@ -50,8 +50,13 @@ fn ssh_post_auth_indicated(buf: &[u8]) -> bool {
     text.contains("last login") || text.contains("welcome to ")
 }
 
+pub const SESSION_PTY_COLS: u16 = 1024;
+pub const SESSION_PTY_ROWS: u16 = 24;
+
 pub struct PtySession {
     _master: Box<dyn MasterPty + Send>,
+    #[cfg(unix)]
+    master_fd: RawFd,
     writer: Mutex<Box<dyn Write + Send>>,
     output: Arc<Mutex<String>>,
     child_alive: Arc<AtomicBool>,
@@ -73,8 +78,8 @@ impl PtySession {
         let pty_system = NativePtySystem::default();
         let pair = pty_system
             .openpty(PtySize {
-                rows: 24,
-                cols: 80,
+                rows: SESSION_PTY_ROWS,
+                cols: SESSION_PTY_COLS,
                 pixel_width: 0,
                 pixel_height: 0,
             })
@@ -222,6 +227,7 @@ impl PtySession {
 
         Ok(Self {
             _master: master,
+            master_fd: master_raw_fd,
             writer: Mutex::new(writer),
             output,
             child_alive,
@@ -244,6 +250,12 @@ impl PtySession {
 
     pub fn is_alive(&self) -> bool {
         self.child_alive.load(Ordering::Acquire)
+    }
+
+    /// Disable local PTY echo after password injection / READY.
+    pub fn set_echo_off(&self) {
+        #[cfg(unix)]
+        crate::runtime::pty_drain::ensure_pty_echo_off(self.master_fd);
     }
 
     pub fn output_snapshot(&self) -> String {
@@ -294,7 +306,7 @@ impl PtySession {
     pub fn run_command(&self, command: &str, timeout: Duration) -> Result<(String, i32)> {
         self.clear_output();
         let wrapped = session_markers::wrap_command(command);
-        self.write_line(&wrapped)?;
+        self.write_line(&wrapped.line)?;
         let deadline = Instant::now() + timeout;
         while Instant::now() < deadline {
             if !self.is_alive() {
@@ -303,7 +315,7 @@ impl PtySession {
                 ));
             }
             let snap = self.output_snapshot();
-            if let Some((stdout, code)) = session_markers::parse_command_output(&snap) {
+            if let Some((stdout, code)) = wrapped.parse(&snap) {
                 return Ok((stdout, code));
             }
             thread::sleep(Duration::from_millis(50));
@@ -323,5 +335,16 @@ impl PtySession {
 impl Drop for PtySession {
     fn drop(&mut self) {
         self.kill();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn session_pty_is_wide_enough_to_avoid_wrap() {
+        assert!(SESSION_PTY_COLS >= 1024);
+        assert_eq!(SESSION_PTY_ROWS, 24);
     }
 }

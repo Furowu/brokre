@@ -14,7 +14,9 @@ use crate::manage::{
     ManageServerOptions,
 };
 use crate::mcp::elevated_session::{mcp_session_enabled, ElevatedSessionPool, RunResult};
+use crate::runtime::child_guard::{ensure_signal_handlers, with_session_tracker, SessionTracker};
 use crate::runtime::elevated::{SessionKey, SessionPolicy};
+use crate::runtime::pipe_exec::prune_stale_askpass_files;
 use crate::utils::errors::BrokreError;
 use crate::utils::paths::audit_path;
 use crate::vault::keychain::get_or_init_audit_hmac_key;
@@ -33,6 +35,7 @@ use std::thread;
 use std::time::Duration;
 
 const DEFAULT_MCP_EXEC_TIMEOUT_SECS: u64 = 120;
+const DEFAULT_MCP_LIST_TIMEOUT_SECS: u64 = 60;
 
 fn mcp_exec_timeout() -> Duration {
     Duration::from_secs(
@@ -40,6 +43,15 @@ fn mcp_exec_timeout() -> Duration {
             .ok()
             .and_then(|v| v.parse().ok())
             .unwrap_or(DEFAULT_MCP_EXEC_TIMEOUT_SECS),
+    )
+}
+
+fn mcp_list_timeout() -> Duration {
+    Duration::from_secs(
+        std::env::var("BROKRE_MCP_LIST_TIMEOUT")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(DEFAULT_MCP_LIST_TIMEOUT_SECS),
     )
 }
 
@@ -286,7 +298,39 @@ impl BrokreMcp {
         if let Some(p) = req.profile {
             records.retain(|r| r.profile == p);
         }
-        let items = collect_list_items(records, &effective).map_err(mcp_err)?;
+        let tracker = SessionTracker::new();
+        let tracker_for_work = tracker.clone();
+        let effective_for_work = effective;
+        let work = tokio::task::spawn_blocking(move || {
+            with_session_tracker(tracker_for_work, || {
+                collect_list_items(records, &effective_for_work)
+            })
+        });
+        let items = match tokio::time::timeout(mcp_list_timeout(), work).await {
+            Ok(Ok(Ok(items))) => items,
+            Ok(Ok(Err(e))) => return Err(mcp_err(e)),
+            Ok(Err(e)) => {
+                return Err(McpError::internal_error(format!("list task: {e}"), None));
+            }
+            Err(_) => {
+                tracker.terminate();
+                let gate = BastionGateInfo::for_list(
+                    effective.probe,
+                    effective.include_bastions,
+                    unlocked_during_call,
+                );
+                let body = serde_json::json!({
+                    "items": [],
+                    "timed_out": true,
+                    "error": format!(
+                        "brokre list timed out after {}s (BROKRE_MCP_LIST_TIMEOUT)",
+                        mcp_list_timeout().as_secs()
+                    ),
+                    "bastion_gate": gate,
+                });
+                return Ok(text_json_result(&body));
+            }
+        };
         let gate = BastionGateInfo::for_list(
             effective.probe,
             effective.include_bastions,
@@ -566,11 +610,16 @@ async fn run_brokre_cli(
     cmd.stderr(std::process::Stdio::piped());
     cmd.stdin(std::process::Stdio::null());
     cmd.kill_on_drop(true);
+    #[cfg(unix)]
+    {
+        cmd.process_group(0);
+    }
 
     let timeout = mcp_exec_timeout();
     let child = cmd
         .spawn()
         .map_err(|e| McpError::internal_error(format!("failed to spawn brokre exec: {e}"), None))?;
+    let child_pid = child.id();
 
     let output = match tokio::time::timeout(timeout, child.wait_with_output()).await {
         Ok(Ok(output)) => output,
@@ -581,6 +630,12 @@ async fn run_brokre_cli(
             ));
         }
         Err(_) => {
+            #[cfg(unix)]
+            if let Some(pid) = child_pid {
+                unsafe {
+                    let _ = libc::kill(-(pid as i32), libc::SIGKILL);
+                }
+            }
             let mut body = serde_json::json!({
                 "exit_code": -1,
                 "stdout": "",
@@ -674,6 +729,8 @@ fn session_result_to_call_tool(r: RunResult, gate: BastionGateInfo) -> CallToolR
 pub async fn run_mcp_server() -> std::result::Result<(), BrokreError> {
     // Gate fallback paths (discover/transport) use browser auth, not TTY.
     std::env::set_var("BROKRE_MCP", "1");
+    ensure_signal_handlers();
+    prune_stale_askpass_files();
     let sessions = Arc::new(Mutex::new(ElevatedSessionPool::from_env()));
     let sweeper = sessions.clone();
     thread::spawn(move || loop {
@@ -729,5 +786,27 @@ mod tests {
         let meta = tunnel_metadata("ssh", &args, &env).expect("routed ssh metadata");
         assert_eq!(meta["mode"], "legacy");
         assert_eq!(meta["active"], false);
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn mcp_list_timeout_default_is_60() {
+        std::env::remove_var("BROKRE_MCP_LIST_TIMEOUT");
+        assert_eq!(mcp_list_timeout(), Duration::from_secs(60));
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn mcp_exec_timeout_default_is_120() {
+        std::env::remove_var("BROKRE_MCP_EXEC_TIMEOUT");
+        assert_eq!(mcp_exec_timeout(), Duration::from_secs(120));
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn mcp_list_timeout_honors_env() {
+        std::env::set_var("BROKRE_MCP_LIST_TIMEOUT", "7");
+        assert_eq!(mcp_list_timeout(), Duration::from_secs(7));
+        std::env::remove_var("BROKRE_MCP_LIST_TIMEOUT");
     }
 }

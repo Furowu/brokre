@@ -1,3 +1,4 @@
+pub mod child_guard;
 pub mod elevated;
 #[cfg(unix)]
 pub mod injector_child;

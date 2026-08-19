@@ -89,6 +89,7 @@ pub fn exec_route(route: &BastionRoute, trailing: Vec<String>) -> Result<PtyRunR
         exit_code: code,
         captured_password: None,
         had_prompt: false,
+        ssh_authenticated: false,
         injector_pid: None,
         injector_dur_ms: None,
         injector_outcome: Some("tunnel-sessionrelay".into()),

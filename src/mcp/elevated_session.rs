@@ -33,7 +33,7 @@ mod imp {
         compose_ssh_bootstrap_argv, ElevatedMode, SessionKey, SessionPolicy,
     };
     use crate::runtime::pty_session::PtySession;
-    use crate::runtime::session_markers::READY;
+    use crate::runtime::session_markers::{HYGIENE_COMMAND, READY};
     use crate::runtime::ssh_identity::{
         insert_force_tty_for_privileged_remote, insert_identity_arg, materialize_identity,
     };
@@ -257,6 +257,10 @@ mod imp {
 
         let session = PtySession::spawn_ssh(rec.id, &ssh_str, &argv, expect_su)?;
         session.wait_for_substring(READY, bootstrap_timeout)?;
+        session.set_echo_off();
+        session.clear_output();
+        // Hygiene failure must not abort: line-anchored parse still strips echo.
+        let _ = session.run_command(HYGIENE_COMMAND, Duration::from_secs(10));
         session.clear_output();
         Ok(session)
     }

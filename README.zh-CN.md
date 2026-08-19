@@ -276,7 +276,7 @@ brokre **不是** `ssh`/`mysql` 的替代品 — 必须加 `brokre` 前缀才会
 | `session` | `reuse`（默认）、`new`（关闭旧会话并新建）、`close`（结束会话；`command` 传 `""`） |
 | `user` | 仅 `su` 模式，默认 `root` |
 
-启用会话池时，响应除 `exit_code` / `stdout` / `stderr` 外还有 `session_reused`、`session_idle_expires_at`（**滚动空闲窗口参考时间**，每次调用刷新，非固定过期时刻）。会话池路径下 `stderr` 通常为空。
+启用会话池时，响应除 `exit_code` / `stdout` / `stderr` 外还有 `session_reused`、`session_idle_expires_at`（**滚动空闲窗口参考时间**，每次调用刷新，非固定过期时刻）。会话池路径下 `stderr` 通常为空。**`stdout` 只含远端命令的真实输出**，TTY 回显、`__BROKRE_*` 包装帧和 shell 提示符会被剥离。
 
 **`brokre_exec`**：`binary=ssh` 且 `args` 含 `sudo`/`su` 时自动走同一会话池（固定 `reuse`，不支持 `session=new|close`）。例：`args=["prod","sudo","whoami"]`。
 
@@ -356,7 +356,7 @@ brokre list --include-bastions --json # 需要路由别名时显式发现堡垒
 
 已注册堡垒时，`brokre list` **默认仍只读本地元数据**，不会 SSH 到堡垒，也不会触发堡垒解锁。只有显式 `--include-bastions`（MCP: `include_bastions=true`）才会拉取堡垒上的别名（如 `b150::db`）。
 
-OpenSSH 默认注入 `ConnectTimeout=5`（`BROKRE_SSH_CONNECT_TIMEOUT`），可用 `-o ConnectTimeout=N` 覆盖。
+OpenSSH 默认注入 `ConnectTimeout=5`（`BROKRE_SSH_CONNECT_TIMEOUT`），可用 `-o ConnectTimeout=N` 覆盖。经堡垒的远程 list/exec RPC 默认 60 秒超时（`BROKRE_BASTION_RPC_TIMEOUT`）。带远程命令的 SSH 使用 `ControlPath=none`，不挂到 ControlPersist mux。
 
 ### 跨网清单继承（堡垒 broker）
 

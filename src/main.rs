@@ -423,7 +423,9 @@ fn print_usage() {
     eprintln!();
     eprintln!("Usage:");
     eprintln!("  brokre <cli> [args...]              run any CLI through brokre");
-    eprintln!("  brokre list [--profile P] [--json] [--no-probe]  list aliases (probes by default)");
+    eprintln!(
+        "  brokre list [--profile P] [--json] [--no-probe]  list aliases (probes by default)"
+    );
     eprintln!("  brokre bastion enable <ssh-alias>        register bastion broker");
     eprintln!("  brokre bastion unlock                    unlock bastion outbound session");
     eprintln!("  brokre tunnel doctor <bastion>      check SessionRelay tunnel agent");

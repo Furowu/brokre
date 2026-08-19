@@ -276,7 +276,7 @@ By default, `brokre mcp` reuses a background elevated shell per `(alias, mode, u
 | `session` | `reuse` (default), `new` (close old session and open fresh), `close` (end session; pass `command: ""`) |
 | `user` | `su` mode only; default `root` |
 
-When the session pool is enabled, responses include `session_reused` and `session_idle_expires_at` in addition to `exit_code` / `stdout` / `stderr`. `session_idle_expires_at` is a **rolling idle-window hint** refreshed on each call, not a fixed expiry timestamp. `stderr` is usually empty on the pool path.
+When the session pool is enabled, responses include `session_reused` and `session_idle_expires_at` in addition to `exit_code` / `stdout` / `stderr`. `session_idle_expires_at` is a **rolling idle-window hint** refreshed on each call, not a fixed expiry timestamp. `stderr` is usually empty on the pool path. **`stdout` is the remote command output only** — TTY echo, `__BROKRE_*` framing, and shell prompts are stripped.
 
 **`brokre_exec`**: `binary=ssh` with `sudo`/`su` in `args` auto-uses the same pool (always `reuse`; no `session=new|close`). Example: `args=["prod","sudo","whoami"]`.
 
@@ -357,7 +357,7 @@ brokre list --no-bastion-discovery   # local only — no bastion SSH discovery
 
 When bastions are registered, `brokre list` **stays local-only by default** and does not SSH to bastions or trigger bastion unlock. Use `brokre list --include-bastions` (MCP: `include_bastions=true`) when you actually need routed aliases such as `b150::db`; that remote discovery may require unlock.
 
-OpenSSH sessions inject `ConnectTimeout=5` by default (`BROKRE_SSH_CONNECT_TIMEOUT`). Override with `-o ConnectTimeout=N` or the env var.
+OpenSSH sessions inject `ConnectTimeout=5` by default (`BROKRE_SSH_CONNECT_TIMEOUT`). Override with `-o ConnectTimeout=N` or the env var. Bastion RPC (`brokre list --include-bastions` / remote list) times out after 60s (`BROKRE_BASTION_RPC_TIMEOUT`). Remote commands use `ControlPath=none` so they do not attach to a ControlPersist mux master.
 
 ### Cross-network list inheritance (bastion broker)
 
