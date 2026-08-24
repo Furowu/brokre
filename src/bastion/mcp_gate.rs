@@ -231,10 +231,12 @@ mod tests {
 
     #[test]
     fn bastion_gate_info_required_includes_unlocked_during_call() {
-        let info = BastionGateInfo::build(true, true);
-        let v = serde_json::to_value(&info).unwrap();
-        // Without a configured bastion key, gate is not active.
-        assert_eq!(v["required"], false);
+        with_temp_brokre_home(|| {
+            let info = BastionGateInfo::build(true, true);
+            let v = serde_json::to_value(&info).unwrap();
+            // Without a configured bastion key, gate is not active.
+            assert_eq!(v["required"], false);
+        });
     }
 
     #[test]
