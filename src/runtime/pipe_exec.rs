@@ -505,7 +505,9 @@ mod tests {
         std::env::remove_var("BROKRE_MCP_EXEC");
         assert!(should_use_pipe_mode("scp", None));
         assert!(should_use_pipe_mode("sftp", None));
-        assert!(!should_use_pipe_mode("ssh", None));
+        // Bare interactive ssh uses pipe mode only when stdin is a pipe/file redirect.
+        let stdin_forward = crate::security::tty::stdin_should_forward_to_child();
+        assert_eq!(should_use_pipe_mode("ssh", None), stdin_forward);
         assert!(!should_use_pipe_mode("mysql", None));
     }
 
