@@ -86,7 +86,8 @@ When gate applies, tell the user to complete bastion unlock in the browser if `b
 12. brokre_list / brokre_exec / brokre_exec_elevated responses include `bastion_gate` \
 (`required`, `unlocked_during_call`, `idle_expires_at`) so agents know unlock state.\n\
 13. brokre_audit_list / brokre_audit_verify: read-only audit metadata (args redacted).\n\
-14. CLI equivalents (when the user asks to run in a terminal, or you need to debug MCP):\n\
+14. brokre_exec never reads MCP caller stdin. CLI auto-disconnects stdin for non-consumer remote commands (test/uname/bash -c); cat/tar/tee/dd/mysql forward stdin for pipe uploads. Custom tools: --with-stdin. Legacy: BROKRE_SSH_LEGACY_STDIN=1. Do not use sudo -n (sudo-rs blocks password inject).\n\
+15. CLI equivalents (when the user asks to run in a terminal, or you need to debug MCP):\n\
    - Always prefix brokre — NEVER bare `ssh prod` / `mysql prod` (no vault injection).\n\
    - brokre_list ≈ `brokre list --json`\n\
    - brokre_exec binary=ssh, args=[\"prod\",\"uname\",\"-a\"] ≈ `brokre ssh prod uname -a`\n\

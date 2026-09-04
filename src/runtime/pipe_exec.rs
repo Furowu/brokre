@@ -5,12 +5,12 @@
 
 use crate::runtime::child_guard::SessionChildGuard;
 use crate::runtime::pty::PtyRunResult;
+use crate::runtime::ssh_identity::{BrokreSshStdinFlags, should_disconnect_stdin};
 use crate::utils::errors::{BrokreError, Result};
 use crate::utils::paths::run_dir;
-use std::io::{self, Read, Write};
+use std::io;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::thread;
 use std::time::{Duration, SystemTime};
 use uuid::Uuid;
 
@@ -20,7 +20,6 @@ use uuid::Uuid;
 /// when known — used by MCP to pick PTY only for `sudo` / `su` one-shots.
 pub fn should_use_pipe_mode(
     profile: &str,
-    stdin_is_pipe: bool,
     remote_trailing: Option<&[String]>,
 ) -> bool {
     let bin = profile
@@ -65,10 +64,16 @@ pub fn should_use_pipe_mode(
         if remote_trailing.is_some_and(crate::runtime::ssh_identity::remote_command_needs_tty) {
             return false;
         }
+        // Non-interactive remote commands: pipe mode (ASKPASS, no PTY stdout suppression).
+        if remote_trailing.is_some_and(|t| {
+            !t.is_empty() && !crate::runtime::ssh_identity::remote_command_needs_tty(t)
+        }) {
+            return true;
+        }
         if std::env::var_os("BROKRE_MCP_EXEC").is_some() {
             return true;
         }
-        return stdin_is_pipe;
+        return crate::security::tty::stdin_should_forward_to_child();
     }
     false
 }
@@ -197,14 +202,21 @@ pub fn prune_stale_askpass_files() {
     }
 }
 
-/// Run OpenSSH with `SSH_ASKPASS` for vault injection and optional stdin pipe forwarding.
+/// Run OpenSSH with `SSH_ASKPASS` for vault injection and optional stdin forwarding.
 #[cfg(unix)]
-pub fn run(binary: &str, args: &[String], record_id: Uuid) -> Result<PtyRunResult> {
-    let stdin_is_pipe = crate::security::tty::stdin_is_pipe();
-    let result = run_once(binary, args, record_id, stdin_is_pipe)?;
+pub fn run(
+    profile: &str,
+    binary: &str,
+    args: &[String],
+    record_id: Uuid,
+    remote_trailing: Option<&[String]>,
+    brokre_flags: &BrokreSshStdinFlags,
+) -> Result<PtyRunResult> {
+    let disconnect = should_disconnect_stdin(profile, args, remote_trailing, brokre_flags);
+    let result = run_once(binary, args, record_id, disconnect)?;
     if result.exit_code != 0 && scp_legacy_mode_requested(binary, args) {
         let retry_args = scp_args_without_legacy_mode(args);
-        return run_once(binary, &retry_args, record_id, stdin_is_pipe);
+        return run_once(binary, &retry_args, record_id, disconnect);
     }
     Ok(result)
 }
@@ -214,7 +226,7 @@ fn run_once(
     binary: &str,
     args: &[String],
     record_id: Uuid,
-    stdin_is_pipe: bool,
+    disconnect_stdin: bool,
 ) -> Result<PtyRunResult> {
     let bin = which::which(binary)
         .map_err(|_| BrokreError::Runtime(format!("{}: command not found", binary)))?;
@@ -228,38 +240,15 @@ fn run_once(
 
     let _askpass = configure_askpass(&mut cmd, record_id)?;
 
-    if stdin_is_pipe {
-        cmd.stdin(Stdio::piped());
-    } else {
+    if disconnect_stdin {
         cmd.stdin(Stdio::null());
+    } else {
+        cmd.stdin(Stdio::inherit());
     }
     cmd.stdout(Stdio::inherit());
     cmd.stderr(Stdio::inherit());
 
-    let mut guard = SessionChildGuard::spawn(cmd)?;
-
-    if stdin_is_pipe {
-        let mut child_stdin = guard
-            .take_stdin()
-            .ok_or_else(|| BrokreError::Runtime("child stdin missing".into()))?;
-        thread::spawn(move || {
-            let mut src = std::io::stdin();
-            let mut buf = [0u8; 65536];
-            loop {
-                match src.read(&mut buf) {
-                    Ok(0) => break,
-                    Ok(n) => {
-                        if child_stdin.write_all(&buf[..n]).is_err() {
-                            break;
-                        }
-                    }
-                    Err(_) => break,
-                }
-            }
-            let _ = child_stdin.flush();
-        });
-    }
-
+    let guard = SessionChildGuard::spawn(cmd)?;
     let status = guard.wait()?;
     drop(_askpass);
 
@@ -473,7 +462,14 @@ pub fn should_use_inherited_tty_mode(
 }
 
 #[cfg(not(unix))]
-pub fn run(_binary: &str, _args: &[String], _record_id: Uuid) -> Result<PtyRunResult> {
+pub fn run(
+    _profile: &str,
+    _binary: &str,
+    _args: &[String],
+    _record_id: Uuid,
+    _remote_trailing: Option<&[String]>,
+    _brokre_flags: &BrokreSshStdinFlags,
+) -> Result<PtyRunResult> {
     Err(BrokreError::Runtime(
         "pipe mode is only supported on Unix".into(),
     ))
@@ -507,11 +503,20 @@ mod tests {
     fn pipe_mode_for_scp_and_piped_ssh() {
         std::env::remove_var("BROKRE_ROUTED_INNER");
         std::env::remove_var("BROKRE_MCP_EXEC");
-        assert!(should_use_pipe_mode("scp", false, None));
-        assert!(should_use_pipe_mode("sftp", false, None));
-        assert!(should_use_pipe_mode("ssh", true, None));
-        assert!(!should_use_pipe_mode("ssh", false, None));
-        assert!(!should_use_pipe_mode("mysql", true, None));
+        assert!(should_use_pipe_mode("scp", None));
+        assert!(should_use_pipe_mode("sftp", None));
+        assert!(!should_use_pipe_mode("ssh", None));
+        assert!(!should_use_pipe_mode("mysql", None));
+    }
+
+    #[test]
+    fn pipe_mode_for_noninteractive_remote_command_without_piped_stdin() {
+        std::env::remove_var("BROKRE_ROUTED_INNER");
+        std::env::remove_var("BROKRE_MCP_EXEC");
+        assert!(should_use_pipe_mode(
+            "ssh",
+            Some(&["true".into()])
+        ));
     }
 
     #[test]
@@ -539,7 +544,7 @@ mod tests {
     #[test]
     fn mcp_exec_pipe_mode_for_normal_remote_command() {
         std::env::set_var("BROKRE_MCP_EXEC", "1");
-        assert!(should_use_pipe_mode("ssh", true, Some(&["uptime".into()]),));
+        assert!(should_use_pipe_mode("ssh", Some(&["uptime".into()]),));
         std::env::remove_var("BROKRE_MCP_EXEC");
     }
 
@@ -555,7 +560,7 @@ mod tests {
             "-c".into(),
             "hostname".into(),
         ];
-        assert!(!should_use_pipe_mode("ssh", true, Some(&trailing)));
+        assert!(!should_use_pipe_mode("ssh", Some(&trailing)));
         std::env::remove_var("BROKRE_MCP_EXEC");
     }
 
@@ -569,7 +574,7 @@ mod tests {
             "root@10.0.0.195".into(),
             "hostname".into(),
         ];
-        assert!(should_use_pipe_mode("ssh", true, Some(&trailing)));
+        assert!(should_use_pipe_mode("ssh", Some(&trailing)));
         std::env::remove_var("BROKRE_MCP_EXEC");
     }
 
@@ -583,7 +588,7 @@ mod tests {
             "root@10.0.0.195".into(),
             "hostname".into(),
         ];
-        assert!(!should_use_pipe_mode("ssh", true, Some(&trailing)));
+        assert!(!should_use_pipe_mode("ssh", Some(&trailing)));
         std::env::remove_var("BROKRE_MCP_EXEC");
         std::env::remove_var(crate::bastion::route::ROUTED_INNER_ALIAS_ENV);
     }
@@ -591,11 +596,7 @@ mod tests {
     #[test]
     fn routed_inner_forces_pty_even_when_stdin_is_pipe() {
         std::env::set_var("BROKRE_ROUTED_INNER", "1");
-        assert!(!should_use_pipe_mode(
-            "ssh",
-            true,
-            Some(&["hostname".into()])
-        ));
+        assert!(!should_use_pipe_mode("ssh", Some(&["hostname".into()])));
         std::env::remove_var("BROKRE_ROUTED_INNER");
     }
 
@@ -603,14 +604,9 @@ mod tests {
     fn tunnel_agent_inner_noninteractive_uses_pipe_mode() {
         std::env::set_var("BROKRE_ROUTED_INNER", "1");
         std::env::set_var("BROKRE_TUNNEL_AGENT_INNER", "1");
-        assert!(should_use_pipe_mode(
-            "ssh",
-            false,
-            Some(&["hostname".into()])
-        ));
+        assert!(should_use_pipe_mode("ssh", Some(&["hostname".into()])));
         assert!(!should_use_pipe_mode(
             "ssh",
-            false,
             Some(&["sudo".into(), "whoami".into()])
         ));
         std::env::remove_var("BROKRE_ROUTED_INNER");
@@ -622,7 +618,6 @@ mod tests {
         std::env::set_var("BROKRE_MCP_EXEC", "1");
         assert!(!should_use_pipe_mode(
             "ssh",
-            true,
             Some(&["sudo".into(), "whoami".into()]),
         ));
         std::env::remove_var("BROKRE_MCP_EXEC");
@@ -632,7 +627,6 @@ mod tests {
     fn cli_sudo_forces_pty_even_when_stdin_is_pipe() {
         assert!(!should_use_pipe_mode(
             "ssh",
-            true,
             Some(&["sudo".into(), "whoami".into()]),
         ));
     }
@@ -641,7 +635,6 @@ mod tests {
     fn cli_quoted_sudo_script_forces_pty_when_stdin_is_pipe() {
         assert!(!should_use_pipe_mode(
             "ssh",
-            true,
             Some(&["sudo -i whoami".into()]),
         ));
     }

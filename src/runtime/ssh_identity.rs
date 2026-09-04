@@ -801,6 +801,187 @@ fn script_invokes_privilege_escalation(script: &str) -> bool {
     .any(|needle| s.contains(needle))
 }
 
+fn remote_command_user_trailing(trailing: &[String]) -> &[String] {
+    routed_bastion_user_trailing(trailing).unwrap_or(trailing)
+}
+
+fn program_basename(token: &str) -> &str {
+    token.rsplit('/').next().unwrap_or(token)
+}
+
+fn argv_has_inline_script_flag(trailing: &[String]) -> bool {
+    trailing.iter().any(|a| a == "-c" || a == "-e")
+}
+
+fn is_stdin_consumer_program(name: &str) -> bool {
+    matches!(
+        name,
+        "cat"
+            | "tee"
+            | "dd"
+            | "tar"
+            | "patch"
+            | "mysql"
+            | "psql"
+            | "sqlite3"
+            | "gzip"
+            | "gunzip"
+            | "bzip2"
+            | "xz"
+            | "zstd"
+            | "base64"
+    )
+}
+
+fn is_stdin_consumer_interpreter(name: &str) -> bool {
+    matches!(
+        name,
+        "sh"
+            | "bash"
+            | "zsh"
+            | "dash"
+            | "ash"
+            | "ksh"
+            | "fish"
+            | "python"
+            | "python3"
+            | "perl"
+            | "ruby"
+            | "node"
+    )
+}
+
+fn first_remote_program_token(token: &str) -> &str {
+    token.split_whitespace().next().unwrap_or(token)
+}
+
+/// True when the remote command is expected to read payload bytes from stdin.
+pub fn remote_command_consumes_stdin(trailing: &[String]) -> bool {
+    let user = remote_command_user_trailing(trailing);
+    if user.is_empty() {
+        return false;
+    }
+    let name = program_basename(first_remote_program_token(&user[0])).to_ascii_lowercase();
+    if is_stdin_consumer_program(&name) {
+        return true;
+    }
+    if is_stdin_consumer_interpreter(&name) && !argv_has_inline_script_flag(user) {
+        return true;
+    }
+    false
+}
+
+/// Brokre-specific SSH flags stripped before invoking OpenSSH.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct BrokreSshStdinFlags {
+    pub force_disconnect_stdin: bool,
+    pub force_forward_stdin: bool,
+}
+
+/// Remove brokre-only flags (`--no-stdin`, `--with-stdin`) from argv before OpenSSH sees them.
+pub fn strip_brokre_ssh_flags(argv: &mut Vec<String>) -> BrokreSshStdinFlags {
+    let mut flags = BrokreSshStdinFlags::default();
+    let mut i = 0;
+    while i < argv.len() {
+        match argv[i].as_str() {
+            "--no-stdin" => {
+                flags.force_disconnect_stdin = true;
+                argv.remove(i);
+            }
+            "--with-stdin" => {
+                flags.force_forward_stdin = true;
+                argv.remove(i);
+            }
+            _ => {
+                i += 1;
+            }
+        }
+    }
+    flags
+}
+
+fn env_truthy(name: &str) -> bool {
+    std::env::var(name)
+        .map(|v| matches!(v.as_str(), "1" | "true" | "yes" | "on"))
+        .unwrap_or(false)
+}
+
+fn openssh_short_flag_set(arg: &str, ch: char) -> bool {
+    arg.len() >= 2
+        && arg.starts_with('-')
+        && !arg.starts_with("--")
+        && arg[1..].contains(ch)
+}
+
+/// True when OpenSSH argv already requests disconnected stdin (`-n`, `-f`, `StdinNull=yes`).
+pub fn has_null_stdin_flag(argv: &[String]) -> bool {
+    let end = connection_target_index(argv);
+    let mut i = 0;
+    while i < end {
+        let a = &argv[i];
+        if a == "-n"
+            || a == "-f"
+            || openssh_short_flag_set(a, 'n')
+            || openssh_short_flag_set(a, 'f')
+        {
+            return true;
+        }
+        if a == "-o" && i + 1 < end {
+            let v = argv[i + 1].to_ascii_lowercase();
+            if v.starts_with("stdinnull=yes") {
+                return true;
+            }
+            i += 2;
+            continue;
+        }
+        i += 1;
+    }
+    false
+}
+
+/// Whether brokre should not forward caller stdin to OpenSSH for this invocation.
+pub fn should_disconnect_stdin(
+    profile: &str,
+    argv: &[String],
+    remote_trailing: Option<&[String]>,
+    brokre_flags: &BrokreSshStdinFlags,
+) -> bool {
+    if brokre_flags.force_forward_stdin {
+        return false;
+    }
+    if brokre_flags.force_disconnect_stdin || has_null_stdin_flag(argv) {
+        return true;
+    }
+    if std::env::var_os("BROKRE_MCP_EXEC").is_some() {
+        return true;
+    }
+    let bin = profile.rsplit('/').next().unwrap_or(profile);
+    if bin != "ssh" {
+        return false;
+    }
+    if env_truthy("BROKRE_SSH_LEGACY_STDIN") {
+        return legacy_should_disconnect_stdin(remote_trailing);
+    }
+    if let Some(trailing) = remote_trailing {
+        if trailing.is_empty() || remote_command_needs_tty(trailing) {
+            return false;
+        }
+        return !remote_command_consumes_stdin(trailing);
+    }
+    false
+}
+
+fn legacy_should_disconnect_stdin(remote_trailing: Option<&[String]>) -> bool {
+    if env_truthy("BROKRE_SSH_AUTO_NULL_STDIN") {
+        if let Some(trailing) = remote_trailing {
+            if !trailing.is_empty() && !remote_command_needs_tty(trailing) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
 fn has_disable_tty_flag(argv: &[String]) -> bool {
     let end = connection_target_index(argv);
     let mut i = 0;
@@ -1373,5 +1554,93 @@ mod tests {
     fn direct_inner_openssh_trailing_rejects_ssh_flags() {
         let t = vec!["ssh".into(), "-l".into(), "root".into()];
         assert!(!is_direct_inner_openssh_trailing(&t));
+    }
+
+    #[test]
+    fn has_null_stdin_flag_detects_n_and_stdinnull() {
+        assert!(has_null_stdin_flag(&["-n".into(), "host".into()]));
+        assert!(has_null_stdin_flag(&["-nf".into(), "host".into()]));
+        assert!(has_null_stdin_flag(&[
+            "-o".into(),
+            "StdinNull=yes".into(),
+            "host".into(),
+        ]));
+        assert!(!has_null_stdin_flag(&["-v".into(), "host".into(), "true".into()]));
+    }
+
+    #[test]
+    fn strip_brokre_ssh_flags_removes_no_stdin() {
+        let mut argv = vec!["--no-stdin".into(), "host".into(), "true".into()];
+        let flags = strip_brokre_ssh_flags(&mut argv);
+        assert!(flags.force_disconnect_stdin);
+        assert_eq!(argv, vec!["host".to_string(), "true".to_string()]);
+    }
+
+    #[test]
+    fn should_disconnect_stdin_for_mcp() {
+        let argv = vec!["host".into(), "true".into()];
+        let flags = BrokreSshStdinFlags::default();
+        std::env::set_var("BROKRE_MCP_EXEC", "1");
+        assert!(should_disconnect_stdin("ssh", &argv, Some(&["true".into()]), &flags));
+        std::env::remove_var("BROKRE_MCP_EXEC");
+    }
+
+    #[test]
+    fn remote_command_consumes_stdin_intent_matrix() {
+        assert!(!remote_command_consumes_stdin(&["test".into(), "-f".into(), "/tmp/x".into()]));
+        assert!(!remote_command_consumes_stdin(&["uname".into(), "-a".into()]));
+        assert!(!remote_command_consumes_stdin(&[
+            "bash".into(),
+            "-c".into(),
+            "echo hi".into(),
+        ]));
+        assert!(remote_command_consumes_stdin(&["cat".into()]));
+        assert!(remote_command_consumes_stdin(&["cat".into(), ">".into(), "/tmp/x".into()]));
+        assert!(remote_command_consumes_stdin(&["cat > /tmp/x".into()]));
+        assert!(remote_command_consumes_stdin(&["tar xzf -".into()]));
+        assert!(remote_command_consumes_stdin(&["bash".into()]));
+        assert!(!remote_command_consumes_stdin(&["bash".into(), "-c".into(), "id".into()]));
+    }
+
+    #[test]
+    fn should_disconnect_stdin_intent_routing() {
+        let argv = vec!["host".into(), "true".into()];
+        let flags = BrokreSshStdinFlags::default();
+        std::env::remove_var("BROKRE_SSH_LEGACY_STDIN");
+        std::env::remove_var("BROKRE_MCP_EXEC");
+
+        assert!(should_disconnect_stdin(
+            "ssh",
+            &argv,
+            Some(&["test".into(), "-f".into(), "/tmp/x".into()]),
+            &flags,
+        ));
+        assert!(!should_disconnect_stdin(
+            "ssh",
+            &argv,
+            Some(&["cat".into(), ">".into(), "/tmp/x".into()]),
+            &flags,
+        ));
+
+        let mut forward_flags = BrokreSshStdinFlags::default();
+        forward_flags.force_forward_stdin = true;
+        assert!(!should_disconnect_stdin(
+            "ssh",
+            &argv,
+            Some(&["test".into(), "-f".into(), "/tmp/x".into()]),
+            &forward_flags,
+        ));
+    }
+
+    #[test]
+    fn should_disconnect_stdin_legacy_auto_null() {
+        let argv = vec!["host".into(), "true".into()];
+        let flags = BrokreSshStdinFlags::default();
+        std::env::set_var("BROKRE_SSH_LEGACY_STDIN", "1");
+        std::env::set_var("BROKRE_SSH_AUTO_NULL_STDIN", "1");
+        assert!(should_disconnect_stdin("ssh", &argv, Some(&["true".into()]), &flags));
+        assert!(!should_disconnect_stdin("ssh", &argv, None, &flags));
+        std::env::remove_var("BROKRE_SSH_LEGACY_STDIN");
+        std::env::remove_var("BROKRE_SSH_AUTO_NULL_STDIN");
     }
 }

@@ -119,7 +119,7 @@ fn field_for_prompt(window: &[u8], available: &[String]) -> Option<String> {
     None
 }
 
-#[derive(Clone, Default)]
+#[derive(Clone)]
 pub struct PtyRunOptions {
     /// First hop of `bastion::inner`: inject only this hop's SSH login; inner brokre owns sudo/su.
     pub bastion_outer_hop: bool,
@@ -135,9 +135,27 @@ pub struct PtyRunOptions {
     pub passive_inner_ssh: bool,
     /// Interactive routed fallback: keep local terminal cooked (no crossterm raw).
     pub skip_interactive_raw: bool,
+    /// Suppress PTY stdout between SSH login prompt and post-auth banner (interactive logins only).
+    pub suppress_auth_stdout_after_login: bool,
     /// OpenSSH multiplexed one-shot commands can leave brokre alive after printing
     /// `Shared connection ... closed.`; treat that line as terminal for sudo/su one-shots.
     pub exit_on_shared_connection_closed: bool,
+}
+
+impl Default for PtyRunOptions {
+    fn default() -> Self {
+        Self {
+            bastion_outer_hop: false,
+            defer_stdin_forward: false,
+            inner_vault_record: None,
+            inner_host_hint: None,
+            inject_disabled: false,
+            passive_inner_ssh: false,
+            skip_interactive_raw: false,
+            suppress_auth_stdout_after_login: true,
+            exit_on_shared_connection_closed: false,
+        }
+    }
 }
 
 /// Prompt context for [`should_arm_vault_inject`] (keeps arity within clippy limits).
@@ -546,6 +564,7 @@ pub fn run(
     let defer_stdin_a = defer_stdin;
     let rescan_after_inject_a = rescan_after_inject.clone();
     let exit_on_shared_connection_closed_a = options.exit_on_shared_connection_closed;
+    let suppress_auth_stdout_after_login_a = options.suppress_auth_stdout_after_login;
     let shared_connection_closed_a = shared_connection_closed.clone();
     #[cfg(unix)]
     let scanner_pty_fd = master_raw_fd;
@@ -645,7 +664,7 @@ pub fn run(
                                 pending_is_elevation_a
                                     .store(is_elevation_prompt, Ordering::Release);
                                 suppress_stdout_a.store(true, Ordering::Release);
-                                if is_ssh_login_prompt {
+                                if is_ssh_login_prompt && suppress_auth_stdout_after_login_a {
                                     suppress_until_post_auth_a.store(true, Ordering::Release);
                                 }
                                 if let Ok(mut pf) = pending_field_a.lock() {
@@ -995,7 +1014,7 @@ pub fn run(
 
         match child.try_wait() {
             Ok(Some(_status)) => {
-                let deadline = std::time::Instant::now() + Duration::from_millis(150);
+                let deadline = std::time::Instant::now() + Duration::from_millis(500);
                 while !done.load(Ordering::Acquire) && std::time::Instant::now() < deadline {
                     while let Ok(payload) = inject_rx.try_recv() {
                         let _ = writer.write_all(&payload);
@@ -1054,13 +1073,11 @@ pub fn run(
     }
 
     done.store(true, Ordering::Release);
-    drop(master);
-    // scanner thread may be stuck in a blocking read() after master is dropped;
-    // don't wait forever — cap at 500 ms.
-    let deadline = std::time::Instant::now() + Duration::from_millis(500);
-    while !scanner.is_finished() && std::time::Instant::now() < deadline {
+    let scanner_deadline = std::time::Instant::now() + Duration::from_millis(500);
+    while !scanner.is_finished() && std::time::Instant::now() < scanner_deadline {
         thread::sleep(Duration::from_millis(10));
     }
+    drop(master);
     let _ = injector.join();
     // stdin thread intentionally not joined — it may be blocked on stdin read.
     // The process (or test) will terminate and reap it.

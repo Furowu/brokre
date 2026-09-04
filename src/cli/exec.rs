@@ -491,6 +491,14 @@ fn exec_saved(
 
     // Compose final argv: saved_args for same-profile replay; cross-profile borrows password only.
     let mut argv = resolved.compose_argv(&rec, profile);
+    #[cfg(unix)]
+    let brokre_ssh_flags = if is_openssh_profile(profile) {
+        crate::runtime::ssh_identity::strip_brokre_ssh_flags(&mut argv)
+    } else {
+        crate::runtime::ssh_identity::BrokreSshStdinFlags::default()
+    };
+    #[cfg(not(unix))]
+    let brokre_ssh_flags = crate::runtime::ssh_identity::BrokreSshStdinFlags::default();
     let args_for_audit = redact_args(&argv);
     #[cfg(unix)]
     apply_openssh_tty_argv_adjustments(profile, &mut argv, &resolved.trailing);
@@ -576,6 +584,8 @@ fn exec_saved(
         inject_disabled: false,
         passive_inner_ssh: routed_inner_passive,
         skip_interactive_raw: false,
+        suppress_auth_stdout_after_login: user_trailing.is_empty()
+            || crate::runtime::ssh_identity::remote_command_needs_tty(user_trailing),
         exit_on_shared_connection_closed: crate::runtime::ssh_identity::remote_command_needs_tty(
             user_trailing,
         ),
@@ -594,12 +604,15 @@ fn exec_saved(
         crate::runtime::pipe_exec::run_interactive_routed_mux_tty(
             profile, &argv, rec.id, &patterns,
         )?
-    } else if crate::runtime::pipe_exec::should_use_pipe_mode(
-        profile,
-        crate::security::tty::stdin_is_pipe(),
-        remote_trailing,
-    ) {
-        crate::runtime::pipe_exec::run(profile, &argv, rec.id)?
+    } else if crate::runtime::pipe_exec::should_use_pipe_mode(profile, remote_trailing) {
+        crate::runtime::pipe_exec::run(
+            profile,
+            profile,
+            &argv,
+            rec.id,
+            remote_trailing,
+            &brokre_ssh_flags,
+        )?
     } else {
         crate::runtime::pty::run(profile, &argv, exec_cred, &patterns, pty_options)?
     };

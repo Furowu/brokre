@@ -25,6 +25,8 @@ PASS-THROUGH (core usage — any CLI):\n\
 REMOTE SSH: argv after the alias are separate tokens, not one shell string.\n\
   brokre ssh prod docker ps         # good\n\
   brokre ssh prod sh -c 'script'    # good (script is one -c argument)\n\
+  brokre ssh -n prod true           # remote command: do not read caller stdin\n\
+  brokre ssh --no-stdin prod true   # same (brokre flag, stripped before OpenSSH)\n\
   brokre ssh prod \"docker ps\"       # shell may work locally; prefer split argv\n\
 \n\
 BUILT-IN SUBCOMMANDS:\n\

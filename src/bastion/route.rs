@@ -165,7 +165,7 @@ pub fn build_routed_local_argv(
     match route.hops.len() {
         1 => {
             let mut args = vec![route.hops[0].clone()];
-            args.extend(inner_exec);
+            args.push(shell_join(&inner_exec));
             args
         }
         _ => {
@@ -244,15 +244,12 @@ mod tests {
             addr: "b150::db".into(),
         };
         let args = build_routed_local_argv("ssh", &route, &[]);
+        let token = crate::utils::paths::remote_brokre_shell_token();
+        assert_eq!(args.len(), 2);
+        assert_eq!(args[0], "b150");
         assert_eq!(
-            args,
-            vec![
-                "b150",
-                crate::utils::paths::remote_brokre_shell_token(),
-                "ssh",
-                "-tt",
-                "db",
-            ]
+            args[1],
+            format!("{} ssh -tt db", token)
         );
     }
 
@@ -264,18 +261,10 @@ mod tests {
             addr: "b150::db".into(),
         };
         let args = build_routed_local_argv("ssh", &route, &["sudo".into(), "-i".into()]);
-        assert_eq!(
-            args,
-            vec![
-                "b150",
-                crate::utils::paths::remote_brokre_shell_token(),
-                "ssh",
-                "-tt",
-                "db",
-                "sudo",
-                "-i",
-            ]
-        );
+        let token = crate::utils::paths::remote_brokre_shell_token();
+        assert_eq!(args.len(), 2);
+        assert_eq!(args[0], "b150");
+        assert_eq!(args[1], format!("{} ssh -tt db sudo -i", token));
     }
 
     #[test]
@@ -286,17 +275,10 @@ mod tests {
             addr: "b150::db".into(),
         };
         let args = build_routed_local_argv("ssh", &route, &["uname".into(), "-a".into()]);
-        assert_eq!(
-            args,
-            vec![
-                "b150",
-                crate::utils::paths::remote_brokre_shell_token(),
-                "ssh",
-                "db",
-                "uname",
-                "-a"
-            ]
-        );
+        let token = crate::utils::paths::remote_brokre_shell_token();
+        assert_eq!(args.len(), 2);
+        assert_eq!(args[0], "b150");
+        assert_eq!(args[1], format!("{} ssh db uname -a", token));
     }
 
     #[test]
@@ -329,9 +311,10 @@ mod tests {
         let trailing = vec!["sh".into(), "-c".into(), script.to_string()];
         let args = build_routed_local_argv("ssh", &route, &trailing);
         assert_eq!(args[0], "b150");
-        assert_eq!(args[args.len() - 3], "sh");
-        assert_eq!(args[args.len() - 2], "-c");
-        assert_eq!(args[args.len() - 1], script);
+        let joined = &args[1];
+        assert!(joined.contains("sh -c"), "joined={joined}");
+        assert!(joined.contains("printf"), "joined={joined}");
+        assert!(joined.contains("/tmp/f"), "joined={joined}");
     }
 
     #[test]

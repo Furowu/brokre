@@ -252,8 +252,20 @@ brokre is **not** a drop-in for `ssh` / `mysql` — you must prefix with `brokre
 | MCP `args=["prod","uname -a"]` (one shell string) | `args=["prod","uname","-a"]` (argv tokens) |
 | MCP `args=["prod","sh -c 'echo hi'"]` | `shell_command="echo hi"` or `args=["prod","sh","-c","echo hi"]` |
 | bare `mysql -h … -p` | `brokre mysql <saved-alias> …` |
+| `brokre ssh alias sudo -n …` (sudo-rs, etc.) | `brokre ssh alias sudo …` or `brokre_exec_elevated` — **never** `-n` |
+| `brokre ssh` inside heredoc eats script input | After upgrade, probe commands (`test`/`uname`/`bash -c`) **auto-disconnect stdin**; use `-n`/`--no-stdin` to force |
+| `brokre ssh alias bash -c 'echo $1' _ val` (`$1` empty) | `bash -c "'echo \"\$1\"'" _ val` (nested quotes), or `shell_command` / env vars |
 
 For remote SSH: tokens after the alias are **argv slices**, not one shell command. Use split tokens for simple commands; use `shell_command` for complex scripts.
+
+**stdin / stdout (automation scripts)**
+
+- **Intent-aware routing**: non-consumer remote commands (`test`, `uname`, `mkdir`, `bash -c '…'`, etc.) **auto-disconnect stdin** (no `-n` in heredocs); consumer commands (`cat`, `tee`, `tar`, `dd`, `mysql`, `psql`, bare `bash`/`sh`) **forward stdin** — `cat file | brokre ssh … 'cat > path'` works with zero extra flags.
+- Non-upload remote commands use pipe mode by default (stable stdout); MCP `brokre_exec` always disconnects stdin.
+- Custom tool reading stdin: `brokre ssh --with-stdin alias /path/to/tool`.
+- Explicit disconnect: `brokre ssh -n alias cmd`, `brokre ssh --no-stdin alias cmd`.
+- Revert to legacy behavior: `BROKRE_SSH_LEGACY_STDIN=1` (optionally with `BROKRE_SSH_AUTO_NULL_STDIN=1`).
+- **sudo**: use `brokre ssh alias sudo cmd` or MCP `brokre_exec_elevated`; `sudo -n` on sudo-rs is non-interactive and brokre cannot inject a password.
 
 #### MCP elevated sessions (`sudo` / `su`, Unix)
 

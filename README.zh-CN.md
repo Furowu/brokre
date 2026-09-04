@@ -252,8 +252,20 @@ brokre **不是** `ssh`/`mysql` 的替代品 — 必须加 `brokre` 前缀才会
 | MCP `args=["prod","uname -a"]`（一条 shell 字符串） | `args=["prod","uname","-a"]`（argv 切片） |
 | MCP `args=["prod","sh -c 'echo hi'"]` | `shell_command="echo hi"` 或 `args=["prod","sh","-c","echo hi"]` |
 | 直接 `mysql -h … -p` | `brokre mysql <已保存别名> …` |
+| `brokre ssh alias sudo -n …`（sudo-rs 等） | `brokre ssh alias sudo …` 或 `brokre_exec_elevated`（**不要** `-n`） |
+| heredoc/脚本内 `brokre ssh` 吃掉后续输入 | 升级后探测类命令（`test`/`uname`/`bash -c`）**自动断开 stdin**；仍可用 `-n`/`--no-stdin` 显式控制 |
+| `brokre ssh alias bash -c 'echo $1' _ val`（`$1` 为空） | `bash -c "'echo \"\$1\"'" _ val`（嵌套引号），或 `shell_command` / 环境变量传参 |
 
 远程 SSH：`alias` 之后的参数是 **argv 切片**，不是一条 shell 命令。简单命令用拆分 token；复杂脚本用 `shell_command`。
+
+**stdin / stdout（自动化脚本）**
+
+- **意图感知分流**：非 stdin 消费型远程命令（`test`、`uname`、`mkdir`、`bash -c '…'` 等）**自动断开 stdin**，heredoc 内无需 `-n`；消费型命令（`cat`、`tee`、`tar`、`dd`、`mysql`、`psql`、裸 `bash`/`sh`）**自动透传 stdin**，`cat file | brokre ssh … 'cat > path'` 零配置可用。
+- 非上传类远程命令默认走 pipe 模式（稳定 stdout）；MCP `brokre_exec` 始终断开 stdin。
+- 自定义程序需读 stdin：`brokre ssh --with-stdin alias /path/to/tool`。
+- 显式断开：`brokre ssh -n alias cmd`、`brokre ssh --no-stdin alias cmd`。
+- 回退旧行为：`BROKRE_SSH_LEGACY_STDIN=1`（可选配合 `BROKRE_SSH_AUTO_NULL_STDIN=1`）。
+- **sudo**：使用 `brokre ssh alias sudo cmd` 或 MCP `brokre_exec_elevated`；远端 sudo-rs 不支持 `sudo -n`（非交互），brokre 无法注入密码。
 
 #### MCP elevated 会话（`sudo` / `su`，Unix）
 
