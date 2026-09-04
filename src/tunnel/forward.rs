@@ -634,7 +634,13 @@ fn run_ssh_forward(
         }
         None => None,
     };
-    crate::runtime::pipe_exec::run("ssh", &argv, rec.id)
+    crate::runtime::pipe_exec::run(
+        "ssh",
+        &argv,
+        rec.id,
+        None,
+        &crate::runtime::ssh_identity::BrokreSshStdinFlags::default(),
+    )
 }
 
 #[cfg(unix)]
