@@ -24,6 +24,30 @@ use std::os::unix::io::RawFd;
 
 use uuid::Uuid;
 
+/// Best-effort breadcrumb for Windows hang diagnosis (`%TEMP%\brokre-pty.log`).
+#[cfg(windows)]
+fn pty_trace(msg: &str) {
+    use std::io::Write;
+    let path = std::env::temp_dir().join("brokre-pty.log");
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+    {
+        let _ = writeln!(
+            f,
+            "{:?} tid={:?} {}",
+            std::time::SystemTime::now(),
+            std::thread::current().id(),
+            msg
+        );
+    }
+}
+
+#[cfg(not(windows))]
+fn pty_trace(_msg: &str) {}
+
+
 /// How to satisfy a password prompt for the wrapped CLI.
 #[derive(Clone, Copy)]
 pub enum PtyCredential<'a> {
@@ -460,28 +484,39 @@ fn spawn_stdin_reader(
             // Windows console: byte reads under raw mode often mis-handle Delete/arrows
             // (scan codes / incomplete VT). Decode via crossterm events instead.
             if !stdin_is_pipe {
+                // IMPORTANT: never call blocking event::read while another thread may
+                // disable_raw_mode — that deadlocks the Windows console. Only read after
+                // a short poll, and bail the moment `stop` is set.
                 while !stop.load(Ordering::Acquire) {
-                    match event::poll(Duration::from_millis(50)) {
-                        Ok(true) => match event::read() {
-                            Ok(Event::Key(key)) => {
-                                if let Some(bytes) = windows_key_event_to_bytes(key) {
-                                    if tx.send(bytes).is_err() {
+                    match event::poll(Duration::from_millis(20)) {
+                        Ok(true) => {
+                            if stop.load(Ordering::Acquire) {
+                                break;
+                            }
+                            // read() can still block if the event was already consumed;
+                            // keep the poll timeout tiny and re-check stop first.
+                            match event::read() {
+                                Ok(Event::Key(key)) => {
+                                    if let Some(bytes) = windows_key_event_to_bytes(key) {
+                                        if tx.send(bytes).is_err() {
+                                            break;
+                                        }
+                                    }
+                                }
+                                Ok(Event::Paste(s)) => {
+                                    if tx.send(s.into_bytes()).is_err() {
                                         break;
                                     }
                                 }
+                                Ok(_) => {}
+                                Err(_) => break,
                             }
-                            Ok(Event::Paste(s)) => {
-                                if tx.send(s.into_bytes()).is_err() {
-                                    break;
-                                }
-                            }
-                            Ok(_) => {}
-                            Err(_) => break,
-                        },
+                        }
                         Ok(false) => continue,
                         Err(_) => break,
                     }
                 }
+                pty_trace("stdin reader stopped");
                 return;
             }
         }
@@ -857,7 +892,9 @@ pub fn run(
                         if contains_ascii_case_insensitive(&window, b"connection to")
                             && contains_ascii_case_insensitive(&window, b"closed")
                         {
-                            ssh_connection_closed_a.store(true, Ordering::Release);
+                            if !ssh_connection_closed_a.swap(true, Ordering::AcqRel) {
+                                pty_trace("scanner: detected ssh connection closed");
+                            }
                         }
                     }
 
@@ -1184,27 +1221,42 @@ pub fn run(
             break;
         }
         if ssh_connection_closed.load(Ordering::Acquire) {
+            pty_trace("main loop break: ssh_connection_closed");
+            break;
+        }
+        // Scanner hit EOF (PTY pipe drained) — session is over even if try_wait lags.
+        if done.load(Ordering::Acquire) {
+            pty_trace("main loop break: scanner done/EOF");
             break;
         }
 
         thread::sleep(Duration::from_millis(15));
     }
 
-    // Tear down in an order that cannot deadlock Windows ConPTY:
-    // ClosePseudoConsole blocks forever if another thread is stuck in ReadFile on the
-    // output pipe (our scanner). So: leave raw mode, signal stop, drop writer, kill
-    // child, then drop master off-thread with a timeout (or leak until process exit).
-    stdin_stop.store(true, Ordering::Release);
-    done.store(true, Ordering::Release);
-    {
-        let mut guard = raw_mode.lock().unwrap();
-        *guard = None; // disable_raw_mode — must happen even if we later abandon joins
-    }
-    drop(writer);
-
+    // Tear down. Windows has two known hard hangs:
+    // 1) disable_raw_mode while another thread is inside crossterm event::read
+    // 2) ClosePseudoConsole while scanner is blocked in ReadFile on the PTY pipe
     let force_end = (options.exit_on_shared_connection_closed
         && shared_connection_closed.load(Ordering::Acquire))
         || ssh_connection_closed.load(Ordering::Acquire);
+    pty_trace(&format!(
+        "teardown begin force_end={force_end} ssh_closed={} shared_closed={}",
+        ssh_connection_closed.load(Ordering::Acquire),
+        shared_connection_closed.load(Ordering::Acquire)
+    ));
+
+    stdin_stop.store(true, Ordering::Release);
+    done.store(true, Ordering::Release);
+    // Let the stdin poll loop observe `stop` BEFORE touching console mode.
+    thread::sleep(Duration::from_millis(60));
+    {
+        let mut guard = raw_mode.lock().unwrap();
+        pty_trace("disabling raw mode");
+        *guard = None;
+        pty_trace("raw mode cleared");
+    }
+    drop(writer);
+    pty_trace("writer dropped");
 
     let exit_code = match child.try_wait() {
         Ok(Some(status)) => status.exit_code() as i32,
@@ -1216,11 +1268,14 @@ pub fn run(
                 let _ = child.kill();
             }
             #[cfg(not(unix))]
-            let _ = child.kill();
+            {
+                pty_trace("killing child");
+                let _ = child.kill();
+            }
             let wait_budget = if force_end {
-                Duration::from_millis(400)
+                Duration::from_millis(300)
             } else {
-                Duration::from_millis(1500)
+                Duration::from_millis(800)
             };
             let deadline = Instant::now() + wait_budget;
             loop {
@@ -1235,65 +1290,53 @@ pub fn run(
             }
         }
     };
+    pty_trace(&format!("child exit_code={exit_code}"));
     if let Some(pid) = pty_pid {
         crate::runtime::child_guard::unregister_session_pid(pid);
     }
 
-    // Give scanner a moment to observe EOF after kill; never block on it.
-    let scanner_deadline = Instant::now() + Duration::from_millis(200);
+    let scanner_deadline = Instant::now() + Duration::from_millis(150);
     while !scanner.is_finished() && Instant::now() < scanner_deadline {
         thread::sleep(Duration::from_millis(10));
     }
 
     #[cfg(windows)]
     {
-        // ClosePseudoConsole can hang while scanner still holds a pipe read. Drop on a
-        // helper thread; if it does not finish quickly, leak the master until process exit.
+        // Drop master off-thread; ClosePseudoConsole may never return.
         let master_slot = std::sync::Arc::new(std::sync::Mutex::new(Some(master)));
         let slot = master_slot.clone();
         let dropper = thread::spawn(move || {
+            pty_trace("master dropper running");
             let _ = slot.lock().ok().and_then(|mut g| g.take());
+            pty_trace("master dropper finished");
         });
-        let drop_deadline = Instant::now() + Duration::from_millis(300);
+        let drop_deadline = Instant::now() + Duration::from_millis(200);
         while Instant::now() < drop_deadline {
-            if master_slot
-                .lock()
-                .map(|g| g.is_none())
-                .unwrap_or(true)
-            {
+            if master_slot.lock().map(|g| g.is_none()).unwrap_or(true) {
                 break;
             }
             thread::sleep(Duration::from_millis(10));
         }
-        if master_slot
-            .lock()
-            .map(|g| g.is_some())
-            .unwrap_or(false)
-        {
-            // Abandon: keep Arc alive so Drop does not run on this thread.
+        if master_slot.lock().map(|g| g.is_some()).unwrap_or(false) {
+            pty_trace("abandoning master drop (ClosePseudoConsole hung)");
             std::mem::forget(master_slot);
             std::mem::forget(dropper);
         } else {
             let _ = dropper.join();
         }
-        // Injector only polls `done` — join briefly, then abandon.
-        let inj = injector;
-        let inj_deadline = Instant::now() + Duration::from_millis(200);
-        while !inj.is_finished() && Instant::now() < inj_deadline {
-            thread::sleep(Duration::from_millis(10));
-        }
-        if inj.is_finished() {
-            let _ = inj.join();
-        } else {
-            std::mem::forget(inj);
-        }
+        std::mem::forget(injector);
+        std::mem::forget(scanner);
+        pty_trace(&format!(
+            "windows failsafe process::exit({exit_code}) — return console to user"
+        ));
+        // Guarantees the shell comes back even if a worker thread still holds the console.
+        std::process::exit(exit_code);
     }
     #[cfg(not(windows))]
     {
         drop(master);
         let _ = injector.join();
     }
-    // stdin reader: stop flag (Windows event poll) or process teardown.
 
     let captured_pw = captured.lock().unwrap().take().and_then(|s| {
         if s.is_empty() {
