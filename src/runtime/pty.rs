@@ -840,7 +840,8 @@ pub fn run(
                 Ok(n) => {
                     let data = &buf[..n];
 
-                    if should_scan {
+                    // Session-end markers: always track (even when not scanning for prompts).
+                    {
                         window.extend_from_slice(data);
                         if window.len() > 4096 {
                             let drop_n = window.len() - 2048;
@@ -852,13 +853,15 @@ pub fn run(
                         {
                             shared_connection_closed_a.store(true, Ordering::Release);
                         }
-                        // OpenSSH client goodbye — end session promptly (esp. Windows hang).
+                        // OpenSSH: "Connection to host closed." — ConPTY often stays open after this.
                         if contains_ascii_case_insensitive(&window, b"connection to")
-                            && contains_ascii_case_insensitive(&window, b"closed.")
+                            && contains_ascii_case_insensitive(&window, b"closed")
                         {
                             ssh_connection_closed_a.store(true, Ordering::Release);
                         }
+                    }
 
+                    if should_scan {
                         if track_ssh_post_auth
                             && !post_auth_a.load(Ordering::Acquire)
                             && ssh_post_auth_indicated(&window)
@@ -1187,66 +1190,47 @@ pub fn run(
         thread::sleep(Duration::from_millis(15));
     }
 
-    // Stop stdin + leave raw mode BEFORE waiting/joining. On Windows, disable_raw_mode
-    // while another thread blocks in console ReadFile is a known hang.
+    // Tear down in an order that cannot deadlock Windows ConPTY:
+    // ClosePseudoConsole blocks forever if another thread is stuck in ReadFile on the
+    // output pipe (our scanner). So: leave raw mode, signal stop, drop writer, kill
+    // child, then drop master off-thread with a timeout (or leak until process exit).
     stdin_stop.store(true, Ordering::Release);
+    done.store(true, Ordering::Release);
     {
         let mut guard = raw_mode.lock().unwrap();
-        *guard = None;
+        *guard = None; // disable_raw_mode — must happen even if we later abandon joins
     }
+    drop(writer);
 
     let force_end = (options.exit_on_shared_connection_closed
         && shared_connection_closed.load(Ordering::Acquire))
         || ssh_connection_closed.load(Ordering::Acquire);
 
-    let exit_code = if force_end {
-        match child.try_wait() {
-            Ok(Some(status)) => status.exit_code() as i32,
-            _ => {
-                #[cfg(unix)]
-                if let Some(pid) = pty_pid {
-                    crate::runtime::child_guard::terminate_session_pid(pid);
-                } else {
-                    let _ = child.kill();
-                }
-                #[cfg(not(unix))]
+    let exit_code = match child.try_wait() {
+        Ok(Some(status)) => status.exit_code() as i32,
+        _ => {
+            #[cfg(unix)]
+            if let Some(pid) = pty_pid {
+                crate::runtime::child_guard::terminate_session_pid(pid);
+            } else {
                 let _ = child.kill();
-                // Brief wait so ConPTY can settle; don't block forever.
-                let deadline = Instant::now() + Duration::from_millis(800);
-                loop {
-                    match child.try_wait() {
-                        Ok(Some(status)) => break status.exit_code() as i32,
-                        Ok(None) if Instant::now() < deadline => {
-                            thread::sleep(Duration::from_millis(20));
-                        }
-                        _ => break 0,
-                    }
-                }
             }
-        }
-    } else {
-        match child.try_wait() {
-            Ok(Some(status)) => status.exit_code() as i32,
-            _ => {
-                // Prefer try_wait loop over indefinite wait — Windows ConPTY can stall.
-                let deadline = Instant::now() + Duration::from_secs(3);
-                loop {
-                    match child.try_wait() {
-                        Ok(Some(status)) => break status.exit_code() as i32,
-                        Ok(None) if Instant::now() < deadline => {
-                            thread::sleep(Duration::from_millis(20));
-                        }
-                        Ok(None) => {
-                            let _ = child.kill();
-                            break child
-                                .wait()
-                                .map(|s| s.exit_code() as i32)
-                                .unwrap_or(1);
-                        }
-                        Err(e) => {
-                            return Err(BrokreError::Runtime(format!("child wait: {}", e)));
-                        }
+            #[cfg(not(unix))]
+            let _ = child.kill();
+            let wait_budget = if force_end {
+                Duration::from_millis(400)
+            } else {
+                Duration::from_millis(1500)
+            };
+            let deadline = Instant::now() + wait_budget;
+            loop {
+                match child.try_wait() {
+                    Ok(Some(status)) => break status.exit_code() as i32,
+                    Ok(None) if Instant::now() < deadline => {
+                        thread::sleep(Duration::from_millis(20));
                     }
+                    Ok(None) => break 0,
+                    Err(_) => break 1,
                 }
             }
         }
@@ -1255,14 +1239,61 @@ pub fn run(
         crate::runtime::child_guard::unregister_session_pid(pid);
     }
 
-    done.store(true, Ordering::Release);
-    let scanner_deadline = std::time::Instant::now() + Duration::from_millis(500);
-    while !scanner.is_finished() && std::time::Instant::now() < scanner_deadline {
+    // Give scanner a moment to observe EOF after kill; never block on it.
+    let scanner_deadline = Instant::now() + Duration::from_millis(200);
+    while !scanner.is_finished() && Instant::now() < scanner_deadline {
         thread::sleep(Duration::from_millis(10));
     }
-    drop(master);
-    let _ = injector.join();
-    // stdin reader exits via `stdin_stop` (Windows event poll) or process teardown.
+
+    #[cfg(windows)]
+    {
+        // ClosePseudoConsole can hang while scanner still holds a pipe read. Drop on a
+        // helper thread; if it does not finish quickly, leak the master until process exit.
+        let master_slot = std::sync::Arc::new(std::sync::Mutex::new(Some(master)));
+        let slot = master_slot.clone();
+        let dropper = thread::spawn(move || {
+            let _ = slot.lock().ok().and_then(|mut g| g.take());
+        });
+        let drop_deadline = Instant::now() + Duration::from_millis(300);
+        while Instant::now() < drop_deadline {
+            if master_slot
+                .lock()
+                .map(|g| g.is_none())
+                .unwrap_or(true)
+            {
+                break;
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+        if master_slot
+            .lock()
+            .map(|g| g.is_some())
+            .unwrap_or(false)
+        {
+            // Abandon: keep Arc alive so Drop does not run on this thread.
+            std::mem::forget(master_slot);
+            std::mem::forget(dropper);
+        } else {
+            let _ = dropper.join();
+        }
+        // Injector only polls `done` — join briefly, then abandon.
+        let inj = injector;
+        let inj_deadline = Instant::now() + Duration::from_millis(200);
+        while !inj.is_finished() && Instant::now() < inj_deadline {
+            thread::sleep(Duration::from_millis(10));
+        }
+        if inj.is_finished() {
+            let _ = inj.join();
+        } else {
+            std::mem::forget(inj);
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        drop(master);
+        let _ = injector.join();
+    }
+    // stdin reader: stop flag (Windows event poll) or process teardown.
 
     let captured_pw = captured.lock().unwrap().take().and_then(|s| {
         if s.is_empty() {
