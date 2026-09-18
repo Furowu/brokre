@@ -16,6 +16,9 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
+#[cfg(windows)]
+use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+
 #[cfg(unix)]
 use std::os::unix::io::RawFd;
 
@@ -301,8 +304,57 @@ struct RawModeGuard;
 impl RawModeGuard {
     fn enable() -> Self {
         let _ = terminal::enable_raw_mode();
+        #[cfg(windows)]
+        {
+            // Ensure remote ANSI (and VT Delete sequences) render instead of garbage glyphs.
+            enable_windows_vt_output();
+        }
         Self
     }
+}
+
+#[cfg(windows)]
+fn enable_windows_vt_output() {
+    // ENABLE_VIRTUAL_TERMINAL_PROCESSING
+    const ENABLE_VIRTUAL_TERMINAL_PROCESSING: u32 = 0x0004;
+    unsafe {
+        let handle = winapi_stdout_handle();
+        if handle.is_null() {
+            return;
+        }
+        let mut mode: u32 = 0;
+        if get_console_mode(handle, &mut mode) != 0 {
+            let _ = set_console_mode(handle, mode | ENABLE_VIRTUAL_TERMINAL_PROCESSING);
+        }
+    }
+}
+
+#[cfg(windows)]
+fn winapi_stdout_handle() -> *mut std::ffi::c_void {
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn GetStdHandle(nStdHandle: i32) -> *mut std::ffi::c_void;
+    }
+    const STD_OUTPUT_HANDLE: i32 = -11;
+    unsafe { GetStdHandle(STD_OUTPUT_HANDLE) }
+}
+
+#[cfg(windows)]
+fn get_console_mode(handle: *mut std::ffi::c_void, mode: *mut u32) -> i32 {
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn GetConsoleMode(hConsoleHandle: *mut std::ffi::c_void, lpMode: *mut u32) -> i32;
+    }
+    unsafe { GetConsoleMode(handle, mode) }
+}
+
+#[cfg(windows)]
+fn set_console_mode(handle: *mut std::ffi::c_void, mode: u32) -> i32 {
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn SetConsoleMode(hConsoleHandle: *mut std::ffi::c_void, dwMode: u32) -> i32;
+    }
+    unsafe { SetConsoleMode(handle, mode) }
 }
 
 impl Drop for RawModeGuard {
@@ -353,17 +405,93 @@ fn open_stdin_read_source() -> Box<dyn Read + Send> {
     Box::new(std::io::stdin())
 }
 
+/// Map a crossterm key event to bytes the remote PTY expects (VT / ASCII).
+#[cfg(windows)]
+fn windows_key_event_to_bytes(key: KeyEvent) -> Option<Vec<u8>> {
+    // Windows reports Press + Release; only forward press/repeat.
+    if !matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat) {
+        return None;
+    }
+    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+    match key.code {
+        KeyCode::Char(c) if ctrl => {
+            let b = (c.to_ascii_lowercase() as u8) & 0x1f;
+            if b == 0 {
+                None
+            } else {
+                Some(vec![b])
+            }
+        }
+        KeyCode::Char(c) => {
+            let mut buf = [0u8; 4];
+            let s = c.encode_utf8(&mut buf);
+            Some(s.as_bytes().to_vec())
+        }
+        KeyCode::Enter => Some(vec![b'\r']),
+        KeyCode::Backspace => Some(vec![0x7f]),
+        KeyCode::Delete => Some(b"\x1b[3~".to_vec()),
+        KeyCode::Tab => Some(vec![b'\t']),
+        KeyCode::Esc => Some(vec![0x1b]),
+        KeyCode::Left => Some(b"\x1b[D".to_vec()),
+        KeyCode::Right => Some(b"\x1b[C".to_vec()),
+        KeyCode::Up => Some(b"\x1b[A".to_vec()),
+        KeyCode::Down => Some(b"\x1b[B".to_vec()),
+        KeyCode::Home => Some(b"\x1b[H".to_vec()),
+        KeyCode::End => Some(b"\x1b[F".to_vec()),
+        KeyCode::PageUp => Some(b"\x1b[5~".to_vec()),
+        KeyCode::PageDown => Some(b"\x1b[6~".to_vec()),
+        KeyCode::Insert => Some(b"\x1b[2~".to_vec()),
+        KeyCode::Null => None,
+        _ => None,
+    }
+}
+
 fn spawn_stdin_reader(
     pipe_eof: Arc<AtomicBool>,
     stdin_is_pipe: bool,
+    stop: Arc<AtomicBool>,
 ) -> std::sync::mpsc::Receiver<Vec<u8>> {
     const STDIN_CHANNEL_CAP: usize = 8;
     let (tx, rx) = std::sync::mpsc::sync_channel::<Vec<u8>>(STDIN_CHANNEL_CAP);
     let pipe_eof_reader = pipe_eof.clone();
     thread::spawn(move || {
+        #[cfg(windows)]
+        {
+            // Windows console: byte reads under raw mode often mis-handle Delete/arrows
+            // (scan codes / incomplete VT). Decode via crossterm events instead.
+            if !stdin_is_pipe {
+                while !stop.load(Ordering::Acquire) {
+                    match event::poll(Duration::from_millis(50)) {
+                        Ok(true) => match event::read() {
+                            Ok(Event::Key(key)) => {
+                                if let Some(bytes) = windows_key_event_to_bytes(key) {
+                                    if tx.send(bytes).is_err() {
+                                        break;
+                                    }
+                                }
+                            }
+                            Ok(Event::Paste(s)) => {
+                                if tx.send(s.into_bytes()).is_err() {
+                                    break;
+                                }
+                            }
+                            Ok(_) => {}
+                            Err(_) => break,
+                        },
+                        Ok(false) => continue,
+                        Err(_) => break,
+                    }
+                }
+                return;
+            }
+        }
+
         let mut source = open_stdin_read_source();
         let mut buf = [0u8; 65536];
         loop {
+            if stop.load(Ordering::Acquire) {
+                break;
+            }
             match source.read(&mut buf) {
                 Ok(0) => break,
                 Ok(n) => {
@@ -511,6 +639,9 @@ pub fn run(
     let suppress_until_post_auth: Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
     let rescan_after_inject: Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
     let shared_connection_closed: Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
+    // Set when SSH prints "Connection to … closed." so we can tear down without hanging.
+    let ssh_connection_closed: Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
+    let stdin_stop: Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
     let defer_stdin = options.defer_stdin_forward;
     let bastion_outer_hop = options.bastion_outer_hop;
     let passive_inner_ssh = options.passive_inner_ssh;
@@ -566,6 +697,7 @@ pub fn run(
     let exit_on_shared_connection_closed_a = options.exit_on_shared_connection_closed;
     let suppress_auth_stdout_after_login_a = options.suppress_auth_stdout_after_login;
     let shared_connection_closed_a = shared_connection_closed.clone();
+    let ssh_connection_closed_a = ssh_connection_closed.clone();
     #[cfg(unix)]
     let scanner_pty_fd = master_raw_fd;
 
@@ -719,6 +851,12 @@ pub fn run(
                             && contains_ascii_case_insensitive(&window, b"closed")
                         {
                             shared_connection_closed_a.store(true, Ordering::Release);
+                        }
+                        // OpenSSH client goodbye — end session promptly (esp. Windows hang).
+                        if contains_ascii_case_insensitive(&window, b"connection to")
+                            && contains_ascii_case_insensitive(&window, b"closed.")
+                        {
+                            ssh_connection_closed_a.store(true, Ordering::Release);
                         }
 
                         if track_ssh_post_auth
@@ -896,7 +1034,8 @@ pub fn run(
     let stdin_rx_slot: Arc<Mutex<Option<std::sync::mpsc::Receiver<Vec<u8>>>>> =
         Arc::new(Mutex::new(None));
     if stdin_is_pipe || stdin_is_tty {
-        *stdin_rx_slot.lock().unwrap() = Some(spawn_stdin_reader(pipe_eof.clone(), stdin_is_pipe));
+        *stdin_rx_slot.lock().unwrap() =
+            Some(spawn_stdin_reader(pipe_eof.clone(), stdin_is_pipe, stdin_stop.clone()));
     }
 
     let cap_main = captured.clone();
@@ -1041,13 +1180,26 @@ pub fn run(
         {
             break;
         }
+        if ssh_connection_closed.load(Ordering::Acquire) {
+            break;
+        }
 
         thread::sleep(Duration::from_millis(15));
     }
 
-    let exit_code = if options.exit_on_shared_connection_closed
-        && shared_connection_closed.load(Ordering::Acquire)
+    // Stop stdin + leave raw mode BEFORE waiting/joining. On Windows, disable_raw_mode
+    // while another thread blocks in console ReadFile is a known hang.
+    stdin_stop.store(true, Ordering::Release);
     {
+        let mut guard = raw_mode.lock().unwrap();
+        *guard = None;
+    }
+
+    let force_end = (options.exit_on_shared_connection_closed
+        && shared_connection_closed.load(Ordering::Acquire))
+        || ssh_connection_closed.load(Ordering::Acquire);
+
+    let exit_code = if force_end {
         match child.try_wait() {
             Ok(Some(status)) => status.exit_code() as i32,
             _ => {
@@ -1059,14 +1211,45 @@ pub fn run(
                 }
                 #[cfg(not(unix))]
                 let _ = child.kill();
-                0
+                // Brief wait so ConPTY can settle; don't block forever.
+                let deadline = Instant::now() + Duration::from_millis(800);
+                loop {
+                    match child.try_wait() {
+                        Ok(Some(status)) => break status.exit_code() as i32,
+                        Ok(None) if Instant::now() < deadline => {
+                            thread::sleep(Duration::from_millis(20));
+                        }
+                        _ => break 0,
+                    }
+                }
             }
         }
     } else {
-        child
-            .wait()
-            .map_err(|e| BrokreError::Runtime(format!("child wait: {}", e)))?
-            .exit_code() as i32
+        match child.try_wait() {
+            Ok(Some(status)) => status.exit_code() as i32,
+            _ => {
+                // Prefer try_wait loop over indefinite wait — Windows ConPTY can stall.
+                let deadline = Instant::now() + Duration::from_secs(3);
+                loop {
+                    match child.try_wait() {
+                        Ok(Some(status)) => break status.exit_code() as i32,
+                        Ok(None) if Instant::now() < deadline => {
+                            thread::sleep(Duration::from_millis(20));
+                        }
+                        Ok(None) => {
+                            let _ = child.kill();
+                            break child
+                                .wait()
+                                .map(|s| s.exit_code() as i32)
+                                .unwrap_or(1);
+                        }
+                        Err(e) => {
+                            return Err(BrokreError::Runtime(format!("child wait: {}", e)));
+                        }
+                    }
+                }
+            }
+        }
     };
     if let Some(pid) = pty_pid {
         crate::runtime::child_guard::unregister_session_pid(pid);
@@ -1079,8 +1262,7 @@ pub fn run(
     }
     drop(master);
     let _ = injector.join();
-    // stdin thread intentionally not joined — it may be blocked on stdin read.
-    // The process (or test) will terminate and reap it.
+    // stdin reader exits via `stdin_stop` (Windows event poll) or process teardown.
 
     let captured_pw = captured.lock().unwrap().take().and_then(|s| {
         if s.is_empty() {
