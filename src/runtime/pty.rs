@@ -1090,7 +1090,54 @@ pub fn run(
     let raw_mode_main = raw_mode.clone();
     let stdin_rx_slot_main = stdin_rx_slot.clone();
 
+    // Windows: ConPTY write/flush can block forever after SSH exits, so the main loop
+    // never observes `ssh_connection_closed`. A watchdog forces process exit.
+    #[cfg(windows)]
+    {
+        let ssh_closed_w = ssh_connection_closed.clone();
+        let shared_closed_w = shared_connection_closed.clone();
+        let exit_on_shared_w = options.exit_on_shared_connection_closed;
+        let done_w = done.clone();
+        thread::spawn(move || {
+            let mut seen_at: Option<Instant> = None;
+            loop {
+                let end = ssh_closed_w.load(Ordering::Acquire)
+                    || (exit_on_shared_w && shared_closed_w.load(Ordering::Acquire))
+                    || done_w.load(Ordering::Acquire);
+                if end {
+                    let now = Instant::now();
+                    let start = seen_at.get_or_insert(now);
+                    if now.duration_since(*start) >= Duration::from_millis(250) {
+                        pty_trace("watchdog: session end — process::exit(0)");
+                        // Best-effort leave raw mode from this thread too.
+                        let _ = crossterm::terminal::disable_raw_mode();
+                        std::process::exit(0);
+                    }
+                } else {
+                    seen_at = None;
+                }
+                thread::sleep(Duration::from_millis(50));
+            }
+        });
+    }
+
     loop {
+        // Check session-end BEFORE any ConPTY writes (those can block forever on Windows).
+        if options.exit_on_shared_connection_closed
+            && shared_connection_closed.load(Ordering::Acquire)
+        {
+            pty_trace("main loop break(top): shared_connection_closed");
+            break;
+        }
+        if ssh_connection_closed.load(Ordering::Acquire) {
+            pty_trace("main loop break(top): ssh_connection_closed");
+            break;
+        }
+        if done.load(Ordering::Acquire) {
+            pty_trace("main loop break(top): scanner done/EOF");
+            break;
+        }
+
         #[cfg(unix)]
         if let Some(ref sig) = sigint_forward {
             if sig.take_pending() {
