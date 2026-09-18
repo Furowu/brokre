@@ -28,9 +28,30 @@ const LAUNCHER_REALPATH = (() => {
   }
 })();
 
-/** True when `binPath` is this npm MCP launcher (not the native Rust CLI). */
-function isLauncherScript(binPath) {
+function cliBasename(binPath) {
+  return String(binPath)
+    .replace(/[\\/]+$/, '')
+    .split(/[\\/]/)
+    .pop()
+    .toLowerCase();
+}
+
+/**
+ * True when `binPath` is this npm MCP launcher or an npm bin shim
+ * (`brokre.cmd` / `brokre.ps1`), not the native Rust CLI (`brokre.exe`).
+ *
+ * Windows `where brokre` returns the npm shim first. Treating that shim as
+ * the native binary recurses: shim → index.js → shim → …
+ */
+function isLauncherScript(binPath, platform = process.platform) {
   if (!binPath) return false;
+  const base = cliBasename(binPath);
+  if (platform === 'win32') {
+    if (base === 'brokre.exe') return false;
+    if (base === 'brokre' || base === 'brokre.cmd' || base === 'brokre.ps1') {
+      return true;
+    }
+  }
   try {
     return fs.realpathSync(binPath) === LAUNCHER_REALPATH;
   } catch (_) {
@@ -143,8 +164,84 @@ function shellRcFiles() {
   return [...new Set(files)];
 }
 
+function pathListContainsDir(pathValue, dir, delimiter = path.delimiter) {
+  const norm = (p) =>
+    String(p || '')
+      .replace(/[\\/]+$/, '')
+      .toLowerCase();
+  const want = norm(dir);
+  if (!want) return false;
+  return String(pathValue || '')
+    .split(delimiter)
+    .some((p) => p && norm(p) === want);
+}
+
+function prependProcessPath(dir) {
+  if (pathListContainsDir(process.env.PATH, dir)) return false;
+  process.env.PATH = `${dir}${path.delimiter}${process.env.PATH || ''}`;
+  return true;
+}
+
+function readWindowsUserPath() {
+  const out = execFileSync(
+    'powershell.exe',
+    [
+      '-NoProfile',
+      '-NonInteractive',
+      '-Command',
+      "[Environment]::GetEnvironmentVariable('Path','User')",
+    ],
+    { encoding: 'utf8', windowsHide: true, timeout: 15_000 }
+  );
+  return String(out).replace(/^\uFEFF/, '').trim();
+}
+
+function writeWindowsUserPath(next) {
+  execFileSync(
+    'powershell.exe',
+    [
+      '-NoProfile',
+      '-NonInteractive',
+      '-Command',
+      "[Environment]::SetEnvironmentVariable('Path', $env:BROKRE_NEW_PATH, 'User')",
+    ],
+    {
+      encoding: 'utf8',
+      windowsHide: true,
+      timeout: 15_000,
+      env: { ...process.env, BROKRE_NEW_PATH: next },
+    }
+  );
+}
+
+function ensureWindowsUserPath() {
+  const dir = brokreBinDir();
+  const alreadyOnProcessPath = pathListContainsDir(process.env.PATH, dir);
+  prependProcessPath(dir);
+  if (alreadyOnProcessPath) return false;
+  try {
+    const current = readWindowsUserPath();
+    if (pathListContainsDir(current, dir, ';')) return false;
+    const next = current ? `${current};${dir}` : dir;
+    writeWindowsUserPath(next);
+    process.stderr.write(`brokre: added ${dir} to your user PATH\n`);
+    process.stderr.write(
+      'brokre: open a new terminal so `brokre list` / `brokre manage` work.\n'
+    );
+    return true;
+  } catch (err) {
+    process.stderr.write(
+      `brokre: could not update user PATH (${err.message}).\n` +
+        `brokre: add ${dir} to PATH, or run: npx brokre list\n`
+    );
+    return false;
+  }
+}
+
 function cliPathSetupNeeded() {
-  if (process.platform === 'win32') return false;
+  if (process.platform === 'win32') {
+    return !pathListContainsDir(process.env.PATH, brokreBinDir());
+  }
   if (findBrokreOnPath()) return false;
   for (const rc of shellRcFiles()) {
     try {
@@ -159,6 +256,9 @@ function cliPathSetupNeeded() {
 }
 
 function ensureCliOnPath() {
+  if (process.platform === 'win32') {
+    return ensureWindowsUserPath();
+  }
   if (!cliPathSetupNeeded()) return false;
   const block = `\n${PATH_MARKER}\n${PATH_LINE}\n`;
   const files = shellRcFiles();
@@ -600,6 +700,24 @@ async function ensureBrokreBinary() {
   }
 }
 
+function spawnNativeCli(brokre, args) {
+  const child = spawn(brokre, args, {
+    stdio: 'inherit',
+    env: process.env,
+  });
+  child.on('error', (err) => {
+    process.stderr.write(`brokre: ${err.message}\n`);
+    process.exit(1);
+  });
+  child.on('exit', (code, signal) => {
+    if (signal) {
+      process.kill(process.pid, signal);
+      return;
+    }
+    process.exit(code ?? 1);
+  });
+}
+
 function spawnBrokreMcp(brokre, extraEnv = {}) {
   const child = spawn(brokre, ['mcp'], {
     stdio: ['inherit', 'inherit', 'pipe'],
@@ -630,8 +748,17 @@ function spawnBrokreMcp(brokre, extraEnv = {}) {
   });
 }
 
+function windowsInstallHint() {
+  if (process.platform !== 'win32') return '';
+  return (
+    'Windows: install with `npm install -g brokre` (the -g is required).\n' +
+    'Then run `brokre list` in a new terminal. Local `npm i brokre` does not put `brokre` on PATH.\n'
+  );
+}
+
 async function main() {
   handleEarlyArgv();
+  const args = process.argv.slice(2);
   try {
     const brokre = await ensureBrokreBinary();
     if (isLauncherScript(brokre)) {
@@ -639,12 +766,26 @@ async function main() {
         'resolved brokre binary is the npm MCP launcher; install native CLI or set BROKRE_BIN'
       );
     }
-    const openedManage = await openManageIfVaultEmpty(brokre);
-    const mcpEnv = openedManage ? { BROKRE_MCP_NO_AUTO_OPEN: '1' } : {};
-    spawnBrokreMcp(brokre, mcpEnv);
+    if (args.length === 0 && process.stdin.isTTY) {
+      process.stderr.write(
+        `brokre ${PKG_VERSION} — native CLI: ${brokre}\n` +
+          'Usage: brokre list | brokre manage | brokre ssh <alias> …\n' +
+          'MCP: IDEs launch this command with no TTY (stdio), not from an interactive prompt.\n'
+      );
+      process.exit(0);
+    }
+    const mcpStdio = args.length === 0 || (args.length === 1 && args[0] === 'mcp');
+    if (mcpStdio) {
+      const openedManage = await openManageIfVaultEmpty(brokre);
+      const mcpEnv = openedManage ? { BROKRE_MCP_NO_AUTO_OPEN: '1' } : {};
+      spawnBrokreMcp(brokre, mcpEnv);
+      return;
+    }
+    spawnNativeCli(brokre, args);
   } catch (err) {
     process.stderr.write(
       `brokre: ${err.message}\n` +
+        windowsInstallHint() +
         `Install manually: curl -fsSL ${INSTALL_DOC} | bash\n` +
         `Or set BROKRE_BIN to your brokre executable.\n`
     );
@@ -652,4 +793,12 @@ async function main() {
   }
 }
 
-main();
+if (require.main === module) {
+  main();
+}
+
+module.exports = {
+  isLauncherScript,
+  pathListContainsDir,
+  ensureBrokreBinary,
+};

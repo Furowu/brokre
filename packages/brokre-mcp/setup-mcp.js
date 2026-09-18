@@ -531,6 +531,16 @@ if (require.main === module) {
     process.exit(0);
   }
   main();
+  if (isPostinstall && process.platform === 'win32') {
+    process.stderr.write(
+      '\nbrokre: Windows — `brokre` is only on PATH after a global install:\n' +
+        '  npm install -g brokre\n' +
+        'Local `npm i brokre` does not create a `brokre` command.\n' +
+        'If npm warned about install-scripts, re-run:\n' +
+        '  npm install -g brokre --allow-scripts=brokre\n' +
+        'Do not run `npm install -g --allow-scripts=brokre` without the package name.\n'
+    );
+  }
 }
 
 module.exports = {

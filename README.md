@@ -137,6 +137,14 @@ npm install -g brokre
 npx -y brokre@latest
 ```
 
+**Windows (cmd / PowerShell):** use **`npm install -g brokre`** — local `npm i brokre` does **not** put `brokre` on `PATH` (`'brokre' 不是内部或外部命令`). After install, open a **new** terminal and run `brokre list`. The `brokre` command is on PATH even if npm 11+ warns about `install-scripts` (that warning only skips IDE auto-registration). To run postinstall, **repeat the package name** after the flag — `npm install -g --allow-scripts=brokre` alone crashes (`Cannot destructure property 'name'`):
+
+```bat
+npm install -g brokre --allow-scripts=brokre
+```
+
+Persist for later global installs: `npm config set allow-scripts=brokre --location=user`. Or skip the script and register MCP later: `npx brokre-setup-mcp`. First CLI/MCP run downloads `brokre.exe` into `%USERPROFILE%\.brokre\bin` and adds that directory to your user PATH.
+
 On `npm install`, three things happen automatically:
 
 1. **MCP launcher** — `brokre-mcp` / `npx -y brokre@latest` spawns `brokre mcp`.

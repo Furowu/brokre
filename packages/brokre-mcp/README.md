@@ -166,7 +166,7 @@ On `npm install brokre` (local or global), `postinstall` runs `brokre-setup-mcp`
 
 Manual re-run: `brokre mcp setup` or `npx brokre-setup-mcp` (add `--dry-run` to preview, `--force` to overwrite). Skip on install: `BROKRE_MCP_SKIP_SETUP=1`.
 
-**CLI on PATH:** On first download, `brokre-mcp` adds `~/.brokre/bin` to your shell profile (`~/.zshrc`, etc.) and tries to symlink `/usr/local/bin/brokre` when writable. Open a **new terminal** (or `source ~/.zshrc`) so `brokre manage` works.
+**CLI on PATH:** On first download, `brokre-mcp` adds `~/.brokre/bin` to your shell profile (`~/.zshrc`, etc.) and tries to symlink `/usr/local/bin/brokre` when writable. On **Windows**, it appends `%USERPROFILE%\.brokre\bin` to the user PATH (open a new terminal). The npm launcher also forwards CLI args (`brokre list`, `brokre manage`, …) to the native binary so `npm install -g brokre` works without waiting for PATH. Local `npm i brokre` (no `-g`) does not put `brokre` on PATH — use `-g` or `npx brokre list`.
 
 **Empty vault:** Each MCP connect while the vault has no credentials starts `brokre manage` in the background and opens `http://127.0.0.1:56777/?t=…` (or the next free port) in your default browser. Session tokens are never returned to the AI.
 

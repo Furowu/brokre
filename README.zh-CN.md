@@ -137,6 +137,14 @@ npm install -g brokre
 npx -y brokre@latest
 ```
 
+**Windows（cmd / PowerShell）：必须用 `npm install -g brokre`** — 本地 `npm i brokre` **不会**把 `brokre` 放进 `PATH`（`'brokre' 不是内部或外部命令`）。装完请开**新**终端再执行 `brokre list`。npm 11+ 的 `install-scripts` 警告**不会**阻止 `brokre` 命令本身（只是跳过 IDE 自动注册）。要跑 postinstall，**flag 后面还要再写包名** — 只跑 `npm install -g --allow-scripts=brokre` 会报 `Cannot destructure property 'name'`：
+
+```bat
+npm install -g brokre --allow-scripts=brokre
+```
+
+以后全局安装都允许：`npm config set allow-scripts=brokre --location=user`。也可跳过脚本、稍后注册 MCP：`npx brokre-setup-mcp`。首次运行 CLI/MCP 会把 `brokre.exe` 下到 `%USERPROFILE%\.brokre\bin`，并写入用户 PATH。
+
 `npm install` 后自动完成三件事：
 
 1. **MCP 启动器** — `brokre-mcp` / `npx -y brokre@latest` 拉起 `brokre mcp`。
