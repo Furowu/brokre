@@ -22,8 +22,8 @@ npx -y brokre@latest
 | **Multi-hop routed SSH** | Routes such as `b1::b2::db` peel one hop per agent: the laptop starts the agent on `b1`, then `b1` continues with `b2::db`. Default route depth is 2 unless configured. |
 | **Local-only list by default** | `brokre_list` no longer SSHs to bastions or triggers bastion unlock unless `include_bastions=true` is set. Cursor startup can list local metadata without opening bastion auth. |
 | **Legacy escape hatch** | Set `BROKRE_TUNNEL=0` on the MCP server process only for emergency rollback to the old routed SSH path. |
-| **Auto MCP registration** | `postinstall` → `brokre-setup-mcp`. Detects **installed** IDEs only; merges `npx -y brokre@latest` into global MCP config. Idempotent — no duplicate entries, no writes for missing software. |
-| **Auto binary upgrade** | Each MCP start compares npm version vs `~/.brokre/bin/brokre` / `PATH`; downloads matching release when needed. |
+| **Auto MCP registration** | `postinstall` → download native CLI (no downgrade) + `brokre-setup-mcp`. Detects **installed** IDEs only; merges `npx -y brokre@latest` into global MCP config. Idempotent — no duplicate entries, no writes for missing software. npm 11+: `npm i -g brokre --allow-scripts=brokre`. |
+| **Auto binary install / upgrade** | `postinstall` downloads into `~/.brokre/bin` (never downgrades). Each MCP/CLI start also backfills when missing or older. |
 | **Manual controls** | `brokre mcp setup` · `npx brokre-setup-mcp` · `--dry-run` · `--force` · skip: `BROKRE_MCP_SKIP_SETUP=1` |
 
 **IDEs with auto-setup** (global config paths):
@@ -150,7 +150,9 @@ On each MCP start, this package compares the **npm package version** with any lo
 
 ### Auto MCP registration (`npm i brokre`, 0.2.8+)
 
-On `npm install brokre` (local or global), `postinstall` runs `brokre-setup-mcp`, which **detects installed IDEs** (app bundle, CLI, or real usage artifacts — not empty directories) and merges a global brokre MCP entry (`npx -y brokre@latest`) into each client's config file. **Does not create config files for software that is not installed.** Existing non-brokre servers are preserved; duplicate brokre aliases under other names are not added.
+On `npm install brokre` (local or global), `postinstall` (via `postinstall.js`) **best-effort downloads** the matching native CLI into `~/.brokre/bin` (keeps a newer binary; never downgrades), then runs `brokre-setup-mcp`, which **detects installed IDEs** (app bundle, CLI, or real usage artifacts — not empty directories) and merges a global brokre MCP entry (`npx -y brokre@latest`) into each client's config file. **Does not create config files for software that is not installed.** Existing non-brokre servers are preserved; duplicate brokre aliases under other names are not added.
+
+npm 11+ skips scripts unless you pass `--allow-scripts=brokre` (or set user config). Without scripts, the first CLI/MCP run still downloads the binary.
 
 | IDE | Global config path |
 |-----|-------------------|

@@ -23,7 +23,7 @@ npm install -g brokre          # 或：npx -y brokre@latest
 | 能力 | 说明 |
 |------|------|
 | **自动 MCP 注册** | `postinstall` 执行 `brokre-setup-mcp` — 仅检测已安装 IDE 并合并 `npx -y brokre@latest`。补注册：`brokre mcp setup` 或 `npx brokre-setup-mcp`。跳过：`BROKRE_MCP_SKIP_SETUP=1`。 |
-| **二进制自动升级** | 每次 MCP 启动对比 npm 包与 `PATH` / `~/.brokre/bin/brokre`，更旧时从 [GitHub Release](https://github.com/Furowu/brokre/releases) 下载。 |
+| **二进制自动安装 / 升级** | `postinstall` 下载匹配版本到 `~/.brokre/bin`（不降级）。每次 MCP/CLI 启动也会在缺失或更旧时补齐。 |
 | **无 npm 的 CLI** | install.sh 用户用 `brokre version` / `brokre upgrade`；装 IDE 后用 `brokre mcp setup` 补注册 MCP。 |
 | **支持的 IDE** | Cursor、VS Code、VS Code Insiders、Claude Code、Claude Desktop、Trae、Kimi Code、Windsurf、OpenClaw — 详见 [packages/brokre-mcp/README.md](packages/brokre-mcp/README.md)。 |
 
@@ -117,7 +117,7 @@ npm 包 [`brokre`](https://www.npmjs.com/package/brokre) 通过 stdio 为 Cursor
 
 | 方式 | 适用场景 | 安装命令 | IDE 注册 MCP | CLI 升级 |
 |------|----------|----------|--------------|----------|
-| **npm**（推荐） | AI 用户；一条命令搞定 | `npm install -g brokre` | 安装时**自动**（`postinstall`） | npm + 每次 MCP 启动自动拉二进制 |
+| **npm**（推荐） | AI 用户；一条命令搞定 | `npm install -g brokre`（Windows 加 `--allow-scripts=brokre`） | 安装时**自动**（`postinstall`） | npm + postinstall/首次运行拉二进制；不降级 |
 | **install.sh / Homebrew** | 生产环境；日常不用 Node | `curl … \| bash` 或 `brew install brokre` | 装 IDE 后执行 `brokre mcp setup` | `brokre version` / `brokre upgrade` |
 | **手动改 MCP JSON** | 仅特殊定制 | 已有 CLI 或 npm | 手改各 IDE 配置 | 取决于 CLI 安装方式 |
 
@@ -137,19 +137,21 @@ npm install -g brokre
 npx -y brokre@latest
 ```
 
-**Windows（cmd / PowerShell）：必须用 `npm install -g brokre`** — 本地 `npm i brokre` **不会**把 `brokre` 放进 `PATH`（`'brokre' 不是内部或外部命令`）。装完请开**新**终端再执行 `brokre list`。npm 11+ 的 `install-scripts` 警告**不会**阻止 `brokre` 命令本身（只是跳过 IDE 自动注册）。要跑 postinstall，**flag 后面还要再写包名** — 只跑 `npm install -g --allow-scripts=brokre` 会报 `Cannot destructure property 'name'`：
+**Windows（cmd / PowerShell）：必须用 `npm install -g brokre`** — 本地 `npm i brokre` **不会**把 `brokre` 放进 `PATH`（`'brokre' 不是内部或外部命令`）。装完请开**新**终端再执行 `brokre list`。
+
+npm 11+ **默认跳过 lifecycle scripts**。要一次装完（拉原生 CLI + IDE MCP 注册），**flag 后面还要再写包名** — 只跑 `npm install -g --allow-scripts=brokre` 会报 `Cannot destructure property 'name'`：
 
 ```bat
 npm install -g brokre --allow-scripts=brokre
 ```
 
-以后全局安装都允许：`npm config set allow-scripts=brokre --location=user`。也可跳过脚本、稍后注册 MCP：`npx brokre-setup-mcp`。首次运行 CLI/MCP 会把 `brokre.exe` 下到 `%USERPROFILE%\.brokre\bin`，并写入用户 PATH。
+以后全局安装都允许：`npm config set allow-scripts=brokre --location=user`。没有 scripts 时，npm 包装器仍在 PATH 上，但会跳过 IDE 注册；原生 CLI 会在**首次** `brokre` / MCP 运行时下载。也可稍后：`npx brokre-setup-mcp`。
 
-`npm install` 后自动完成三件事：
+在**允许 scripts** 的 `npm install` 后自动完成三件事：
 
 1. **MCP 启动器** — `brokre-mcp` / `npx -y brokre@latest` 拉起 `brokre mcp`。
-2. **IDE 自动注册** — `postinstall` 执行 `brokre-setup-mcp`：仅检测**已安装**的 IDE（应用、CLI 或真实使用痕迹，非空目录），向各客户端全局配置合并上述 MCP 条目。幂等；保留你已有的其他 MCP。
-3. **二进制自动升级** — 每次 MCP 启动时，若 `PATH` 或 `~/.brokre/bin/brokre` 版本低于 npm 包，从 [GitHub Release](https://github.com/Furowu/brokre/releases) 下载匹配版本。
+2. **拉原生 CLI + IDE 自动注册** — `postinstall` 先把匹配版本下载到 `%USERPROFILE%\.brokre\bin`（已有更新版本不降级），再执行 `brokre-setup-mcp`（仅已安装 IDE）。幂等；保留你已有的其他 MCP。
+3. **启动时补齐/升级** — 每次 MCP/CLI 启动时，若本地二进制缺失或**低于** npm 包版本，再从 [GitHub Release](https://github.com/Furowu/brokre/releases) 下载；本地已更新则保留，不降级。
 
 **自动注册覆盖的 IDE**
 

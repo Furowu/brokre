@@ -197,6 +197,74 @@ function testParseVersion() {
   else fail('trailing newline');
 }
 
+function testCompareSemver() {
+  console.log('\n[unit] compareSemver / versionGte');
+  const { compareSemver, versionGte } = require('./index.js');
+  const cases = [
+    ['0.2.32', '0.2.26', 1],
+    ['0.2.26', '0.2.32', -1],
+    ['0.2.32', '0.2.32', 0],
+    ['1.0.0', '0.9.9', 1],
+  ];
+  for (const [a, b, want] of cases) {
+    const got = compareSemver(a, b);
+    if (got === want) ok(`compareSemver(${a}, ${b}) === ${want}`);
+    else fail(`compareSemver(${a}, ${b})`, `got ${got}`);
+  }
+  if (versionGte('0.2.32', '0.2.26')) ok('versionGte newer');
+  else fail('versionGte newer');
+  if (versionGte('0.2.32', '0.2.32')) ok('versionGte equal');
+  else fail('versionGte equal');
+  if (!versionGte('0.2.26', '0.2.32')) ok('versionGte older false');
+  else fail('versionGte older false');
+}
+
+async function testNoDowngradeKeepsNewerCache() {
+  console.log('\n[integration] newer cache than package → keep, no download');
+  const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'brokre-test-home-'));
+  const binDir = path.join(tmpHome, '.brokre', 'bin');
+  fs.mkdirSync(binDir, { recursive: true });
+  const cacheName = process.platform === 'win32' ? 'brokre.exe' : 'brokre';
+  const cache = path.join(binDir, cacheName);
+  makeFakeBrokre(binDir, '9.9.9');
+  const fake = path.join(binDir, 'brokre');
+  if (cache !== fake && fs.existsSync(fake)) {
+    fs.renameSync(fake, cache);
+  }
+  fs.writeFileSync(path.join(binDir, '.version'), '0.0.1\n'); // stale marker
+
+  const { ensureBrokreBinary } = require('./index.js');
+  const prev = {
+    HOME: process.env.HOME,
+    USERPROFILE: process.env.USERPROFILE,
+    PATH: process.env.PATH,
+    BROKRE_VERSION: process.env.BROKRE_VERSION,
+    BROKRE_BIN: process.env.BROKRE_BIN,
+  };
+  process.env.HOME = tmpHome;
+  process.env.USERPROFILE = tmpHome;
+  // Isolate from a real brokre on PATH so we exercise the cache branch.
+  process.env.PATH = [path.join(tmpHome, 'empty'), '/usr/bin', '/bin'].join(path.delimiter);
+  process.env.BROKRE_VERSION = '0.2.26';
+  delete process.env.BROKRE_BIN;
+  try {
+    const chosen = await ensureBrokreBinary();
+    if (chosen === cache) ok('keeps newer cache path');
+    else fail('keeps newer cache path', chosen);
+    const verFile = fs.readFileSync(path.join(binDir, '.version'), 'utf8').trim();
+    if (verFile === '9.9.9') ok('syncs .version to actual');
+    else fail('syncs .version', verFile);
+  } catch (e) {
+    fail('no-downgrade ensure', e.message);
+  } finally {
+    for (const [k, v] of Object.entries(prev)) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+    fs.rmSync(tmpHome, { recursive: true, force: true });
+  }
+}
+
 function testInstallShVersionCheck() {
   console.log('\n[unit] install.sh version detection');
   const script = path.join(PKG_DIR, '../../install.sh');
@@ -352,6 +420,8 @@ function testRealEnvironment() {
 async function main() {
   console.log(`brokre-mcp auto-upgrade tests (PKG_VERSION=${PKG_VERSION})`);
   testParseVersion();
+  testCompareSemver();
+  await testNoDowngradeKeepsNewerCache();
   testInstallShVersionCheck();
   await testUpgradeFromStalePath();
   testCacheHit();

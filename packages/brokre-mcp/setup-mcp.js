@@ -533,11 +533,12 @@ if (require.main === module) {
   main();
   if (isPostinstall && process.platform === 'win32') {
     process.stderr.write(
-      '\nbrokre: Windows — `brokre` is only on PATH after a global install:\n' +
-        '  npm install -g brokre\n' +
-        'Local `npm i brokre` does not create a `brokre` command.\n' +
-        'If npm warned about install-scripts, re-run:\n' +
+      '\nbrokre: Windows — use a global install so `brokre` is on PATH:\n' +
         '  npm install -g brokre --allow-scripts=brokre\n' +
+        'Local `npm i brokre` does not create a `brokre` command.\n' +
+        'npm 11+ skips postinstall unless `--allow-scripts=brokre` (or user config).\n' +
+        'With scripts enabled, postinstall downloads the native CLI into %USERPROFILE%\.brokre\bin.\n' +
+        'Without scripts, the first `brokre` / MCP run still downloads it.\n' +
         'Do not run `npm install -g --allow-scripts=brokre` without the package name.\n'
     );
   }

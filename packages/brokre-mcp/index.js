@@ -553,6 +553,36 @@ function parseVersion(output) {
   return m ? m[1] : null;
 }
 
+/** Compare X.Y.Z (pre-release suffix ignored for ordering). Returns -1 / 0 / 1. */
+function compareSemver(a, b) {
+  const parts = (v) =>
+    String(v)
+      .split(/[.+-]/)
+      .map((x) => {
+        const n = parseInt(x, 10);
+        return Number.isFinite(n) ? n : 0;
+      });
+  const pa = parts(a);
+  const pb = parts(b);
+  const n = Math.max(pa.length, pb.length);
+  for (let i = 0; i < n; i++) {
+    const x = pa[i] || 0;
+    const y = pb[i] || 0;
+    if (x < y) return -1;
+    if (x > y) return 1;
+  }
+  return 0;
+}
+
+function versionGte(a, b) {
+  return compareSemver(a, b) >= 0;
+}
+
+async function writeCachedVersion(version) {
+  await fs.promises.mkdir(path.dirname(versionFilePath()), { recursive: true });
+  await fs.promises.writeFile(versionFilePath(), `${version}\n`);
+}
+
 function getInstalledVersion(brokrePath) {
   if (isLauncherScript(brokrePath)) {
     return null;
@@ -647,14 +677,40 @@ async function ensureBrokreBinary() {
   const cachedVersion = readCachedVersion();
   const onPath = findBrokreOnPath();
 
+  // Exact cache hit (version file matches package).
   if (fs.existsSync(cache) && cachedVersion === brokreVersion) {
     postInstallSetup(cache);
     return cache;
   }
 
+  // Keep a cache binary that is already ≥ package version (fixes stale .version
+  // and avoids downgrading a newer native install when npm lags behind).
+  if (fs.existsSync(cache) && !isLauncherScript(cache)) {
+    const actual = getInstalledVersion(cache) || cachedVersion;
+    if (actual && versionGte(actual, brokreVersion)) {
+      if (cachedVersion !== actual) {
+        await writeCachedVersion(actual);
+      }
+      postInstallSetup(cache);
+      return cache;
+    }
+  }
+
   if (onPath) {
     const installed = getInstalledVersion(onPath);
-    if (installed === brokreVersion) {
+    if (installed && versionGte(installed, brokreVersion)) {
+      if (installed !== brokreVersion) {
+        process.stderr.write(
+          `brokre: PATH has v${installed} (≥ package v${brokreVersion}); keeping it\n`
+        );
+      }
+      try {
+        if (path.resolve(onPath) === path.resolve(cache)) {
+          await writeCachedVersion(installed);
+        }
+      } catch (_) {
+        /* ignore */
+      }
       postInstallSetup(onPath);
       return onPath;
     }
@@ -663,7 +719,7 @@ async function ensureBrokreBinary() {
         `brokre: PATH has v${installed}, need v${brokreVersion}; downloading...\n`
       );
     }
-  } else if (cachedVersion && cachedVersion !== brokreVersion) {
+  } else if (cachedVersion && !versionGte(cachedVersion, brokreVersion)) {
     process.stderr.write(
       `brokre: updating cached v${cachedVersion} → v${brokreVersion}...\n`
     );
@@ -692,7 +748,7 @@ async function ensureBrokreBinary() {
     }
 
     await installBinaryAtomically(extracted, cache);
-    await fs.promises.writeFile(versionFilePath(), `${brokreVersion}\n`);
+    await writeCachedVersion(brokreVersion);
     postInstallSetup(cache);
     return cache;
   } finally {
@@ -801,4 +857,6 @@ module.exports = {
   isLauncherScript,
   pathListContainsDir,
   ensureBrokreBinary,
+  compareSemver,
+  versionGte,
 };
