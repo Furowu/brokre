@@ -456,9 +456,63 @@ fn open_stdin_read_source() -> Box<dyn Read + Send> {
     Box::new(std::io::stdin())
 }
 
+/// Scan PTY **output** for DEC private mode 1 (DECCKM / application cursor keys).
+///
+/// Real terminal emulators honor `\x1b[?1h` / `\x1b[?1l` (also as part of `smkx`/`rmkx`)
+/// and then emit SS3 arrow bytes (`\x1bOA`…) instead of CSI (`\x1b[A`…). On Windows
+/// brokre synthesizes keys via crossterm and must track the same mode, otherwise
+/// full-screen TUIs (dialog / ncurses menus) see Down as `\x1b[B` while expecting
+/// `\x1bOB` — keys appear dead or "activate the wrong action".
+fn feed_decckm(app_cursor: &AtomicBool, chunk: &[u8], pending: &mut Vec<u8>) {
+    pending.extend_from_slice(chunk);
+    if pending.len() > 96 {
+        let drop_n = pending.len() - 48;
+        pending.drain(..drop_n);
+    }
+    loop {
+        let Some(esc) = pending.iter().position(|&b| b == 0x1b) else {
+            pending.clear();
+            break;
+        };
+        if esc > 0 {
+            pending.drain(..esc);
+        }
+        if pending.len() < 3 {
+            break;
+        }
+        if pending[1] != b'[' {
+            pending.drain(..1);
+            continue;
+        }
+        if pending[2] != b'?' {
+            pending.drain(..1);
+            continue;
+        }
+        let Some(rel) = pending[3..].iter().position(|&b| matches!(b, b'h' | b'l')) else {
+            if pending.len() > 64 {
+                // Give up on a stuck incomplete CSI rather than buffering forever.
+                pending.drain(..1);
+            }
+            break;
+        };
+        let term_idx = 3 + rel;
+        let enable = pending[term_idx] == b'h';
+        let params = &pending[3..term_idx];
+        for part in params.split(|&b| b == b';') {
+            if part == b"1" {
+                app_cursor.store(enable, Ordering::Release);
+            }
+        }
+        pending.drain(..term_idx + 1);
+    }
+}
+
 /// Map a crossterm key event to bytes the remote PTY expects (VT / ASCII).
+///
+/// `app_cursor` mirrors DECCKM: when true, arrows use SS3 (`\x1bOA`…) as xterm
+/// does after `smkx` / `\x1b[?1h` (dialog, ncurses, vim).
 #[cfg(windows)]
-fn windows_key_event_to_bytes(key: KeyEvent) -> Option<Vec<u8>> {
+fn windows_key_event_to_bytes(key: KeyEvent, app_cursor: bool) -> Option<Vec<u8>> {
     // Windows reports Press + Release; only forward press/repeat.
     if !matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat) {
         return None;
@@ -483,12 +537,36 @@ fn windows_key_event_to_bytes(key: KeyEvent) -> Option<Vec<u8>> {
         KeyCode::Delete => Some(b"\x1b[3~".to_vec()),
         KeyCode::Tab => Some(vec![b'\t']),
         KeyCode::Esc => Some(vec![0x1b]),
-        KeyCode::Left => Some(b"\x1b[D".to_vec()),
-        KeyCode::Right => Some(b"\x1b[C".to_vec()),
-        KeyCode::Up => Some(b"\x1b[A".to_vec()),
-        KeyCode::Down => Some(b"\x1b[B".to_vec()),
-        KeyCode::Home => Some(b"\x1b[H".to_vec()),
-        KeyCode::End => Some(b"\x1b[F".to_vec()),
+        KeyCode::Left => Some(if app_cursor {
+            b"\x1bOD".to_vec()
+        } else {
+            b"\x1b[D".to_vec()
+        }),
+        KeyCode::Right => Some(if app_cursor {
+            b"\x1bOC".to_vec()
+        } else {
+            b"\x1b[C".to_vec()
+        }),
+        KeyCode::Up => Some(if app_cursor {
+            b"\x1bOA".to_vec()
+        } else {
+            b"\x1b[A".to_vec()
+        }),
+        KeyCode::Down => Some(if app_cursor {
+            b"\x1bOB".to_vec()
+        } else {
+            b"\x1b[B".to_vec()
+        }),
+        KeyCode::Home => Some(if app_cursor {
+            b"\x1bOH".to_vec()
+        } else {
+            b"\x1b[H".to_vec()
+        }),
+        KeyCode::End => Some(if app_cursor {
+            b"\x1bOF".to_vec()
+        } else {
+            b"\x1b[F".to_vec()
+        }),
         KeyCode::PageUp => Some(b"\x1b[5~".to_vec()),
         KeyCode::PageDown => Some(b"\x1b[6~".to_vec()),
         KeyCode::Insert => Some(b"\x1b[2~".to_vec()),
@@ -501,11 +579,14 @@ fn spawn_stdin_reader(
     pipe_eof: Arc<AtomicBool>,
     stdin_is_pipe: bool,
     stop: Arc<AtomicBool>,
+    app_cursor: Arc<AtomicBool>,
 ) -> std::sync::mpsc::Receiver<Vec<u8>> {
     const STDIN_CHANNEL_CAP: usize = 8;
     let (tx, rx) = std::sync::mpsc::sync_channel::<Vec<u8>>(STDIN_CHANNEL_CAP);
     let pipe_eof_reader = pipe_eof.clone();
     thread::spawn(move || {
+        #[cfg_attr(not(windows), allow(unused_variables))]
+        let app_cursor = app_cursor;
         #[cfg(windows)]
         {
             // Windows console: byte reads under raw mode often mis-handle Delete/arrows
@@ -524,7 +605,8 @@ fn spawn_stdin_reader(
                             // keep the poll timeout tiny and re-check stop first.
                             match event::read() {
                                 Ok(Event::Key(key)) => {
-                                    if let Some(bytes) = windows_key_event_to_bytes(key) {
+                                    let app = app_cursor.load(Ordering::Acquire);
+                                    if let Some(bytes) = windows_key_event_to_bytes(key, app) {
                                         if tx.send(bytes).is_err() {
                                             break;
                                         }
@@ -703,6 +785,8 @@ pub fn run(
     let shared_connection_closed: Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
     // Set when SSH prints "Connection to … closed." so we can tear down without hanging.
     let ssh_connection_closed: Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
+    // DEC private mode 1 (DECCKM): dialog/ncurses smkx expects SS3 arrows while set.
+    let app_cursor_keys: Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
     let stdin_stop: Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
     let defer_stdin = options.defer_stdin_forward;
     let bastion_outer_hop = options.bastion_outer_hop;
@@ -760,12 +844,14 @@ pub fn run(
     let suppress_auth_stdout_after_login_a = options.suppress_auth_stdout_after_login;
     let shared_connection_closed_a = shared_connection_closed.clone();
     let ssh_connection_closed_a = ssh_connection_closed.clone();
+    let app_cursor_keys_a = app_cursor_keys.clone();
     #[cfg(unix)]
     let scanner_pty_fd = master_raw_fd;
 
     let scanner = thread::spawn(move || {
         let mut buf = [0u8; 4096];
         let mut window: Vec<u8> = Vec::with_capacity(2048);
+        let mut decckm_pending: Vec<u8> = Vec::with_capacity(32);
         let stdout = std::io::stdout();
 
         let arm_prompt_if_needed = |window: &mut Vec<u8>| {
@@ -901,6 +987,7 @@ pub fn run(
                 Ok(0) => break,
                 Ok(n) => {
                     let data = &buf[..n];
+                    feed_decckm(&app_cursor_keys_a, data, &mut decckm_pending);
 
                     // Session-end markers: always track (even when not scanning for prompts).
                     {
@@ -1102,7 +1189,12 @@ pub fn run(
         Arc::new(Mutex::new(None));
     if stdin_is_pipe || stdin_is_tty {
         *stdin_rx_slot.lock().unwrap() =
-            Some(spawn_stdin_reader(pipe_eof.clone(), stdin_is_pipe, stdin_stop.clone()));
+            Some(spawn_stdin_reader(
+                pipe_eof.clone(),
+                stdin_is_pipe,
+                stdin_stop.clone(),
+                app_cursor_keys.clone(),
+            ));
     }
 
     let cap_main = captured.clone();
@@ -1470,9 +1562,11 @@ pub fn run(
 #[cfg(test)]
 mod tests {
     use super::{
-        contains_ascii_case_insensitive, initial_stdin_forward_enabled, should_arm_vault_inject,
-        ssh_post_auth_indicated, tty_raw_mode_ready, PtyRunOptions, VaultInjectPrompt,
+        contains_ascii_case_insensitive, feed_decckm, initial_stdin_forward_enabled,
+        should_arm_vault_inject, ssh_post_auth_indicated, tty_raw_mode_ready, PtyRunOptions,
+        VaultInjectPrompt,
     };
+    use std::sync::atomic::{AtomicBool, Ordering};
 
     fn pw_prompt(
         is_elevation: bool,
@@ -1665,5 +1759,28 @@ mod tests {
         assert!(initial_stdin_forward_enabled(true, true, true, false));
         assert!(!initial_stdin_forward_enabled(true, true, true, true));
         assert!(initial_stdin_forward_enabled(true, false, false, false));
+    }
+
+    #[test]
+    fn decckm_tracks_smkx_style_mode_1() {
+        let flag = AtomicBool::new(false);
+        let mut pending = Vec::new();
+        // xterm smkx: CSI ? 1 h then ESC =
+        feed_decckm(&flag, b"\x1b[?1h\x1b=", &mut pending);
+        assert!(flag.load(Ordering::Acquire));
+        feed_decckm(&flag, b"\x1b[?1l\x1b>", &mut pending);
+        assert!(!flag.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn decckm_handles_combined_private_modes_and_splits() {
+        let flag = AtomicBool::new(false);
+        let mut pending = Vec::new();
+        feed_decckm(&flag, b"\x1b[?1049;1h", &mut pending);
+        assert!(flag.load(Ordering::Acquire));
+        // split across chunks: ESC [ ? 1 l
+        feed_decckm(&flag, b"\x1b[?", &mut pending);
+        feed_decckm(&flag, b"1l", &mut pending);
+        assert!(!flag.load(Ordering::Acquire));
     }
 }
