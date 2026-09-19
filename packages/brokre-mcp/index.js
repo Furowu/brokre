@@ -661,9 +661,31 @@ function extractTarGz(tarPath, destDir) {
   execFileSync('tar', ['-xzf', tarPath, '-C', destDir], { stdio: 'inherit' });
 }
 
+/** Keep ~/.brokre/bin/.version in sync when the resolved binary is our cache. */
+async function syncVersionFileForBinary(brokrePath) {
+  if (!brokrePath || isLauncherScript(brokrePath)) return;
+  const cache = cachedBrokrePath();
+  try {
+    if (path.resolve(brokrePath) !== path.resolve(cache)) return;
+  } catch (_) {
+    return;
+  }
+  const actual = getInstalledVersion(brokrePath);
+  if (!actual) return;
+  if (readCachedVersion() !== actual) {
+    await writeCachedVersion(actual);
+  }
+}
+
 async function ensureBrokreBinary() {
   if (process.env.BROKRE_BIN) {
-    return process.env.BROKRE_BIN;
+    const pinned = process.env.BROKRE_BIN;
+    try {
+      await syncVersionFileForBinary(pinned);
+    } catch (_) {
+      /* best-effort */
+    }
+    return pinned;
   }
 
   if (process.env.BROKRE_SKIP_AUTO_INSTALL === '1') {

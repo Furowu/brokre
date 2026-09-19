@@ -129,7 +129,8 @@ fn field_for_prompt(window: &[u8], available: &[String]) -> Option<String> {
     if available.is_empty() {
         return None;
     }
-    let lower = window
+    let stripped = crate::runtime::prompts::strip_ansi_for_prompt_match(window);
+    let lower = stripped
         .iter()
         .map(|b| b.to_ascii_lowercase())
         .collect::<Vec<_>>();
@@ -304,7 +305,8 @@ fn is_ssh_login_password_prompt(buf: &[u8]) -> bool {
     {
         return false;
     }
-    let lower: Vec<u8> = buf.iter().map(|b| b.to_ascii_lowercase()).collect();
+    let stripped = crate::runtime::prompts::strip_ansi_for_prompt_match(buf);
+    let lower: Vec<u8> = stripped.iter().map(|b| b.to_ascii_lowercase()).collect();
     lower.windows(11).any(|w| w == b"'s password:")
         || lower.ends_with(b"password: ")
         || lower.ends_with(b"password:\r\n")
@@ -858,8 +860,10 @@ pub fn run(
             if pending_cap_a.load(Ordering::Acquire) || pending_inj_a.load(Ordering::Acquire) {
                 return;
             }
+            // ConPTY often appends CSI/OSC after prompts; match on a stripped view only.
+            let stripped = crate::runtime::prompts::strip_ansi_for_prompt_match(window);
             'prompt_scan: for re in &patterns {
-                if re.is_match(window) {
+                if re.is_match(&stripped) {
                     let is_sudo_prompt = track_ssh_post_auth
                         && (preset_some || (bastion_outer_a && inner_vault_record_a.is_some()))
                         && crate::runtime::prompts::is_remote_sudo_password_prompt(window);
@@ -880,7 +884,15 @@ pub fn run(
                     had_a.store(true, Ordering::Release);
                     if preset_some {
                         if inject_fields_a.is_empty() {
-                            // PtyCredential::Secret (in-proc preset) — any matched prompt.
+                            // PtyCredential::Secret — password/passphrase only, never yes/no.
+                            if !crate::runtime::prompts::is_secret_injectable_password_prompt(
+                                window,
+                            ) {
+                                continue 'prompt_scan;
+                            }
+                            pty_trace(
+                                "scanner: arming in-proc secret inject (password/passphrase)",
+                            );
                             pending_inj_a.store(true, Ordering::Release);
                             window.clear();
                             break 'prompt_scan;
@@ -947,6 +959,9 @@ pub fn run(
                                 if is_ssh_login_prompt && suppress_auth_stdout_after_login_a {
                                     suppress_until_post_auth_a.store(true, Ordering::Release);
                                 }
+                                pty_trace(&format!(
+                                    "scanner: arming vault inject field={field}"
+                                ));
                                 if let Ok(mut pf) = pending_field_a.lock() {
                                     *pf = Some(field);
                                 }
@@ -1171,6 +1186,10 @@ pub fn run(
 
                 #[cfg(any(not(unix), feature = "in_proc_inject"))]
                 if let Some(ref pw) = preset_for_inj {
+                    pty_trace(&format!(
+                        "injector: sending in-proc password (len={})",
+                        pw.len()
+                    ));
                     let mut payload = pw.as_bytes().to_vec();
                     payload.push(b'\r');
                     let _ = inject_tx.send(payload);
@@ -1241,10 +1260,12 @@ pub fn run(
                     let now = Instant::now();
                     let start = seen_at.get_or_insert(now);
                     // Exit faster when the OS says the child PID is already gone.
+                    // Long grace so the main loop can return Ok(PtyRunResult) for
+                    // exec_fresh auto_save before this last-resort exit.
                     let wait = if pid_gone {
-                        Duration::from_millis(80)
+                        Duration::from_secs(5)
                     } else {
-                        Duration::from_millis(200)
+                        Duration::from_secs(8)
                     };
                     if now.duration_since(*start) >= wait {
                         pty_trace(&format!(
@@ -1520,11 +1541,12 @@ pub fn run(
         }
         std::mem::forget(injector);
         std::mem::forget(scanner);
+        // Previously process::exit here skipped returning PtyRunResult, so
+        // exec_fresh auto_save never ran on Windows first-time alias capture.
+        // Fall through to Ok(PtyRunResult); watchdog (5s/8s) is the last resort.
         pty_trace(&format!(
-            "windows failsafe process::exit({exit_code}) — return console to user"
+            "windows: returning PtyRunResult exit_code={exit_code} (no process::exit)"
         ));
-        // Guarantees the shell comes back even if a worker thread still holds the console.
-        std::process::exit(exit_code);
     }
     #[cfg(not(windows))]
     {

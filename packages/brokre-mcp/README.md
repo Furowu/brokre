@@ -1,6 +1,6 @@
 # brokre
 
-MCP launcher for [brokre](https://github.com/Furowu/brokre) — a **local credential broker for AI agents**. Use it with Cursor, Claude Code, Kimi Code, Trae, OpenClaw, Hermes Agent, ChatClaw, and other MCP-capable clients to run `ssh` / `mysql` / `psql` and more — **passwords never enter AI context, environment variables, or `ps` output**. Agents list credential aliases and execute saved connections via MCP **without exposing passwords to the AI**.
+MCP launcher for [brokre](https://github.com/Furowu/brokre) — a **local credential broker for AI agents**. Use it with Cursor, Claude Code, Kimi Code, Trae, OpenClaw, Hermes Agent, Codex CLI, Gemini CLI, Continue, Zed, ChatClaw, and other MCP-capable clients to run `ssh` / `mysql` / `psql` and more — **passwords never enter AI context, environment variables, or `ps` output**. Agents list credential aliases and execute saved connections via MCP **without exposing passwords to the AI**.
 
 Developed by [Techinone](https://www.tio.tech) (成都同创合一科技有限公司).
 
@@ -22,8 +22,8 @@ npx -y brokre@latest
 | **Multi-hop routed SSH** | Routes such as `b1::b2::db` peel one hop per agent: the laptop starts the agent on `b1`, then `b1` continues with `b2::db`. Default route depth is 2 unless configured. |
 | **Local-only list by default** | `brokre_list` no longer SSHs to bastions or triggers bastion unlock unless `include_bastions=true` is set. Cursor startup can list local metadata without opening bastion auth. |
 | **Legacy escape hatch** | Set `BROKRE_TUNNEL=0` on the MCP server process only for emergency rollback to the old routed SSH path. |
-| **Auto MCP registration** | `postinstall` → download native CLI (no downgrade) + `brokre-setup-mcp`. Detects **installed** IDEs only; merges `npx -y brokre@latest` into global MCP config. Idempotent — no duplicate entries, no writes for missing software. npm 11+: `npm i -g brokre --allow-scripts=brokre`. |
-| **Auto binary install / upgrade** | `postinstall` downloads into `~/.brokre/bin` (never downgrades). Each MCP/CLI start also backfills when missing or older. |
+| **Auto MCP registration** | `postinstall` → `brokre-setup-mcp`. Detects **installed** IDEs only; merges `npx -y brokre@latest` into global MCP config. Idempotent — no duplicate entries, no writes for missing software. |
+| **Auto binary upgrade** | Each MCP start compares npm version vs `~/.brokre/bin/brokre` / `PATH`; downloads matching release when needed. |
 | **Manual controls** | `brokre mcp setup` · `npx brokre-setup-mcp` · `--dry-run` · `--force` · skip: `BROKRE_MCP_SKIP_SETUP=1` |
 
 **IDEs with auto-setup** (global config paths):
@@ -39,6 +39,13 @@ npx -y brokre@latest
 | Kimi Code | `~/.kimi-code/mcp.json` |
 | Windsurf | `~/.codeium/windsurf/mcp_config.json` |
 | OpenClaw | `~/.openclaw/openclaw.json` (`mcp.servers`) |
+| Codex CLI | `~/.codex/config.toml` (`mcp_servers.brokre`) |
+| Gemini CLI | `~/.gemini/settings.json` |
+| Hermes Agent | `~/.hermes/config.yaml` (`mcp_servers`) |
+| Continue | `~/.continue/config.yaml` or `~/.continue/mcpServers/brokre.yaml` |
+| Zed | `~/.config/zed/settings.json` (`context_servers`) |
+| ChatGPT Desktop | _(unsupported — remote Connectors UI only)_ |
+| Grok Bot | _(info tip — connectors/plugins; no mcp.json)_ |
 
 ### Bastion broker — cluster management
 
@@ -150,9 +157,7 @@ On each MCP start, this package compares the **npm package version** with any lo
 
 ### Auto MCP registration (`npm i brokre`, 0.2.8+)
 
-On `npm install brokre` (local or global), `postinstall` (via `postinstall.js`) **best-effort downloads** the matching native CLI into `~/.brokre/bin` (keeps a newer binary; never downgrades), then runs `brokre-setup-mcp`, which **detects installed IDEs** (app bundle, CLI, or real usage artifacts — not empty directories) and merges a global brokre MCP entry (`npx -y brokre@latest`) into each client's config file. **Does not create config files for software that is not installed.** Existing non-brokre servers are preserved; duplicate brokre aliases under other names are not added.
-
-npm 11+ skips scripts unless you pass `--allow-scripts=brokre` (or set user config). Without scripts, the first CLI/MCP run still downloads the binary.
+On `npm install brokre` (local or global), `postinstall` runs `brokre-setup-mcp`, which **detects installed IDEs** (app bundle, CLI, or real usage artifacts — not empty directories) and merges a global brokre MCP entry (`npx -y brokre@latest`) into each client's config file. **Does not create config files for software that is not installed.** Existing non-brokre servers are preserved; duplicate brokre aliases under other names are not added.
 
 | IDE | Global config path |
 |-----|-------------------|
@@ -165,8 +170,25 @@ npm 11+ skips scripts unless you pass `--allow-scripts=brokre` (or set user conf
 | Kimi Code | `~/.kimi-code/mcp.json` |
 | Windsurf | `~/.codeium/windsurf/mcp_config.json` |
 | OpenClaw | `~/.openclaw/openclaw.json` (`mcp.servers`) |
+| Codex CLI | `~/.codex/config.toml` (`mcp_servers.brokre`) |
+| Gemini CLI | `~/.gemini/settings.json` |
+| Hermes Agent | `~/.hermes/config.yaml` (`mcp_servers`) |
+| Continue | `~/.continue/config.yaml` or `~/.continue/mcpServers/brokre.yaml` |
+| Zed | `~/.config/zed/settings.json` (`context_servers`) |
+| ChatGPT Desktop | _(unsupported — remote Connectors UI only)_ |
+| Grok Bot | _(info tip — connectors/plugins; no mcp.json)_ |
 
 Manual re-run: `brokre mcp setup` or `npx brokre-setup-mcp` (add `--dry-run` to preview, `--force` to overwrite). Skip on install: `BROKRE_MCP_SKIP_SETUP=1`.
+
+**ChatGPT Desktop:** no local stdio MCP config file — only remote Connectors in the ChatGPT UI. `brokre-setup-mcp` reports `unsupported` when ChatGPT is installed.
+
+**Grok Bot** (Cursor / SpaceXAI desktop assistant): no user-writable `mcp.json`. MCP is account connectors / marketplace plugins.
+
+- In chat: ask the bot to add a local MCP server — command `npx`, args `-y brokre@latest` (uses `AddMcpServer`).
+- Or say: “把 brokre 加成 MCP：`npx -y brokre@latest`”.
+- Marketplace plugin for brokre is not published yet; postinstall prints the same tip.
+- ChatGPT Desktop similarly has no local stdio file (remote Connectors UI only).
+
 
 **CLI on PATH:** On first download, `brokre-mcp` adds `~/.brokre/bin` to your shell profile (`~/.zshrc`, etc.) and tries to symlink `/usr/local/bin/brokre` when writable. On **Windows**, it appends `%USERPROFILE%\.brokre\bin` to the user PATH (open a new terminal). The npm launcher also forwards CLI args (`brokre list`, `brokre manage`, …) to the native binary so `npm install -g brokre` works without waiting for PATH. Local `npm i brokre` (no `-g`) does not put `brokre` on PATH — use `-g` or `npx brokre list`.
 

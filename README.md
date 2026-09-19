@@ -23,9 +23,9 @@ npm install -g brokre          # or: npx -y brokre@latest
 | Capability | What happens |
 |------------|----------------|
 | **Auto MCP registration** | `postinstall` runs `brokre-setup-mcp` — detects **installed** IDEs only and merges `npx -y brokre@latest` into each global MCP config. Re-run: `brokre mcp setup` or `npx brokre-setup-mcp`. Skip: `BROKRE_MCP_SKIP_SETUP=1`. |
-| **Auto binary install / upgrade** | `postinstall` downloads into `~/.brokre/bin` (never downgrades). Each MCP/CLI start also backfills when missing or older than the npm package. |
+| **Auto binary upgrade** | On each MCP start, compares npm package version with `PATH` / `~/.brokre/bin/brokre`; downloads matching [GitHub Release](https://github.com/Furowu/brokre/releases) when missing or older. |
 | **CLI without npm** | `brokre version` / `brokre upgrade` for install.sh users; `brokre mcp setup` to register MCP after installing IDEs. |
-| **Supported IDEs** | Cursor, VS Code, VS Code Insiders, Claude Code, Claude Desktop, Trae, Kimi Code, Windsurf, OpenClaw — see [packages/brokre-mcp/README.md](packages/brokre-mcp/README.md). |
+| **Supported IDEs** | Cursor, VS Code, VS Code Insiders, Claude Code, Claude Desktop, Trae, Kimi Code, Windsurf, OpenClaw, Codex CLI, Gemini CLI, Hermes Agent, Continue, Zed — see [packages/brokre-mcp/README.md](packages/brokre-mcp/README.md). |
 
 Recommended MCP config (also applied by auto-setup):
 
@@ -117,7 +117,7 @@ The npm package [`brokre`](https://www.npmjs.com/package/brokre) launches the lo
 
 | Path | Best for | Install | MCP in IDEs | CLI upgrade |
 |------|----------|---------|-------------|-------------|
-| **npm** (recommended) | AI users; want one command | `npm install -g brokre` (Windows: add `--allow-scripts=brokre`) | **Automatic** on install (`postinstall`) | npm + postinstall/first-run download; no downgrade |
+| **npm** (recommended) | AI users; want one command | `npm install -g brokre` | **Automatic** on install (`postinstall`) | npm + auto-download on each MCP start |
 | **install.sh / Homebrew** | Production; no Node for daily use | `curl … \| bash` or `brew install brokre` | Run `brokre mcp setup` after IDE install | `brokre version` / `brokre upgrade` |
 | **Manual MCP JSON** | Custom layouts only | CLI or npm already present | Edit IDE config by hand | Depends on how CLI was installed |
 
@@ -137,21 +137,13 @@ npm install -g brokre
 npx -y brokre@latest
 ```
 
-**Windows (cmd / PowerShell):** use **`npm install -g brokre`** — local `npm i brokre` does **not** put `brokre` on `PATH` (`'brokre' 不是内部或外部命令`). After install, open a **new** terminal and run `brokre list`.
+**Windows:** `npm install -g brokre`, open a new terminal, run `brokre --version` (first run downloads the native CLI if needed). Local `npm i brokre` (no `-g`) is not on PATH.
 
-npm 11+ **skips lifecycle scripts by default**. For a one-shot finish (native CLI download + IDE MCP registration), **repeat the package name** after the flag — `npm install -g --allow-scripts=brokre` alone crashes (`Cannot destructure property 'name'`):
-
-```bat
-npm install -g brokre --allow-scripts=brokre
-```
-
-Persist for later global installs: `npm config set allow-scripts=brokre --location=user`. Without scripts, the npm shim is still on PATH, but IDE registration is skipped and the native CLI downloads on the **first** `brokre` / MCP run. Register MCP later with `npx brokre-setup-mcp`.
-
-On `npm install` **with scripts allowed**, three things happen automatically:
+On `npm install`, three things happen automatically:
 
 1. **MCP launcher** — `brokre-mcp` / `npx -y brokre@latest` spawns `brokre mcp`.
-2. **Native CLI download + IDE auto-registration** — `postinstall` downloads the matching release into `%USERPROFILE%\.brokre\bin` (never downgrades a newer binary), then runs `brokre-setup-mcp` for **installed** IDEs only. Idempotent; preserves your other MCP servers.
-3. **Startup backfill / upgrade** — each MCP/CLI start downloads from [GitHub Release](https://github.com/Furowu/brokre/releases) only when the local binary is missing or **older** than the npm package; a newer local binary is kept.
+2. **IDE auto-registration** — `postinstall` runs `brokre-setup-mcp`: detects **installed** IDEs only (app, CLI, or real usage artifacts — not empty folders) and merges the MCP entry above into each global config. Idempotent; preserves your other MCP servers.
+3. **Binary auto-upgrade** — on each MCP start, if `PATH` or `~/.brokre/bin/brokre` is older than the npm package, the matching [GitHub Release](https://github.com/Furowu/brokre/releases) is downloaded.
 
 **IDEs covered by auto-setup**
 
@@ -165,6 +157,13 @@ On `npm install` **with scripts allowed**, three things happen automatically:
 | Kimi Code | `~/.kimi-code/mcp.json` |
 | Windsurf | `~/.codeium/windsurf/mcp_config.json` |
 | OpenClaw | `~/.openclaw/openclaw.json` (`mcp.servers`) |
+| Codex CLI | `~/.codex/config.toml` (`mcp_servers.brokre`) |
+| Gemini CLI | `~/.gemini/settings.json` |
+| Hermes Agent | `~/.hermes/config.yaml` (`mcp_servers`) |
+| Continue | `~/.continue/config.yaml` or `~/.continue/mcpServers/brokre.yaml` |
+| Zed | `~/.config/zed/settings.json` (`context_servers`) |
+| ChatGPT Desktop | _(unsupported — remote Connectors UI only)_ |
+| Grok Bot | _(info tip — connectors/plugins; no mcp.json)_ |
 
 **Re-run registration** (e.g. you installed brokre before Cursor, then installed Cursor later):
 
