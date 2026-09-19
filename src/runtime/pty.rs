@@ -381,6 +381,33 @@ fn set_console_mode(handle: *mut std::ffi::c_void, mode: u32) -> i32 {
     unsafe { SetConsoleMode(handle, mode) }
 }
 
+/// True if `pid` is still alive (STILL_ACTIVE). Used because portable-pty's
+/// `try_wait` can return `Ok(None)` forever after ConPTY loses the real ssh.exe.
+#[cfg(windows)]
+fn windows_pid_is_alive(pid: u32) -> bool {
+    if pid == 0 {
+        return false;
+    }
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn OpenProcess(dwDesiredAccess: u32, bInheritHandle: i32, dwProcessId: u32) -> *mut std::ffi::c_void;
+        fn GetExitCodeProcess(hProcess: *mut std::ffi::c_void, lpExitCode: *mut u32) -> i32;
+        fn CloseHandle(hObject: *mut std::ffi::c_void) -> i32;
+    }
+    const PROCESS_QUERY_LIMITED_INFORMATION: u32 = 0x1000;
+    const STILL_ACTIVE: u32 = 259;
+    unsafe {
+        let h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+        if h.is_null() {
+            return false;
+        }
+        let mut code: u32 = 0;
+        let ok = GetExitCodeProcess(h, &mut code);
+        let _ = CloseHandle(h);
+        ok != 0 && code == STILL_ACTIVE
+    }
+}
+
 impl Drop for RawModeGuard {
     fn drop(&mut self) {
         let _ = terminal::disable_raw_mode();
@@ -1098,25 +1125,46 @@ pub fn run(
         let shared_closed_w = shared_connection_closed.clone();
         let exit_on_shared_w = options.exit_on_shared_connection_closed;
         let done_w = done.clone();
+        let child_pid_w = pty_pid;
         thread::spawn(move || {
             let mut seen_at: Option<Instant> = None;
+            let mut saw_child_alive = false;
             loop {
+                let mut pid_gone = false;
+                if let Some(pid) = child_pid_w {
+                    let alive = windows_pid_is_alive(pid);
+                    if alive {
+                        saw_child_alive = true;
+                    } else if saw_child_alive {
+                        // ssh.exe (or spawned binary) exited; ConPTY/`try_wait` may never notice.
+                        pid_gone = true;
+                        done_w.store(true, Ordering::Release);
+                    }
+                }
                 let end = ssh_closed_w.load(Ordering::Acquire)
                     || (exit_on_shared_w && shared_closed_w.load(Ordering::Acquire))
-                    || done_w.load(Ordering::Acquire);
+                    || done_w.load(Ordering::Acquire)
+                    || pid_gone;
                 if end {
                     let now = Instant::now();
                     let start = seen_at.get_or_insert(now);
-                    if now.duration_since(*start) >= Duration::from_millis(250) {
-                        pty_trace("watchdog: session end — process::exit(0)");
-                        // Best-effort leave raw mode from this thread too.
+                    // Exit faster when the OS says the child PID is already gone.
+                    let wait = if pid_gone {
+                        Duration::from_millis(80)
+                    } else {
+                        Duration::from_millis(200)
+                    };
+                    if now.duration_since(*start) >= wait {
+                        pty_trace(&format!(
+                            "watchdog: session end pid_gone={pid_gone} — process::exit(0)"
+                        ));
                         let _ = crossterm::terminal::disable_raw_mode();
                         std::process::exit(0);
                     }
                 } else {
                     seen_at = None;
                 }
-                thread::sleep(Duration::from_millis(50));
+                thread::sleep(Duration::from_millis(40));
             }
         });
     }
@@ -1136,6 +1184,13 @@ pub fn run(
         if done.load(Ordering::Acquire) {
             pty_trace("main loop break(top): scanner done/EOF");
             break;
+        }
+        #[cfg(windows)]
+        if let Some(pid) = pty_pid {
+            if !windows_pid_is_alive(pid) {
+                pty_trace(&format!("main loop break(top): child pid {pid} gone"));
+                break;
+            }
         }
 
         #[cfg(unix)]
