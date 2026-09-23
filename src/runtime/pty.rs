@@ -708,7 +708,12 @@ pub fn run(
     let master_raw_fd: Option<i32> = None;
 
     let mut spawn_argv = args.to_vec();
-    let bin_base = binary.rsplit('/').next().unwrap_or(binary);
+    // `String`, not `&str`: `str::as_str` is still unstable (`str_as_str`).
+    let bin_base = binary
+        .rsplit('/')
+        .next()
+        .unwrap_or(binary)
+        .to_ascii_lowercase();
     if bin_base == "ssh" {
         crate::bastion::route::quote_ssh_remote_argv(&mut spawn_argv);
     }
