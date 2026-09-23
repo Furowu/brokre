@@ -188,6 +188,7 @@ fn open_ssh_bridge(rec: &SecretRecord, script: &str) -> Result<SshBridge> {
     argv.push("bash".into());
     argv.push("-c".into());
     argv.push(remote_loop);
+    crate::bastion::route::quote_ssh_remote_argv(&mut argv);
 
     let patterns = patterns_for("ssh");
     pipe_exec::ensure_ssh_mux_master_for_argv("ssh", &argv, rec.id, &patterns)?;
