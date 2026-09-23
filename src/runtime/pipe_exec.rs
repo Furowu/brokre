@@ -222,6 +222,16 @@ pub fn run(
 }
 
 #[cfg(unix)]
+fn spawn_argv_for_openssh(binary: &str, args: &[String]) -> Vec<String> {
+    let mut spawn_argv = args.to_vec();
+    let bin = binary.rsplit('/').next().unwrap_or(binary);
+    if bin == "ssh" {
+        crate::bastion::route::quote_ssh_remote_argv(&mut spawn_argv);
+    }
+    spawn_argv
+}
+
+#[cfg(unix)]
 fn run_once(
     binary: &str,
     args: &[String],
@@ -230,8 +240,9 @@ fn run_once(
 ) -> Result<PtyRunResult> {
     let bin = which::which(binary)
         .map_err(|_| BrokreError::Runtime(format!("{}: command not found", binary)))?;
+    let spawn_argv = spawn_argv_for_openssh(binary, args);
     let mut cmd = Command::new(bin);
-    for a in args {
+    for a in &spawn_argv {
         cmd.arg(a);
     }
     if let Ok(cwd) = std::env::current_dir() {
@@ -403,8 +414,9 @@ pub fn should_use_inherited_tty_mode(
 pub fn run_inherited_tty(binary: &str, args: &[String]) -> Result<PtyRunResult> {
     let bin = which::which(binary)
         .map_err(|_| BrokreError::Runtime(format!("{}: command not found", binary)))?;
+    let spawn_argv = spawn_argv_for_openssh(binary, args);
     let mut cmd = Command::new(bin);
-    for a in args {
+    for a in &spawn_argv {
         cmd.arg(a);
     }
     if let Ok(cwd) = std::env::current_dir() {

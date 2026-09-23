@@ -141,6 +141,56 @@ pub fn shell_escape(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
 }
 
+/// True when `s` is exactly one closed single-quoted shell word (bastion or elevated style).
+fn is_complete_single_quoted_word(s: &str) -> bool {
+    if !s.starts_with('\'') {
+        return false;
+    }
+    let bytes = s.as_bytes();
+    let mut i = 1usize;
+    while i < bytes.len() {
+        if bytes[i] != b'\'' {
+            i += 1;
+            continue;
+        }
+        if i + 1 == bytes.len() {
+            return true;
+        }
+        if s[i + 1..].starts_with("\\''") {
+            i += 4;
+            continue;
+        }
+        if s[i + 1..].starts_with("\"'\"'") {
+            i += 5;
+            continue;
+        }
+        return false;
+    }
+    false
+}
+
+/// Quote remote OpenSSH argv tokens so a space-joined command survives OpenSSH transport.
+///
+/// Only tokens after the connection target are modified. With 0–1 remote tokens the slice is
+/// unchanged (single-token bastion `shell_join` strings and `brokre ssh host 'cmd'` stay as-is).
+pub fn quote_ssh_remote_argv(argv: &mut [String]) {
+    let target_idx =
+        crate::runtime::ssh_identity::openssh_connection_target_index_for_profile("ssh", argv);
+    let remote = match argv.get_mut(target_idx + 1..) {
+        Some(r) if r.len() >= 2 => r,
+        _ => return,
+    };
+    for token in remote.iter_mut() {
+        if crate::utils::paths::remote_shell_token_passthrough(token) {
+            continue;
+        }
+        if is_complete_single_quoted_word(token) {
+            continue;
+        }
+        *token = shell_escape(token);
+    }
+}
+
 /// Build local `brokre ssh <first_hop> ...` argv for a routed exec.
 pub fn build_routed_local_argv(
     binary: &str,
@@ -190,22 +240,25 @@ pub fn build_routed_direct_inner_argv(
     inner_target: &str,
     trailing: &[String],
 ) -> Vec<String> {
-    let remote_cmd: Vec<String> = std::iter::once("ssh".into())
-        .chain(std::iter::once("-tt".into()))
-        .chain(std::iter::once(inner_target.to_string()))
-        .chain(trailing.iter().cloned())
-        .collect();
-
     match route.hops.len() {
         1 => {
-            let mut args = vec![route.hops[0].clone()];
-            args.extend(remote_cmd);
-            args
+            // Pre-escape once, then `shell_join` escapes again. The bastion shell
+            // consumes one layer; the inner OpenSSH client still sees quotes.
+            let escaped_trailing: Vec<String> = trailing.iter().map(|t| shell_escape(t)).collect();
+            let remote_cmd: Vec<String> = std::iter::once("ssh".into())
+                .chain(std::iter::once("-tt".into()))
+                .chain(std::iter::once(inner_target.to_string()))
+                .chain(escaped_trailing)
+                .collect();
+            vec![route.hops[0].clone(), shell_join(&remote_cmd)]
         }
         _ => {
-            let mut args = vec![route.hops[0].clone()];
-            args.push(shell_join(&remote_cmd));
-            args
+            let remote_cmd: Vec<String> = std::iter::once("ssh".into())
+                .chain(std::iter::once("-tt".into()))
+                .chain(std::iter::once(inner_target.to_string()))
+                .chain(trailing.iter().cloned())
+                .collect();
+            vec![route.hops[0].clone(), shell_join(&remote_cmd)]
         }
     }
 }
@@ -350,7 +403,218 @@ mod tests {
         );
         assert_eq!(
             args,
-            vec!["b150", "ssh", "-tt", "root@10.0.0.195", "uname", "-a"]
+            vec!["b150", "ssh -tt root@10.0.0.195 uname -a"]
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn build_direct_inner_single_hop_sh_c_preserves_script() {
+        let route = BastionRoute {
+            hops: vec!["b150".into()],
+            inner: "db".into(),
+            addr: "b150::db".into(),
+        };
+        let script = "printf '<%s>' 'line one\tline two'";
+        let trailing = vec!["sh".into(), "-c".into(), script.to_string()];
+        let args = build_routed_direct_inner_argv(&route, "root@10.0.0.195", &trailing);
+        assert_eq!(args.len(), 2);
+        assert_eq!(args[0], "b150");
+        let joined = &args[1];
+        let words = shell_words_via_eval(joined);
+        let c_idx = words.iter().position(|w| w == "-c").expect("missing -c");
+        // One shell parse peels one escape layer. The inner ssh argv must still
+        // carry quotes, otherwise OpenSSH's space-join splits the script.
+        assert_eq!(words[c_idx + 1], shell_escape(script));
+        assert_ne!(words[c_idx + 1], script);
+        let openssh_joined = words[3..].join(" ");
+        let reparsed = shell_words_via_eval(&openssh_joined);
+        let c2 = reparsed
+            .iter()
+            .position(|w| w == "-c")
+            .expect("missing -c after openssh join");
+        assert_eq!(reparsed[c2 + 1], script);
+    }
+
+    #[test]
+    fn quote_ssh_remote_argv_quotes_script_after_target() {
+        let mut argv = vec![
+            "-o".into(),
+            "ConnectTimeout=5".into(),
+            "dev-host".into(),
+            "sh".into(),
+            "-c".into(),
+            "SHOW DATABASES".into(),
+        ];
+        quote_ssh_remote_argv(&mut argv);
+        assert_eq!(argv[0], "-o");
+        assert_eq!(argv[1], "ConnectTimeout=5");
+        assert_eq!(argv[2], "dev-host");
+        assert_eq!(argv[3], "sh");
+        assert_eq!(argv[4], "-c");
+        assert_eq!(argv[5], shell_escape("SHOW DATABASES"));
+    }
+
+    #[test]
+    fn quote_ssh_remote_argv_quotes_tab_in_script() {
+        let script = "SHOW\tDATABASES";
+        let mut argv = vec![
+            "dev-host".into(),
+            "sh".into(),
+            "-c".into(),
+            script.to_string(),
+        ];
+        quote_ssh_remote_argv(&mut argv);
+        assert_eq!(argv[3], shell_escape(script));
+        assert!(argv[3].contains('\t'));
+    }
+
+    #[test]
+    fn quote_ssh_remote_argv_escapes_embedded_single_quote() {
+        let script = "it's";
+        let mut argv = vec![
+            "dev-host".into(),
+            "sh".into(),
+            "-c".into(),
+            script.to_string(),
+        ];
+        quote_ssh_remote_argv(&mut argv);
+        assert_eq!(argv[3], shell_escape(script));
+    }
+
+    #[test]
+    fn quote_ssh_remote_argv_leaves_elevated_prequoted_words() {
+        let echo_home = "'echo $HOME'".to_string();
+        let its_fine = "'it'\"'\"'s fine'".to_string();
+        let mut argv = vec![
+            "dev-host".into(),
+            "sudo".into(),
+            "bash".into(),
+            "-lc".into(),
+            echo_home.clone(),
+        ];
+        quote_ssh_remote_argv(&mut argv);
+        assert_eq!(argv[4], echo_home);
+
+        let mut argv2 = vec![
+            "dev-host".into(),
+            "sudo".into(),
+            "bash".into(),
+            "-lc".into(),
+            its_fine.clone(),
+        ];
+        quote_ssh_remote_argv(&mut argv2);
+        assert_eq!(argv2[4], its_fine);
+    }
+
+    #[test]
+    fn quote_ssh_remote_argv_single_remote_token_unchanged() {
+        let single = "cd /tmp && ls".to_string();
+        let mut argv = vec!["dev-host".into(), single.clone()];
+        quote_ssh_remote_argv(&mut argv);
+        assert_eq!(argv[1], single);
+    }
+
+    #[test]
+    fn quote_ssh_remote_argv_bastion_joined_token_unchanged() {
+        let token = crate::utils::paths::remote_brokre_shell_token().to_string();
+        let joined = format!("{token} ssh db uname -a");
+        let mut argv = vec!["b150".into(), joined.clone()];
+        quote_ssh_remote_argv(&mut argv);
+        assert_eq!(argv[1], joined);
+    }
+
+    #[test]
+    fn quote_ssh_remote_argv_preserves_double_dash() {
+        let mut argv = vec![
+            "dev-host".into(),
+            "k3s".into(),
+            "kubectl".into(),
+            "exec".into(),
+            "pod".into(),
+            "--".into(),
+            "mysql".into(),
+        ];
+        quote_ssh_remote_argv(&mut argv);
+        assert_eq!(argv[5], "--");
+    }
+
+    #[cfg(unix)]
+    fn shell_words_via_eval(line: &str) -> Vec<String> {
+        use std::process::Command;
+        let script = format!(r#"eval "set -- {line}"; for w; do printf '%s\0' "$w"; done"#);
+        let out = Command::new("sh")
+            .arg("-c")
+            .arg(&script)
+            .output()
+            .expect("shell_words_via_eval");
+        assert!(
+            out.status.success(),
+            "shell_words_via_eval failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        out.stdout
+            .split(|b| *b == 0)
+            .filter(|chunk| !chunk.is_empty())
+            .map(|chunk| String::from_utf8_lossy(chunk).into_owned())
+            .collect()
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn quote_ssh_remote_argv_survives_openssh_space_join() {
+        use std::process::Command;
+
+        let run_joined = |argv: &[String]| -> (bool, String) {
+            let target_idx =
+                crate::runtime::ssh_identity::openssh_connection_target_index_for_profile(
+                    "ssh",
+                    argv,
+                );
+            let remote = argv[target_idx + 1..].join(" ");
+            let out = Command::new("sh")
+                .arg("-c")
+                .arg(&remote)
+                .output()
+                .expect("sh -c remote");
+            (
+                out.status.success(),
+                String::from_utf8_lossy(&out.stdout).into_owned(),
+            )
+        };
+
+        let mut quoted = vec![
+            "dev-host".into(),
+            "sh".into(),
+            "-c".into(),
+            "printf '<%s>' 'SHOW DATABASES'".into(),
+        ];
+        quote_ssh_remote_argv(&mut quoted);
+        let (ok, stdout) = run_joined(&quoted);
+        assert!(ok, "quoted remote command failed: {stdout}");
+        assert_eq!(stdout, "<SHOW DATABASES>");
+
+        let mut quoted_tab = vec![
+            "dev-host".into(),
+            "sh".into(),
+            "-c".into(),
+            "printf '<%s>' 'SHOW\tDATABASES'".into(),
+        ];
+        quote_ssh_remote_argv(&mut quoted_tab);
+        let (ok_tab, stdout_tab) = run_joined(&quoted_tab);
+        assert!(ok_tab, "quoted tab command failed: {stdout_tab}");
+        assert_eq!(stdout_tab, "<SHOW\tDATABASES>");
+
+        let unquoted = vec![
+            "dev-host".into(),
+            "sh".into(),
+            "-c".into(),
+            "printf '<%s>' 'SHOW DATABASES'".into(),
+        ];
+        let (ok_raw, stdout_raw) = run_joined(&unquoted);
+        assert!(
+            !ok_raw || stdout_raw != "<SHOW DATABASES>",
+            "unquoted join must not keep the script intact"
         );
     }
 

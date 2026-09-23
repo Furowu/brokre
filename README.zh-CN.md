@@ -250,7 +250,7 @@ brokre **不是** `ssh`/`mysql` 的替代品 — 必须加 `brokre` 前缀才会
 | 列出别名 | `brokre_list` | `brokre list --json` |
 | SSH 远程命令 | `brokre_exec` `binary=ssh`, `args=["prod","uname","-a"]` | `brokre ssh prod uname -a` |
 | 任意 CLI | `brokre_exec` `binary=mysql`, `args=["prod-db","-e","SHOW TABLES"]` | `brokre mysql prod-db -e "SHOW TABLES"` |
-| 写远端脚本 | `shell_command="…"`（仅 ssh） | `brokre ssh prod sh -c '…'`（`-c` 后整段脚本为一个参数） |
+| 写远端脚本 | `shell_command="…"`（仅 ssh） | `brokre ssh prod sh -c '…'` |
 | 提权执行 | `brokre_exec_elevated` `command="…"` | `brokre ssh prod sudo …`（MCP 有会话池；CLI 每次新 PTY） |
 | 添加凭据 | `brokre_setup`（打开浏览器） | `brokre manage --open` |
 | 首次保存别名 | **不可用**（需人类 TTY 输入密码） | `brokre ssh user@10.0.0.1` |
@@ -265,9 +265,11 @@ brokre **不是** `ssh`/`mysql` 的替代品 — 必须加 `brokre` 前缀才会
 | 直接 `mysql -h … -p` | `brokre mysql <已保存别名> …` |
 | `brokre ssh alias sudo -n …`（sudo-rs 等） | `brokre ssh alias sudo …` 或 `brokre_exec_elevated`（**不要** `-n`） |
 | heredoc/脚本内 `brokre ssh` 吃掉后续输入 | 升级后探测类命令（`test`/`uname`/`bash -c`）**自动断开 stdin**；仍可用 `-n`/`--no-stdin` 显式控制 |
-| `brokre ssh alias bash -c 'echo $1' _ val`（`$1` 为空） | `bash -c "'echo \"\$1\"'" _ val`（嵌套引号），或 `shell_command` / 环境变量传参 |
+| `brokre ssh alias bash -c 'echo "$1"' _ val`（修复前部分 shell 上 `$1` 为空） | 按 `bash`、`-c`、`echo "$1"`、`_`、`val` 拆开传入，brokre 会给脚本 token 补引号。嵌套引号仍然可用。也可用 `shell_command` 或环境变量 |
 
 远程 SSH：`alias` 之后的参数是 **argv 切片**，不是一条 shell 命令。简单命令用拆分 token；复杂脚本用 `shell_command`。
+
+**OpenSSH 远端引号：**连接目标之后有 **两个及以上** argv token 时，brokre 在调用 `ssh` 前补 shell 引号，避免 OpenSSH 用空格拼接时拆开含空格、制表符、引号的 `-c` 脚本。仅 **一个** 远端 token 时不改（如 `brokre ssh host 'cd /tmp && ls'` 仍由远端 shell 解析）。多个 argv 里的 `*.log` 或 `$VAR` **不会**在远端 shell 展开；需要远端展开时放进 `shell_command` 或单个 shell 字符串。堡垒多跳的内层 brokre 须含此修复；单跳 **direct-inner** 由本地双层转义覆盖。
 
 **stdin / stdout（自动化脚本）**
 
@@ -303,7 +305,7 @@ brokre **不是** `ssh`/`mysql` 的替代品 — 必须加 `brokre` 前缀才会
 
 **`brokre_exec`**：`binary=ssh` 且 `args` 含 `sudo`/`su` 时自动走同一会话池（固定 `reuse`，不支持 `session=new|close`）。例：`args=["prod","sudo","whoami"]`。
 
-**写远端脚本/文件**（`shell_command`，仅 `binary=ssh`）：`args` 只含别名，`shell_command` 传整段 shell 脚本（brokre 内部规范化为 `sh -c`）。勿把 `sh -c '...'` 塞进 `args`，勿把 `printf`/重定向拆成多个 argv token。提权写系统路径用 `brokre_exec_elevated.command`。
+**写远端脚本/文件**（`shell_command`，仅 `binary=ssh`）：`args` 只含别名，`shell_command` 传整段 shell 脚本（brokre 内部规范化为 `sh -c`）。多 token 远端 argv 会在交给 OpenSSH 前补引号，含空格/制表符的 `-c` 脚本因此不会被拆开；单个远端 token 不改。勿把 `sh -c '...'` 塞进 `args`，勿把 `printf`/重定向拆成多个 argv token。提权写系统路径用 `brokre_exec_elevated.command`。
 
 ```json
 {

@@ -248,7 +248,7 @@ brokre is **not** a drop-in for `ssh` / `mysql` — you must prefix with `brokre
 | List aliases | `brokre_list` | `brokre list --json` |
 | SSH remote command | `brokre_exec` `binary=ssh`, `args=["prod","uname","-a"]` | `brokre ssh prod uname -a` |
 | Any CLI | `brokre_exec` `binary=mysql`, `args=["prod-db","-e","SHOW TABLES"]` | `brokre mysql prod-db -e "SHOW TABLES"` |
-| Write remote script | `shell_command="…"` (ssh only) | `brokre ssh prod sh -c '…'` (whole script as one `-c` arg) |
+| Write remote script | `shell_command="…"` (ssh only) | `brokre ssh prod sh -c '…'` |
 | Privileged exec | `brokre_exec_elevated` `command="…"` | `brokre ssh prod sudo …` (MCP has session pool; CLI uses fresh PTY each time) |
 | Add credentials | `brokre_setup` (opens browser) | `brokre manage --open` |
 | First-time save | **not available** (human TTY required) | `brokre ssh user@10.0.0.1` |
@@ -263,9 +263,11 @@ brokre is **not** a drop-in for `ssh` / `mysql` — you must prefix with `brokre
 | bare `mysql -h … -p` | `brokre mysql <saved-alias> …` |
 | `brokre ssh alias sudo -n …` (sudo-rs, etc.) | `brokre ssh alias sudo …` or `brokre_exec_elevated` — **never** `-n` |
 | `brokre ssh` inside heredoc eats script input | After upgrade, probe commands (`test`/`uname`/`bash -c`) **auto-disconnect stdin**; use `-n`/`--no-stdin` to force |
-| `brokre ssh alias bash -c 'echo $1' _ val` (`$1` empty) | `bash -c "'echo \"\$1\"'" _ val` (nested quotes), or `shell_command` / env vars |
+| `brokre ssh alias bash -c 'echo "$1"' _ val` (`$1` empty before this quoting fix) | `args` split as `bash`, `-c`, `echo "$1"`, `_`, `val` — brokre quotes the script token. Nested quotes still work. `shell_command` or env vars also work |
 
 For remote SSH: tokens after the alias are **argv slices**, not one shell command. Use split tokens for simple commands; use `shell_command` for complex scripts.
+
+**OpenSSH remote quoting:** When there are **two or more** argv tokens after the connection target, brokre adds shell quotes before invoking `ssh` so OpenSSH’s space-joined remote command does not split scripts (spaces, tabs, quotes). With **one** remote token, brokre leaves it unchanged — e.g. `brokre ssh host 'cd /tmp && ls'` is still parsed by the remote login shell. Split argv tokens such as `*.log` or `$VAR` are **not** expanded remotely; put globs/variables in `shell_command` or a single shell string. Multi-hop bastion routes need an inner brokre with this fix; single-hop **direct-inner** is covered by local double escaping.
 
 **stdin / stdout (automation scripts)**
 
@@ -301,7 +303,7 @@ When the session pool is enabled, responses include `session_reused` and `sessio
 
 **`brokre_exec`**: `binary=ssh` with `sudo`/`su` in `args` auto-uses the same pool (always `reuse`; no `session=new|close`). Example: `args=["prod","sudo","whoami"]`.
 
-**Writing remote scripts/files** (`shell_command`, `binary=ssh` only): pass only the alias in `args`; put the full shell script in `shell_command` (brokre normalizes to `sh -c`). Do not embed `sh -c '...'` in `args` or split `printf`/redirects across argv tokens. For privileged system paths use `brokre_exec_elevated.command`.
+**Writing remote scripts/files** (`shell_command`, `binary=ssh` only): pass only the alias in `args`; put the full shell script in `shell_command` (brokre normalizes to `sh -c`). Brokre quotes multi-token remote argv before OpenSSH so `-c` scripts with spaces/tabs survive transport; a single remote token is unchanged. Do not embed `sh -c '...'` in `args` or split `printf`/redirects across argv tokens. For privileged system paths use `brokre_exec_elevated.command`.
 
 ```json
 {

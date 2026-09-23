@@ -707,8 +707,14 @@ pub fn run(
     #[cfg(not(unix))]
     let master_raw_fd: Option<i32> = None;
 
+    let mut spawn_argv = args.to_vec();
+    let bin_base = binary.rsplit('/').next().unwrap_or(binary);
+    if bin_base == "ssh" {
+        crate::bastion::route::quote_ssh_remote_argv(&mut spawn_argv);
+    }
+
     let mut cmd = CommandBuilder::new(binary);
-    for a in args {
+    for a in &spawn_argv {
         cmd.arg(a);
     }
     if let Ok(cwd) = std::env::current_dir() {
@@ -809,11 +815,6 @@ pub fn run(
     )));
     let stdin_forward_a = stdin_forward_enabled.clone();
 
-    let bin_base = binary
-        .rsplit('/')
-        .next()
-        .unwrap_or(binary)
-        .to_ascii_lowercase();
     let track_ssh_post_auth = matches!(bin_base.as_str(), "ssh" | "scp" | "sftp");
     let expect_su_elevation = std::env::var_os("BROKRE_MCP_ELEVATED").is_some_and(|v| v == "su");
 

@@ -361,7 +361,7 @@ Runs a command on a saved SSH host with `sudo`, `sudo -i` environment (`sudo_log
 
 ### Writing remote scripts (`shell_command`)
 
-For scripts or file writes with complex quoting, use `shell_command` (ssh only). Pass only the alias in `args`; brokre runs `sh -c <shell_command>` on the remote host.
+For scripts or file writes with complex quoting, use `shell_command` (ssh only). Pass only the alias in `args`; brokre runs `sh -c <shell_command>` on the remote host. When `args` has multiple tokens after the alias, brokre adds shell quotes before OpenSSH so space/tab scripts are not split; a single remote token is left unchanged. Split argv globs/variables (e.g. `*.log`, `$VAR`) are not expanded remotely — use `shell_command` or one shell string instead. Multi-hop bastion inner brokre must include this fix; single-hop direct-inner is handled locally.
 
 ```json
 {
