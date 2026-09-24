@@ -1026,10 +1026,9 @@ pub fn run(
                         // OpenSSH: "Connection to host closed." — ConPTY often stays open after this.
                         if contains_ascii_case_insensitive(&window, b"connection to")
                             && contains_ascii_case_insensitive(&window, b"closed")
+                            && !ssh_connection_closed_a.swap(true, Ordering::AcqRel)
                         {
-                            if !ssh_connection_closed_a.swap(true, Ordering::AcqRel) {
-                                pty_trace("scanner: detected ssh connection closed");
-                            }
+                            pty_trace("scanner: detected ssh connection closed");
                         }
                     }
 
